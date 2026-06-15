@@ -23,7 +23,9 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 80fps 1080x1920 ~70s clips take ~45-60 min each on a 2-vCPU runner.
+    # COUNT defaults to 3, so allow 4h (free public-repo minutes; GH job cap 6h).
+    timeout-minutes: 240
     env:
       COUNT: ${{ inputs.count || '3' }}
       AFFIRMATION_CATEGORIES: ${{ inputs.categories || '' }}
