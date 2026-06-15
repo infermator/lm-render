@@ -1,0 +1,137 @@
+name: Render Loomee Clips
+
+# Free-tier parallel renderer (public repo = unlimited minutes). Fan-out across
+# pending/failed rows. Generator cloned from the private Loomee repo
+# at runtime via GH_PAT — code stays private. Manual trigger only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ids:
+        description: 'Row IDs (comma-separated) or "pending" for all pending+failed'
+        required: false
+        default: 'pending'
+      max_parallel:
+        description: 'Max concurrent renders (free tier caps to ~20)'
+        required: false
+        default: '6'
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    outputs:
+      ids: ${{ steps.collect.outputs.ids }}
+      count: ${{ steps.collect.outputs.count }}
+    steps:
+      - name: Collect target IDs
+        id: collect
+        env:
+          SUPA_URL: ${{ secrets.SUPABASE_URL }}
+          SUPA_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+          INPUT: ${{ inputs.ids }}
+        run: |
+          set -e
+          SUPA_URL="$(printf '%s' "$SUPA_URL" | tr -d '[:space:]')"
+          SUPA_KEY="$(printf '%s' "$SUPA_KEY" | tr -d '[:space:]')"
+          echo "SUPA_URL bytes: ${#SUPA_URL}"
+          echo "SUPA_KEY bytes: ${#SUPA_KEY}"
+          if [ "$INPUT" = "pending" ]; then
+            URL="${SUPA_URL}/rest/v1/loomee_buffer_videos?select=id&status=in.(pending,failed)"
+            IDS_JSON=$(curl -fsS --url "$URL" \
+              -H "apikey: $SUPA_KEY" -H "Authorization: Bearer $SUPA_KEY" \
+              | jq -c '[.[].id]')
+          else
+            IDS_JSON=$(echo "$INPUT" | jq -Rc 'split(",") | map(sub("^\\s+";"") | sub("\\s+$";"")) | map(select(length > 0))')
+          fi
+          COUNT=$(echo "$IDS_JSON" | jq 'length')
+          echo "Selected $COUNT row(s)"
+          echo "$IDS_JSON" | jq .
+          echo "ids=$IDS_JSON" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+  render:
+    needs: collect
+    if: needs.collect.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel || '6') }}
+      matrix:
+        id: ${{ fromJSON(needs.collect.outputs.ids) }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Clone private generator
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository_owner }}/Loomee.git" work
+
+      - name: Cache Remotion Chrome
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/remotion
+          key: remotion-chrome-${{ runner.os }}-v1
+
+      - name: Install system ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+
+      - name: Fetch music assets from MAM CDN
+        working-directory: work/generator
+        run: |
+          mkdir -p public/music
+          for file in nature_rain.mp3 nature_river.mp3 nature_forest.mp3 nature_birds.mp3 nature_waves.mp3; do
+            curl -fsSL "https://21media.online/loomee-music/$file" -o "public/music/$file"
+            printf '  ✓ %s (%s bytes)\n' "$file" "$(wc -c < public/music/$file)"
+          done
+
+      - name: npm ci
+        working-directory: work/generator
+        run: npm ci --no-audit --no-fund
+
+      - name: Start render server
+        working-directory: work/generator
+        env:
+          MAM_BASE: 'https://21media-mam.vercel.app'
+        run: |
+          nohup node server.mjs > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:3002/api/health > /dev/null 2>&1; then
+              echo "✓ render server up after ${i}*2s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "server failed to start. log:"
+          tail -50 /tmp/server.log
+          exit 1
+
+      - name: Render + upload + patch
+        working-directory: work/generator
+        env:
+          ROW_ID: ${{ matrix.id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          LOCAL_SERVER: http://localhost:3002
+        run: node scripts/render-one-cloud.mjs
+
+      - name: Tail server log on failure
+        if: failure()
+        run: tail -200 /tmp/server.log || true
+
+  summary:
+    needs: [collect, render]
+    if: always() && needs.collect.outputs.count != '0'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        run: |
+          echo "Requested:  ${{ needs.collect.outputs.count }} rows"
+          echo "Render job: ${{ needs.render.result }}"
