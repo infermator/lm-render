@@ -105,6 +105,9 @@ jobs:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           MAM_BASE: 'https://21media-mam.vercel.app'
+          # upload-buffer.mjs reads MAM_BASE_URL at import; set it explicitly so
+          # the enqueue POST hits MAM (not the 21media.online default → 307→401).
+          MAM_BASE_URL: 'https://21media-mam.vercel.app'
           LOCAL_SERVER: http://localhost:3002
         run: node scripts/generate-fresh-cloud.mjs
 
