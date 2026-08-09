@@ -63,6 +63,7 @@ jobs:
             "enable_tpu": false,
             "enable_internet": true,
             "machine_shape": "NvidiaTeslaT4",
+            "docker_image": "gcr.io/kaggle-gpu-images/python",
             "dataset_sources": [],
             "kernel_sources": [],
             "competition_sources": [],
@@ -75,8 +76,6 @@ jobs:
           echo '=== push ==='
           kaggle kernels push -p /tmp/kaggle-gpu-probe --accelerator NvidiaTeslaT4 --timeout 300 | tee /tmp/kaggle-gpu-push.txt
 
-          # Pull what Kaggle actually persisted server-side. This tells us whether
-          # the accelerator request was dropped before execution.
           kaggle kernels pull nililu/reaction-gpu-probe -p /tmp/kaggle-gpu-pulled -m || true
           if [ -f /tmp/kaggle-gpu-pulled/kernel-metadata.json ]; then
             cp /tmp/kaggle-gpu-pulled/kernel-metadata.json .github/last-gpu-kernel-metadata.json
