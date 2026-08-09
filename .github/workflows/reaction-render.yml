@@ -34,15 +34,14 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install media and Kaggle tooling
+      - name: Install media and lip-sync tooling
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
           python -m pip install --upgrade pip
-          python -m pip install 'kaggle>=2.2.3'
+          python -m pip install 'kaggle>=2.2.3' 'gradio_client>=1.13.0'
           ffmpeg -version | head -1
           ffprobe -version | head -1
-          kaggle --version
 
       - name: Resolve render target
         env:
@@ -73,6 +72,7 @@ jobs:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KAGGLE_USERNAME: 'nililu'
           MUSETALK_KAGGLE_WORKER: ${{ github.workspace }}/kaggle/musetalk_lipsync.py
+          HF_MUSETALK_WORKER: ${{ github.workspace }}/scripts/reaction/hf_musetalk_lipsync.py
         run: |
           set -euo pipefail
           if [ -n "${JOB_ID:-}" ]; then
