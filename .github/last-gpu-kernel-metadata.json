@@ -14,6 +14,6 @@
   "kernel_sources": [],
   "competition_sources": [],
   "model_sources": [],
-  "docker_image": "gcr.io/kaggle-images/python@sha256:dafd4ce5668bbf1ad422e4c109e0f18c9623c3a7c7f48b0235f13142755c40b9",
+  "docker_image": "",
   "machine_shape": "NvidiaTeslaT4"
 }
