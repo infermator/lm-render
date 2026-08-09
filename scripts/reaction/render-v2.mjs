@@ -171,14 +171,40 @@ async function createTts(text, index) {
   return { audioUrl, local, duration: await probeDuration(local) };
 }
 
+function parseKernelRefFromText(text, expectedSlug) {
+  const direct = text.match(/kaggle\.com\/(?:code|kernels)\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)/i);
+  if (direct) return `${direct[1]}/${direct[2]}`;
+  const escaped = expectedSlug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const ref = text.match(new RegExp(`([A-Za-z0-9_-]+)/(${escaped})(?:\\s|,|$)`, 'i'));
+  return ref ? `${ref[1]}/${ref[2]}` : null;
+}
+
+async function resolveActualKernelRef(slug, pushText) {
+  const fromPush = parseKernelRefFromText(pushText, slug);
+  if (fromPush) return fromPush;
+  try {
+    const { stdout, stderr } = await run('kaggle', ['kernels', 'list', '-m', '-s', slug, '--page-size', '20', '-v', '--sort-by', 'dateRun']);
+    const fromList = parseKernelRefFromText(`${stdout}\n${stderr}`, slug);
+    if (fromList) return fromList;
+    const lines = stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      const first = line.split(',')[0]?.replace(/^"|"$/g, '').trim();
+      if (first && first.includes('/') && first.toLowerCase().endsWith(`/${slug.toLowerCase()}`)) return first;
+    }
+  } catch (error) {
+    log('Could not resolve kernel ref from owned-kernel list:', error instanceof Error ? error.message : String(error));
+  }
+  return null;
+}
+
 async function kaggleLipSync({ jobId, index, videoUrl, audioUrl, kaggleUsername }) {
   if (!KAGGLE_TOKEN) throw new Error('KAGGLE_API_TOKEN missing in lm-render GitHub secrets');
-  if (!kaggleUsername) throw new Error('Kaggle username missing from render request');
   if (!MUSETALK_WORKER) throw new Error('MUSETALK_KAGGLE_WORKER missing');
   try { await fs.access(MUSETALK_WORKER); } catch { throw new Error(`MuseTalk Kaggle worker not found: ${MUSETALK_WORKER}`); }
 
   const slug = `reaction-lipsync-${jobId.slice(0, 8)}-${Date.now().toString(36)}-${index}`.toLowerCase();
-  const kernel = `${kaggleUsername}/${slug}`;
+  const ownerHint = String(kaggleUsername || '').trim() || 'auto';
+  const metadataKernel = `${ownerHint}/${slug}`;
   const dir = path.join(workDir, `kaggle-${index}`);
   const outDir = path.join(dir, 'output');
   await fs.mkdir(dir, { recursive: true });
@@ -186,8 +212,8 @@ async function kaggleLipSync({ jobId, index, videoUrl, audioUrl, kaggleUsername 
   await fs.copyFile(MUSETALK_WORKER, path.join(dir, 'musetalk_lipsync.py'));
   await fs.writeFile(path.join(dir, 'job.json'), JSON.stringify({ video_url: videoUrl, audio_url: audioUrl, bbox_shift: 0 }, null, 2));
   await fs.writeFile(path.join(dir, 'kernel-metadata.json'), JSON.stringify({
-    id: kernel,
-    title: `Reaction Lip Sync ${jobId.slice(0, 8)} ${index}`,
+    id: metadataKernel,
+    title: slug,
     code_file: 'musetalk_lipsync.py',
     language: 'python',
     kernel_type: 'script',
@@ -195,19 +221,24 @@ async function kaggleLipSync({ jobId, index, videoUrl, audioUrl, kaggleUsername 
     enable_gpu: true,
     enable_tpu: false,
     enable_internet: true,
-    dataset_sources: [], kernel_sources: [], competition_sources: [],
+    machine_shape: 'NvidiaTeslaT4',
+    dataset_sources: [], kernel_sources: [], competition_sources: [], model_sources: [],
   }, null, 2));
 
-  log(`Starting Kaggle MuseTalk kernel ${kernel}`);
+  log(`Starting Kaggle MuseTalk kernel slug=${slug}; owner hint=${ownerHint}`);
   let pushed = false;
+  let kernel = metadataKernel;
   try {
-    try {
-      await run('kaggle', ['kernels', 'push', '-p', dir, '--accelerator', 'NvidiaTeslaP100', '--timeout', '1200']);
-    } catch (p100Error) {
-      log('P100 push failed; retrying with T4:', p100Error instanceof Error ? p100Error.message : String(p100Error));
-      await run('kaggle', ['kernels', 'push', '-p', dir, '--accelerator', 'NvidiaTeslaT4', '--timeout', '1200']);
-    }
+    const pushedResult = await run('kaggle', ['kernels', 'push', '-p', dir, '--accelerator', 'NvidiaTeslaT4', '--timeout', '1200']);
     pushed = true;
+    const pushText = `${pushedResult.stdout}\n${pushedResult.stderr}`;
+    const actualKernel = await resolveActualKernelRef(slug, pushText);
+    if (!actualKernel) {
+      throw new Error(`Kaggle kernel was pushed but its actual owner/ref could not be resolved. Push output: ${pushText.slice(-1800)}`);
+    }
+    kernel = actualKernel;
+    log(`Resolved Kaggle kernel ref: ${kernel}`);
+
     let complete = false;
     for (let attempt = 1; attempt <= 100; attempt++) {
       const { stdout, stderr } = await run('kaggle', ['kernels', 'status', kernel]);
@@ -226,7 +257,7 @@ async function kaggleLipSync({ jobId, index, videoUrl, audioUrl, kaggleUsername 
     await fs.copyFile(result, local);
     return { local, provider: 'musetalk_kaggle', kernel };
   } finally {
-    if (pushed) {
+    if (pushed && kernel) {
       try { await run('kaggle', ['kernels', 'delete', kernel, '-y']); }
       catch (error) { log('Kaggle kernel cleanup skipped:', error instanceof Error ? error.message : String(error)); }
     }
