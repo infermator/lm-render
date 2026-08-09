@@ -34,34 +34,50 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
           python -m pip install --upgrade pip
-          python -m pip install 'kaggle>=2.2.0'
+          python -m pip install 'kaggle>=2.2.3'
           ffmpeg -version | head -1
           ffprobe -version | head -1
           kaggle --version
 
       - name: Render queued Reaction Lab jobs
         env:
-          JOB_ID: ${{ inputs.job_id }}
+          DISPATCH_JOB_ID: ${{ inputs.job_id }}
           EVENT_NAME: ${{ github.event_name }}
           MAM_BASE: 'https://21media-mam.vercel.app'
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_USERNAME: 'nililu'
           MUSETALK_KAGGLE_WORKER: ${{ github.workspace }}/kaggle/musetalk_lipsync.py
         run: |
           set -euo pipefail
 
-          # An explicit workflow_dispatch with a job UUID should render exactly that job once.
-          if [ -n "${JOB_ID:-}" ]; then
-            node scripts/reaction/render-v2.mjs
+          JOB_ID="${DISPATCH_JOB_ID:-}"
+          FORCE_REQUEUE=0
+
+          # Pushes to render-kick are explicit diagnostic replays. The file contains
+          # `job <uuid>`, so ChatGPT/MAM can replay a failed job without user action.
+          if [ "$EVENT_NAME" = "push" ]; then
+            KICK_JOB="$(awk '/^job / { print $2 }' .github/render-kick | tail -1)"
+            if [ -n "$KICK_JOB" ]; then
+              JOB_ID="$KICK_JOB"
+              FORCE_REQUEUE=1
+            fi
+          fi
+
+          export JOB_ID FORCE_REQUEUE
+
+          # Explicit dispatch/replay: render the requested job once.
+          if [ -n "$JOB_ID" ]; then
+            echo "[reaction-worker] exact job=$JOB_ID force_requeue=$FORCE_REQUEUE"
+            node scripts/reaction/render-v3.mjs
             exit $?
           fi
 
-          # Scheduled/push workers stay warm for ~5 minutes and poll every 10s.
-          # This removes most of the dead time between a MAM click and the next GitHub cron tick.
+          # Scheduled worker: remain warm ~5 minutes and poll every 10 seconds.
           for attempt in $(seq 1 30); do
             echo "[reaction-worker] queue poll ${attempt}/30"
-            node scripts/reaction/render-v2.mjs
+            JOB_ID='' FORCE_REQUEUE=0 node scripts/reaction/render-v3.mjs
             sleep 10
           done
