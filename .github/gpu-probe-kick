@@ -1,2 +1,2 @@
-probe 2026-08-09T21:34Z
-reason pin gcr.io/kaggle-gpu-images/python with NvidiaTeslaT4 and verify runtime
+probe 2026-08-09T21:40Z
+reason explicit GPU docker image + docker_image_pinning_type latest + T4
