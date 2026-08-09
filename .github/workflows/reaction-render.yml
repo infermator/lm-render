@@ -13,6 +13,9 @@ on:
     paths:
       - '.github/render-kick'
 
+permissions:
+  contents: write
+
 concurrency:
   group: reaction-video-lab-${{ github.event_name }}
   cancel-in-progress: false
@@ -24,6 +27,8 @@ jobs:
     steps:
       - name: Checkout renderer
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -39,10 +44,28 @@ jobs:
           ffprobe -version | head -1
           kaggle --version
 
-      - name: Render queued Reaction Lab jobs
+      - name: Resolve render target
         env:
           DISPATCH_JOB_ID: ${{ inputs.job_id }}
           EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          JOB_ID="${DISPATCH_JOB_ID:-}"
+          FORCE_REQUEUE=0
+          if [ "$EVENT_NAME" = "push" ]; then
+            KICK_JOB="$(awk '/^job / { print $2 }' .github/render-kick | tail -1)"
+            if [ -n "$KICK_JOB" ]; then
+              JOB_ID="$KICK_JOB"
+              FORCE_REQUEUE=1
+            fi
+          fi
+          echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
+          echo "FORCE_REQUEUE=$FORCE_REQUEUE" >> "$GITHUB_ENV"
+          echo "REPLAY_JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
+          echo "[reaction-worker] event=$EVENT_NAME job=${JOB_ID:-queue} force_requeue=$FORCE_REQUEUE"
+
+      - name: Render Reaction Lab job
+        env:
           MAM_BASE: 'https://21media-mam.vercel.app'
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -52,32 +75,55 @@ jobs:
           MUSETALK_KAGGLE_WORKER: ${{ github.workspace }}/kaggle/musetalk_lipsync.py
         run: |
           set -euo pipefail
-
-          JOB_ID="${DISPATCH_JOB_ID:-}"
-          FORCE_REQUEUE=0
-
-          # Pushes to render-kick are explicit diagnostic replays. The file contains
-          # `job <uuid>`, so ChatGPT/MAM can replay a failed job without user action.
-          if [ "$EVENT_NAME" = "push" ]; then
-            KICK_JOB="$(awk '/^job / { print $2 }' .github/render-kick | tail -1)"
-            if [ -n "$KICK_JOB" ]; then
-              JOB_ID="$KICK_JOB"
-              FORCE_REQUEUE=1
-            fi
-          fi
-
-          export JOB_ID FORCE_REQUEUE
-
-          # Explicit dispatch/replay: render the requested job once.
-          if [ -n "$JOB_ID" ]; then
-            echo "[reaction-worker] exact job=$JOB_ID force_requeue=$FORCE_REQUEUE"
+          if [ -n "${JOB_ID:-}" ]; then
             node scripts/reaction/render-v3.mjs
             exit $?
           fi
-
-          # Scheduled worker: remain warm ~5 minutes and poll every 10 seconds.
           for attempt in $(seq 1 30); do
             echo "[reaction-worker] queue poll ${attempt}/30"
             JOB_ID='' FORCE_REQUEUE=0 node scripts/reaction/render-v3.mjs
             sleep 10
           done
+
+      - name: Persist diagnostic replay result
+        if: always() && github.event_name == 'push'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REPLAY_JOB_ID:-}" ]; then
+            echo "No replay job id; skipping diagnostic snapshot"
+            exit 0
+          fi
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          base = os.environ['SUPABASE_URL'].rstrip('/')
+          key = os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          job = os.environ['REPLAY_JOB_ID']
+          query = urllib.parse.urlencode({
+              'id': f'eq.{job}',
+              'select': 'id,status,current_stage,error,result_url,result_path,completed_at,updated_at,attempts',
+          })
+          req = urllib.request.Request(
+              f'{base}/rest/v1/reaction_jobs?{query}',
+              headers={'apikey': key, 'Authorization': f'Bearer {key}'},
+          )
+          with urllib.request.urlopen(req, timeout=30) as response:
+              rows = json.loads(response.read().decode('utf-8'))
+          payload = rows[0] if rows else {'id': job, 'status': 'missing'}
+          payload['captured_at'] = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+          with open('.github/last-render-diagnostic.json', 'w', encoding='utf-8') as fh:
+              json.dump(payload, fh, indent=2, ensure_ascii=False)
+          print(json.dumps(payload, indent=2, ensure_ascii=False))
+          PY
+
+          git config user.name 'reaction-lab-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add .github/last-render-diagnostic.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Record Reaction Lab replay diagnostic"
+          git pull --rebase origin main
+          git push origin HEAD:main
