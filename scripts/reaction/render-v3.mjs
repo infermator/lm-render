@@ -66,8 +66,14 @@ async function main() {
     "  await fs.copyFile(MUSETALK_WORKER, path.join(dir, 'musetalk_lipsync.py'));\n  await fs.writeFile(path.join(dir, 'job.json'), JSON.stringify({ video_url: videoUrl, audio_url: audioUrl, bbox_shift: 0 }, null, 2));",
     `  const embeddedJobB64 = Buffer.from(JSON.stringify({ video_url: videoUrl, audio_url: audioUrl, bbox_shift: 0 })).toString('base64');
   const workerDest = path.join(dir, 'musetalk_lipsync.py');
-  const workerSource = await fs.readFile(MUSETALK_WORKER, 'utf8');
-  const bootstrap = 'import base64,json\\nfrom pathlib import Path\\nPath(__file__).resolve().parent.joinpath("job.json").write_text(base64.b64decode("' + embeddedJobB64 + '").decode())\\n';
+  let workerSource = await fs.readFile(MUSETALK_WORKER, 'utf8');
+  const jobLoadNeedle = "    if not JOB_FILE.exists():\\n        raise RuntimeError(f'Missing {JOB_FILE}')\\n    job = json.loads(JOB_FILE.read_text())";
+  if (!workerSource.includes(jobLoadNeedle)) throw new Error('MuseTalk worker job-load patch target missing');
+  workerSource = workerSource.replace(
+    jobLoadNeedle,
+    "    job = globals().get('EMBEDDED_JOB')\\n    if job is None:\\n        if not JOB_FILE.exists():\\n            raise RuntimeError(f'Missing {JOB_FILE}')\\n        job = json.loads(JOB_FILE.read_text())",
+  );
+  const bootstrap = 'import base64,json\\nEMBEDDED_JOB = json.loads(base64.b64decode("' + embeddedJobB64 + '").decode())\\n';
   await fs.writeFile(workerDest, bootstrap + workerSource);
   await fs.writeFile(path.join(dir, 'job.json'), JSON.stringify({ video_url: videoUrl, audio_url: audioUrl, bbox_shift: 0 }, null, 2));`,
     'Embed Kaggle job payload',
