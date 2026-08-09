@@ -1,20 +1,15 @@
 name: Reaction Video Renderer
 
-# Poll MAM for one queued reaction job. The heavy media work stays on the free
-# public GitHub-hosted runner; the implementation itself remains private in
-# 21media-mam and is cloned at runtime.
-#
-# Manual runs can target one exact queued job. Scheduled runs simply claim the
-# oldest job. Concurrency prevents schedule/manual races from processing two
-# reaction jobs on the same runner at once.
+# MVP is intentionally manual until the MAM Supabase migration + first avatar
+# asset library are installed. This prevents an empty/unmigrated production
+# database from generating noisy scheduled failures. After the first end-to-end
+# render is approved, add a 5-minute schedule and leave the same claim logic.
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       job_id:
-        description: 'Optional exact reaction_jobs UUID (must be queued)'
+        description: 'Optional exact reaction_jobs UUID (blank = oldest queued)'
         required: false
         default: ''
 
