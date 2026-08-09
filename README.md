@@ -29,4 +29,4 @@ stay private.
 - `daily-fresh-clips.yml` — 04:00 UTC, generates N video clips
 - `daily-fresh-photo.yml` — 03:00 UTC, generates 1 photo slideshow
 - `render-clips.yml` — manual parallel backlog renderer
-- `reaction-render.yml` — every 5 min claims one queued Reaction Lab job from MAM; manual dispatch can target an exact job UUID
+- `reaction-render.yml` — manual MVP Reaction Lab renderer; accepts an exact job UUID or claims the oldest queued job. Enable scheduled polling after the first end-to-end render is approved.
