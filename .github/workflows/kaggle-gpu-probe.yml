@@ -48,8 +48,8 @@ jobs:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
         run: |
           set -euo pipefail
-          rm -rf /tmp/kaggle-gpu-probe /tmp/kaggle-gpu-output
-          mkdir -p /tmp/kaggle-gpu-probe /tmp/kaggle-gpu-output
+          rm -rf /tmp/kaggle-gpu-probe /tmp/kaggle-gpu-output /tmp/kaggle-gpu-pulled
+          mkdir -p /tmp/kaggle-gpu-probe /tmp/kaggle-gpu-output /tmp/kaggle-gpu-pulled
           cp kaggle/gpu_probe.py /tmp/kaggle-gpu-probe/gpu_probe.py
           cat > /tmp/kaggle-gpu-probe/kernel-metadata.json <<'JSON'
           {
@@ -70,10 +70,19 @@ jobs:
           }
           JSON
 
-          echo '=== metadata ==='
+          echo '=== metadata before push ==='
           cat /tmp/kaggle-gpu-probe/kernel-metadata.json
           echo '=== push ==='
           kaggle kernels push -p /tmp/kaggle-gpu-probe --accelerator NvidiaTeslaT4 --timeout 300 | tee /tmp/kaggle-gpu-push.txt
+
+          # Pull what Kaggle actually persisted server-side. This tells us whether
+          # the accelerator request was dropped before execution.
+          kaggle kernels pull nililu/reaction-gpu-probe -p /tmp/kaggle-gpu-pulled -m || true
+          if [ -f /tmp/kaggle-gpu-pulled/kernel-metadata.json ]; then
+            cp /tmp/kaggle-gpu-pulled/kernel-metadata.json .github/last-gpu-kernel-metadata.json
+          else
+            printf '{"metadata_pull_missing":true}\n' > .github/last-gpu-kernel-metadata.json
+          fi
 
           status=''
           for attempt in $(seq 1 40); do
@@ -106,6 +115,8 @@ jobs:
           PY
           fi
 
+          echo '=== persisted metadata ==='
+          cat .github/last-gpu-kernel-metadata.json
           echo '=== probe result ==='
           cat .github/last-gpu-probe.json
 
@@ -115,7 +126,7 @@ jobs:
           set -euo pipefail
           git config user.name 'reaction-lab-bot'
           git config user.email 'actions@users.noreply.github.com'
-          git add .github/last-gpu-probe.json .github/last-kaggle-quota.txt || true
+          git add .github/last-gpu-probe.json .github/last-kaggle-quota.txt .github/last-gpu-kernel-metadata.json || true
           if git diff --cached --quiet; then
             exit 0
           fi
