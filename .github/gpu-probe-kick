@@ -1,2 +1,2 @@
-probe 2026-08-09T21:24Z
-reason isolate Kaggle accelerator assignment before more TTS or MuseTalk retries
+probe 2026-08-09T21:29Z
+reason compare requested T4 metadata with Kaggle server-persisted metadata and runtime
