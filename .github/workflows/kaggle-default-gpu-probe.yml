@@ -1,0 +1,89 @@
+name: Kaggle Default GPU Probe
+
+on:
+  push:
+    paths:
+      - '.github/default-gpu-probe-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Kaggle CLI
+        run: python -m pip install -q 'kaggle>=2.2.3'
+
+      - name: Run default GPU probe
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          KERNEL='nililu/reaction-default-gpu-probe'
+          rm -rf /tmp/probe /tmp/out /tmp/pulled
+          mkdir -p /tmp/probe /tmp/out /tmp/pulled
+          cp kaggle/gpu_probe.py /tmp/probe/gpu_probe.py
+          cat > /tmp/probe/kernel-metadata.json <<'JSON'
+          {
+            "id": "nililu/reaction-default-gpu-probe",
+            "title": "reaction-default-gpu-probe",
+            "code_file": "gpu_probe.py",
+            "language": "python",
+            "kernel_type": "script",
+            "is_private": true,
+            "enable_gpu": true,
+            "enable_tpu": false,
+            "enable_internet": true,
+            "dataset_sources": [],
+            "kernel_sources": [],
+            "competition_sources": [],
+            "model_sources": []
+          }
+          JSON
+
+          # No explicit accelerator: test Kaggle's original enable_gpu=true path.
+          kaggle kernels push -p /tmp/probe --timeout 300
+          kaggle kernels pull "$KERNEL" -p /tmp/pulled -m || true
+          cp /tmp/pulled/kernel-metadata.json .github/last-default-gpu-metadata.json || true
+
+          for i in $(seq 1 45); do
+            STATUS="$(kaggle kernels status "$KERNEL" 2>&1 || true)"
+            echo "$STATUS"
+            case "$STATUS" in
+              *COMPLETE*|*SUCCESS*|*complete*|*success*) break ;;
+              *ERROR*|*FAILED*|*error*|*failed*) break ;;
+            esac
+            sleep 10
+          done
+
+          kaggle kernels logs "$KERNEL" > /tmp/logs.txt 2>&1 || true
+          kaggle kernels output "$KERNEL" -p /tmp/out -o || true
+          if [ -f /tmp/out/gpu-probe.json ]; then
+            cp /tmp/out/gpu-probe.json .github/last-default-gpu-probe.json
+          else
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          Path('.github/last-default-gpu-probe.json').write_text(json.dumps({
+            'output_missing': True,
+            'logs': Path('/tmp/logs.txt').read_text(errors='replace')[-12000:],
+          }, indent=2))
+          PY
+          fi
+
+      - name: Persist result
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/last-default-gpu-*.json || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record Kaggle default GPU probe'
+          git pull --rebase origin main
+          git push origin HEAD:main
