@@ -1,2 +1,2 @@
-probe 2026-08-09T21:29Z
-reason compare requested T4 metadata with Kaggle server-persisted metadata and runtime
+probe 2026-08-09T21:34Z
+reason pin gcr.io/kaggle-gpu-images/python with NvidiaTeslaT4 and verify runtime
