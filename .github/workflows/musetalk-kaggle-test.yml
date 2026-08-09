@@ -7,12 +7,23 @@ on:
         description: 'Public/direct URL to the reusable Kling/reaction MP4'
         required: true
         type: string
+      tts_text:
+        description: 'Text for the dude to say (preferred; MAM generates ElevenLabs audio)'
+        required: false
+        default: ''
+        type: string
       audio_url:
-        description: 'Public/direct URL to ElevenLabs speech audio'
-        required: true
+        description: 'Optional direct speech-audio URL instead of tts_text'
+        required: false
+        default: ''
+        type: string
+      voice_id:
+        description: 'ElevenLabs voice ID when tts_text is used'
+        required: false
+        default: 'Q0Et7LOU7VpeoeCRQAVS'
         type: string
       kaggle_username:
-        description: 'Kaggle username (can be left blank if KAGGLE_USERNAME secret exists)'
+        description: 'Kaggle username (can be blank if KAGGLE_USERNAME secret exists)'
         required: false
         default: ''
         type: string
@@ -35,8 +46,12 @@ jobs:
       KAGGLE_USERNAME_SECRET: ${{ secrets.KAGGLE_USERNAME }}
       INPUT_KAGGLE_USERNAME: ${{ inputs.kaggle_username }}
       VIDEO_URL: ${{ inputs.video_url }}
-      AUDIO_URL: ${{ inputs.audio_url }}
+      INPUT_AUDIO_URL: ${{ inputs.audio_url }}
+      TTS_TEXT: ${{ inputs.tts_text }}
+      VOICE_ID: ${{ inputs.voice_id }}
       BBOX_SHIFT: ${{ inputs.bbox_shift }}
+      BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+      MAM_BASE: 'https://21media-mam.vercel.app'
 
     steps:
       - name: Checkout renderer repo
@@ -60,6 +75,50 @@ jobs:
           echo "username=$USERNAME" >> "$GITHUB_OUTPUT"
           echo "kernel=$USERNAME/reaction-musetalk-lipsync" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve speech audio
+        id: speech
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_AUDIO_URL:-}" ]; then
+            echo "audio_url=$INPUT_AUDIO_URL" >> "$GITHUB_OUTPUT"
+            echo 'Using provided audio URL.'
+            exit 0
+          fi
+          if [ -z "${TTS_TEXT:-}" ]; then
+            echo 'Provide either tts_text or audio_url.' >&2
+            exit 1
+          fi
+          if [ -z "${BUFFER_PUSH_SECRET:-}" ]; then
+            echo 'Missing existing BUFFER_PUSH_SECRET required to call MAM TTS.' >&2
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json, os, urllib.request
+          body = json.dumps({
+              'text': os.environ['TTS_TEXT'],
+              'voice_id': os.environ.get('VOICE_ID') or 'Q0Et7LOU7VpeoeCRQAVS',
+          }).encode()
+          request = urllib.request.Request(
+              os.environ['MAM_BASE'].rstrip('/') + '/api/reaction/tts',
+              data=body,
+              method='POST',
+              headers={
+                  'Authorization': 'Bearer ' + os.environ['BUFFER_PUSH_SECRET'],
+                  'Content-Type': 'application/json',
+              },
+          )
+          with urllib.request.urlopen(request, timeout=90) as response:
+              payload = json.loads(response.read().decode())
+          audio_url = str(payload.get('audio_url') or '').strip()
+          if not audio_url:
+              raise SystemExit('MAM TTS returned no audio_url: ' + json.dumps(payload))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('audio_url=' + audio_url + '\n')
+          print('Generated/cached ElevenLabs audio through MAM.')
+          PY
+
       - name: Install Kaggle CLI
         run: |
           python -m pip install --upgrade pip
@@ -69,6 +128,7 @@ jobs:
       - name: Build private Kaggle GPU job
         env:
           KAGGLE_USERNAME: ${{ steps.identity.outputs.username }}
+          RESOLVED_AUDIO_URL: ${{ steps.speech.outputs.audio_url }}
         run: |
           set -euo pipefail
           rm -rf kaggle-job kaggle-output
@@ -80,7 +140,7 @@ jobs:
           folder = pathlib.Path('kaggle-job')
           folder.joinpath('job.json').write_text(json.dumps({
               'video_url': os.environ['VIDEO_URL'],
-              'audio_url': os.environ['AUDIO_URL'],
+              'audio_url': os.environ['RESOLVED_AUDIO_URL'],
               'bbox_shift': int(os.environ.get('BBOX_SHIFT') or 0),
           }, indent=2))
           folder.joinpath('kernel-metadata.json').write_text(json.dumps({
@@ -99,8 +159,7 @@ jobs:
           }, indent=2))
           PY
 
-          echo 'Prepared Kaggle job:'
-          cat kaggle-job/kernel-metadata.json
+          echo 'Prepared private Kaggle P100 job.'
 
       - name: Start Kaggle P100 run
         run: |
