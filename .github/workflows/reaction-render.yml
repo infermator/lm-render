@@ -1,9 +1,8 @@
-name: Reaction Video Renderer
+name: Reaction Video Lab
 
-# MVP is intentionally manual until the MAM Supabase migration + first avatar
-# asset library are installed. This prevents an empty/unmigrated production
-# database from generating noisy scheduled failures. After the first end-to-end
-# render is approved, add a 5-minute schedule and leave the same claim logic.
+# MVP stays manual until the first end-to-end render is approved. Default mode
+# is analysis-only so a source can be visually sampled, transcribed and sent to
+# the Reaction Director before any paid/reusable avatar asset library exists.
 
 on:
   workflow_dispatch:
@@ -12,13 +11,21 @@ on:
         description: 'Optional exact reaction_jobs UUID (blank = oldest queued)'
         required: false
         default: ''
+      mode:
+        description: 'Analyze source first, or render with uploaded avatar assets'
+        required: true
+        default: 'analyze'
+        type: choice
+        options:
+          - analyze
+          - render
 
 concurrency:
-  group: reaction-video-renderer
+  group: reaction-video-lab
   cancel-in-progress: false
 
 jobs:
-  render:
+  reaction:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -38,11 +45,17 @@ jobs:
           ffmpeg -version | head -1
           ffprobe -version | head -1
 
-      - name: Render one reaction job
+      - name: Analyze or render one reaction job
         env:
           JOB_ID: ${{ inputs.job_id }}
+          MODE: ${{ inputs.mode }}
           MAM_BASE: 'https://21media-mam.vercel.app'
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
-        run: node work/scripts/reaction/render.mjs
+        run: |
+          if [ "$MODE" = "render" ]; then
+            node work/scripts/reaction/render.mjs
+          else
+            node work/scripts/reaction/analyze.mjs
+          fi
