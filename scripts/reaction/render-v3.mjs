@@ -101,6 +101,13 @@ async function main() {
     'active HF lip-sync call',
   );
 
+  source = replaceOnce(
+    source,
+    "      filters.push('[0:a]aresample=48000[srca]');\n      filters.push('[srca][voice]sidechaincompress=threshold=0.02:ratio=8:attack=8:release=220[ducked]');\n      filters.push('[ducked][voice]amix=inputs=2:duration=longest:normalize=0[aout]');",
+    "      filters.push('[0:a]aresample=48000[srca]');\n      filters.push('[voice]asplit=2[voice_sc][voice_mix]');\n      filters.push('[srca][voice_sc]sidechaincompress=threshold=0.02:ratio=8:attack=8:release=220[ducked]');\n      filters.push('[ducked][voice_mix]amix=inputs=2:duration=longest:normalize=0[aout]');",
+    'voice filter fanout',
+  );
+
   source = source
     .replaceAll("lipsync_provider: comments.length ? 'musetalk_kaggle' : null", "lipsync_provider: comments.length ? 'huggingface_public_musetalk' : null")
     .replaceAll('reaction-v2-', 'reaction-v3-')
