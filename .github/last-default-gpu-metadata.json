@@ -1,0 +1,19 @@
+{
+  "id": "nililu/reaction-default-gpu-probe",
+  "id_no": 130255890,
+  "title": "reaction-default-gpu-probe",
+  "code_file": "reaction-default-gpu-probe.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [],
+  "dataset_sources": [],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": [],
+  "docker_image": "",
+  "machine_shape": "Gpu"
+}
