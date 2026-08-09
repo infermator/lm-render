@@ -14,7 +14,7 @@ on:
       - '.github/render-kick'
 
 concurrency:
-  group: reaction-video-lab
+  group: reaction-video-lab-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
