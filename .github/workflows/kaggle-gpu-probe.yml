@@ -1,0 +1,124 @@
+name: Kaggle GPU Probe
+
+on:
+  push:
+    paths:
+      - '.github/gpu-probe-kick'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kaggle-gpu-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install latest Kaggle CLI
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'kaggle>=2.2.3'
+          kaggle --version
+
+      - name: Capture accelerator quota
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set +e
+          {
+            echo '=== kaggle quota --help ==='
+            kaggle quota --help 2>&1
+            echo
+            echo '=== kaggle quota ==='
+            kaggle quota 2>&1
+          } | tee .github/last-kaggle-quota.txt
+          exit 0
+
+      - name: Push T4 probe kernel
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/kaggle-gpu-probe /tmp/kaggle-gpu-output
+          mkdir -p /tmp/kaggle-gpu-probe /tmp/kaggle-gpu-output
+          cp kaggle/gpu_probe.py /tmp/kaggle-gpu-probe/gpu_probe.py
+          cat > /tmp/kaggle-gpu-probe/kernel-metadata.json <<'JSON'
+          {
+            "id": "nililu/reaction-gpu-probe",
+            "title": "reaction-gpu-probe",
+            "code_file": "gpu_probe.py",
+            "language": "python",
+            "kernel_type": "script",
+            "is_private": true,
+            "enable_gpu": true,
+            "enable_tpu": false,
+            "enable_internet": true,
+            "machine_shape": "NvidiaTeslaT4",
+            "dataset_sources": [],
+            "kernel_sources": [],
+            "competition_sources": [],
+            "model_sources": []
+          }
+          JSON
+
+          echo '=== metadata ==='
+          cat /tmp/kaggle-gpu-probe/kernel-metadata.json
+          echo '=== push ==='
+          kaggle kernels push -p /tmp/kaggle-gpu-probe --accelerator NvidiaTeslaT4 --timeout 300 | tee /tmp/kaggle-gpu-push.txt
+
+          status=''
+          for attempt in $(seq 1 40); do
+            status="$(kaggle kernels status nililu/reaction-gpu-probe 2>&1 || true)"
+            echo "[$attempt/40] $status"
+            case "$status" in
+              *COMPLETE*|*SUCCESS*|*complete*|*success*) break ;;
+              *ERROR*|*FAILED*|*error*|*failed*) break ;;
+            esac
+            sleep 10
+          done
+
+          echo "$status" > /tmp/kaggle-gpu-status.txt
+          kaggle kernels logs nililu/reaction-gpu-probe > /tmp/kaggle-gpu-logs.txt 2>&1 || true
+          kaggle kernels output nililu/reaction-gpu-probe -p /tmp/kaggle-gpu-output -o || true
+
+          if [ -f /tmp/kaggle-gpu-output/gpu-probe.json ]; then
+            cp /tmp/kaggle-gpu-output/gpu-probe.json .github/last-gpu-probe.json
+          else
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = {
+              'status': Path('/tmp/kaggle-gpu-status.txt').read_text(errors='replace') if Path('/tmp/kaggle-gpu-status.txt').exists() else 'unknown',
+              'push': Path('/tmp/kaggle-gpu-push.txt').read_text(errors='replace')[-5000:] if Path('/tmp/kaggle-gpu-push.txt').exists() else '',
+              'logs': Path('/tmp/kaggle-gpu-logs.txt').read_text(errors='replace')[-12000:] if Path('/tmp/kaggle-gpu-logs.txt').exists() else '',
+              'output_missing': True,
+          }
+          Path('.github/last-gpu-probe.json').write_text(json.dumps(payload, indent=2))
+          PY
+          fi
+
+          echo '=== probe result ==='
+          cat .github/last-gpu-probe.json
+
+      - name: Persist probe diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name 'reaction-lab-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add .github/last-gpu-probe.json .github/last-kaggle-quota.txt || true
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Record Kaggle GPU probe diagnostic'
+          git pull --rebase origin main
+          git push origin HEAD:main
