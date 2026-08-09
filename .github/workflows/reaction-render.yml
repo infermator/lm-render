@@ -1,0 +1,53 @@
+name: Reaction Video Renderer
+
+# Poll MAM for one queued reaction job. The heavy media work stays on the free
+# public GitHub-hosted runner; the implementation itself remains private in
+# 21media-mam and is cloned at runtime.
+#
+# Manual runs can target one exact queued job. Scheduled runs simply claim the
+# oldest job. Concurrency prevents schedule/manual races from processing two
+# reaction jobs on the same runner at once.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Optional exact reaction_jobs UUID (must be queued)'
+        required: false
+        default: ''
+
+concurrency:
+  group: reaction-video-renderer
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Clone private MAM worker
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository_owner }}/21media-mam.git" work
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      - name: Render one reaction job
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          MAM_BASE: 'https://21media-mam.vercel.app'
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: node work/scripts/reaction/render.mjs
