@@ -1,0 +1,17 @@
+{
+  "python": "3.12.13",
+  "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+  "env": {
+    "CUDA_VISIBLE_DEVICES": null,
+    "NVIDIA_VISIBLE_DEVICES": null,
+    "KAGGLE_KERNEL_RUN_TYPE": "Batch"
+  },
+  "dev_nvidia": [],
+  "nvidia_smi_path": null,
+  "torch": {
+    "version": "2.10.0+cpu",
+    "cuda_version": null,
+    "cuda_available": false,
+    "device_count": 0
+  }
+}
