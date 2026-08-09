@@ -137,9 +137,18 @@ jobs:
           KERNEL: ${{ steps.identity.outputs.kernel }}
         run: |
           set -euo pipefail
-          kaggle kernels output "$KERNEL" -p kaggle-output -o --file-pattern '.*lipsync-result\\.(mp4|json)$'
-          find kaggle-output -maxdepth 3 -type f -print
-          test -f kaggle-output/lipsync-result.mp4
+          kaggle kernels output "$KERNEL" -p kaggle-output -o --file-pattern '.*lipsync-result\.(mp4|json)$'
+          find kaggle-output -maxdepth 4 -type f -print
+
+          result="$(find kaggle-output -type f -name 'lipsync-result.mp4' | head -1)"
+          metadata="$(find kaggle-output -type f -name 'lipsync-result.json' | head -1)"
+          test -n "$result"
+          if [ "$result" != 'kaggle-output/lipsync-result.mp4' ]; then
+            cp "$result" kaggle-output/lipsync-result.mp4
+          fi
+          if [ -n "$metadata" ] && [ "$metadata" != 'kaggle-output/lipsync-result.json' ]; then
+            cp "$metadata" kaggle-output/lipsync-result.json
+          fi
 
       - name: Upload result artifact
         uses: actions/upload-artifact@v4
