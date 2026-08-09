@@ -35,26 +35,24 @@ jobs:
         run: |
           set +e
           {
-            echo '=== kaggle quota --help ==='
-            kaggle quota --help 2>&1
-            echo
             echo '=== kaggle quota ==='
             kaggle quota 2>&1
           } | tee .github/last-kaggle-quota.txt
           exit 0
 
-      - name: Push T4 probe kernel
+      - name: Push fresh T4 probe kernel
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
         run: |
           set -euo pipefail
+          KERNEL='nililu/reaction-gpu-probe-v170'
           rm -rf /tmp/kaggle-gpu-probe /tmp/kaggle-gpu-output /tmp/kaggle-gpu-pulled
           mkdir -p /tmp/kaggle-gpu-probe /tmp/kaggle-gpu-output /tmp/kaggle-gpu-pulled
           cp kaggle/gpu_probe.py /tmp/kaggle-gpu-probe/gpu_probe.py
           cat > /tmp/kaggle-gpu-probe/kernel-metadata.json <<'JSON'
           {
-            "id": "nililu/reaction-gpu-probe",
-            "title": "reaction-gpu-probe",
+            "id": "nililu/reaction-gpu-probe-v170",
+            "title": "reaction-gpu-probe-v170",
             "code_file": "gpu_probe.py",
             "language": "python",
             "kernel_type": "script",
@@ -63,8 +61,8 @@ jobs:
             "enable_tpu": false,
             "enable_internet": true,
             "machine_shape": "NvidiaTeslaT4",
-            "docker_image": "gcr.io/kaggle-gpu-images/python",
-            "docker_image_pinning_type": "latest",
+            "docker_image": "gcr.io/kaggle-private-byod/python:v170",
+            "docker_image_pinning_type": "original",
             "dataset_sources": [],
             "kernel_sources": [],
             "competition_sources": [],
@@ -82,7 +80,7 @@ jobs:
           cat /tmp/kaggle-gpu-push.txt
           echo "push_rc=$PUSH_RC"
 
-          kaggle kernels pull nililu/reaction-gpu-probe -p /tmp/kaggle-gpu-pulled -m || true
+          kaggle kernels pull "$KERNEL" -p /tmp/kaggle-gpu-pulled -m || true
           if [ -f /tmp/kaggle-gpu-pulled/kernel-metadata.json ]; then
             cp /tmp/kaggle-gpu-pulled/kernel-metadata.json .github/last-gpu-kernel-metadata.json
           else
@@ -100,20 +98,18 @@ jobs:
           PY
           else
             status=''
-            for attempt in $(seq 1 40); do
-              status="$(kaggle kernels status nililu/reaction-gpu-probe 2>&1 || true)"
-              echo "[$attempt/40] $status"
+            for attempt in $(seq 1 50); do
+              status="$(kaggle kernels status "$KERNEL" 2>&1 || true)"
+              echo "[$attempt/50] $status"
               case "$status" in
                 *COMPLETE*|*SUCCESS*|*complete*|*success*) break ;;
                 *ERROR*|*FAILED*|*error*|*failed*) break ;;
               esac
               sleep 10
             done
-
             echo "$status" > /tmp/kaggle-gpu-status.txt
-            kaggle kernels logs nililu/reaction-gpu-probe > /tmp/kaggle-gpu-logs.txt 2>&1 || true
-            kaggle kernels output nililu/reaction-gpu-probe -p /tmp/kaggle-gpu-output -o || true
-
+            kaggle kernels logs "$KERNEL" > /tmp/kaggle-gpu-logs.txt 2>&1 || true
+            kaggle kernels output "$KERNEL" -p /tmp/kaggle-gpu-output -o || true
             if [ -f /tmp/kaggle-gpu-output/gpu-probe.json ]; then
               cp /tmp/kaggle-gpu-output/gpu-probe.json .github/last-gpu-probe.json
             else
