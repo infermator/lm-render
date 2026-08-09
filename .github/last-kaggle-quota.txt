@@ -1,13 +1,3 @@
-=== kaggle quota --help ===
-usage: kaggle quota [-h] [-v | --format OUTPUT_FORMAT]
-
-options:
-  -h, --help            show this help message and exit
-  -v, --csv             Print results in CSV format (if not set print in table format)
-  --format OUTPUT_FORMAT
-                        Print results in selected format (csv, table, json). For details on advanced options, see
-                        https://github.com/Kaggle/kaggle-cli/blob/main/docs/output_format.md
-
 === kaggle quota ===
 resource  used   remaining  total   refreshAt            
 --------  -----  ---------  ------  -------------------  
