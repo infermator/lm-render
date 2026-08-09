@@ -1,0 +1,698 @@
+{
+  "trymonolith/MuseTalk": {
+    "ok": true,
+    "api": {
+      "named_endpoints": {
+        "/generate_lipsync_video": {
+          "parameters": [
+            {
+              "label": "Upload Audio",
+              "parameter_name": "audio_file",
+              "parameter_has_default": false,
+              "parameter_default": null,
+              "type": {
+                "$defs": {
+                  "FileDataMeta": {
+                    "properties": {
+                      "_type": {
+                        "const": "gradio.FileData",
+                        "title": "Type",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "_type"
+                    ],
+                    "title": "FileDataMeta",
+                    "type": "object"
+                  }
+                },
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "url": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Url"
+                  },
+                  "size": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Size"
+                  },
+                  "orig_name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Orig Name"
+                  },
+                  "mime_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Mime Type"
+                  },
+                  "is_stream": {
+                    "default": false,
+                    "title": "Is Stream",
+                    "type": "boolean"
+                  },
+                  "meta": {
+                    "$ref": "#/$defs/FileDataMeta"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "title": "FileData",
+                "type": "object",
+                "additional_description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "python_type": {
+                "type": "filepath",
+                "description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "component": "Audio",
+              "example_input": {
+                "path": "https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav",
+                "meta": {
+                  "_type": "gradio.FileData"
+                },
+                "orig_name": "audio_sample.wav",
+                "url": "https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav"
+              }
+            },
+            {
+              "label": "Upload Video or Image",
+              "parameter_name": "video_file",
+              "parameter_has_default": false,
+              "parameter_default": null,
+              "type": {
+                "$defs": {
+                  "FileDataMeta": {
+                    "properties": {
+                      "_type": {
+                        "const": "gradio.FileData",
+                        "title": "Type",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "_type"
+                    ],
+                    "title": "FileDataMeta",
+                    "type": "object"
+                  }
+                },
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "url": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Url"
+                  },
+                  "size": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Size"
+                  },
+                  "orig_name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Orig Name"
+                  },
+                  "mime_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Mime Type"
+                  },
+                  "is_stream": {
+                    "default": false,
+                    "title": "Is Stream",
+                    "type": "boolean"
+                  },
+                  "meta": {
+                    "$ref": "#/$defs/FileDataMeta"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "title": "FileData",
+                "type": "object",
+                "additional_description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "python_type": {
+                "type": "filepath",
+                "description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "component": "File",
+              "example_input": {
+                "path": "https://github.com/gradio-app/gradio/raw/main/test/test_files/sample_file.pdf",
+                "meta": {
+                  "_type": "gradio.FileData"
+                },
+                "orig_name": "sample_file.pdf",
+                "url": "https://github.com/gradio-app/gradio/raw/main/test/test_files/sample_file.pdf"
+              }
+            },
+            {
+              "label": "FPS (Frames Per Second)",
+              "parameter_name": "fps",
+              "parameter_has_default": true,
+              "parameter_default": 25,
+              "type": {
+                "type": "number",
+                "description": "numeric value between 20 and 60"
+              },
+              "python_type": {
+                "type": "float",
+                "description": ""
+              },
+              "component": "Slider",
+              "example_input": 20
+            },
+            {
+              "label": "Quality",
+              "parameter_name": "quality",
+              "parameter_has_default": true,
+              "parameter_default": "Medium",
+              "type": {
+                "enum": [
+                  "Low",
+                  "Medium",
+                  "High"
+                ],
+                "title": "Radio",
+                "type": "string"
+              },
+              "python_type": {
+                "type": "Literal['Low', 'Medium', 'High']",
+                "description": ""
+              },
+              "component": "Radio",
+              "example_input": "Low"
+            }
+          ],
+          "returns": [
+            {
+              "label": "Generated Video",
+              "type": {
+                "$defs": {
+                  "FileDataMeta": {
+                    "properties": {
+                      "_type": {
+                        "const": "gradio.FileData",
+                        "title": "Type",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "_type"
+                    ],
+                    "title": "FileDataMeta",
+                    "type": "object"
+                  }
+                },
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "url": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Url"
+                  },
+                  "size": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Size"
+                  },
+                  "orig_name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Orig Name"
+                  },
+                  "mime_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Mime Type"
+                  },
+                  "is_stream": {
+                    "default": false,
+                    "title": "Is Stream",
+                    "type": "boolean"
+                  },
+                  "meta": {
+                    "$ref": "#/$defs/FileDataMeta"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "title": "FileData",
+                "type": "object",
+                "additional_description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "python_type": {
+                "type": "filepath",
+                "description": ""
+              },
+              "component": "Video"
+            },
+            {
+              "label": "Status",
+              "type": {
+                "type": "string"
+              },
+              "python_type": {
+                "type": "str",
+                "description": ""
+              },
+              "component": "Textbox"
+            }
+          ],
+          "description": "Generate lip-synced video using MuseTalk inference."
+        }
+      },
+      "unnamed_endpoints": {}
+    },
+    "log": "Client.predict() Usage Info\n---------------------------\nNamed API endpoints: 1\n\n - predict(audio_file, video_file, fps, quality, api_name=\"/generate_lipsync_video\") -> (generated_video, status)\n    Parameters:\n     - [Audio] audio_file: filepath (required)  (The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed).) \n     - [File] video_file: filepath (required)  (The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed).) \n     - [Slider] fps: float (not required, defaults to:   25)  \n     - [Radio] quality: Literal['Low', 'Medium', 'High'] (not required, defaults to:   Medium)  \n    Returns:\n     - [Video] generated_video: filepath \n     - [Textbox] status: str \n\n"
+  },
+  "banao-tech/musetalk-avatar": {
+    "ok": true,
+    "api": {
+      "named_endpoints": {},
+      "unnamed_endpoints": {}
+    },
+    "log": "Client.predict() Usage Info\n---------------------------\nNamed API endpoints: 0\n\nUnnamed API endpoints: 0\n\n"
+  },
+  "fffiloni/LatentSync": {
+    "ok": true,
+    "api": {
+      "named_endpoints": {
+        "/generate_lip_sync_video": {
+          "parameters": [
+            {
+              "label": "Video Control",
+              "parameter_name": "input_video_path",
+              "parameter_has_default": false,
+              "parameter_default": null,
+              "type": {
+                "$defs": {
+                  "FileDataMeta": {
+                    "properties": {
+                      "_type": {
+                        "const": "gradio.FileData",
+                        "title": "Type",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "_type"
+                    ],
+                    "title": "FileDataMeta",
+                    "type": "object"
+                  }
+                },
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "url": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Url"
+                  },
+                  "size": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Size"
+                  },
+                  "orig_name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Orig Name"
+                  },
+                  "mime_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Mime Type"
+                  },
+                  "is_stream": {
+                    "default": false,
+                    "title": "Is Stream",
+                    "type": "boolean"
+                  },
+                  "meta": {
+                    "$ref": "#/$defs/FileDataMeta"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "title": "FileData",
+                "type": "object",
+                "additional_description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "python_type": {
+                "type": "filepath",
+                "description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "component": "Video",
+              "example_input": {
+                "path": "https://github.com/gradio-app/gradio/raw/main/gradio/media_assets/videos/world.mp4",
+                "meta": {
+                  "_type": "gradio.FileData"
+                },
+                "orig_name": "world.mp4",
+                "url": "https://github.com/gradio-app/gradio/raw/main/gradio/media_assets/videos/world.mp4"
+              }
+            },
+            {
+              "label": "Audio Input",
+              "parameter_name": "input_audio_path",
+              "parameter_has_default": false,
+              "parameter_default": null,
+              "type": {
+                "$defs": {
+                  "FileDataMeta": {
+                    "properties": {
+                      "_type": {
+                        "const": "gradio.FileData",
+                        "title": "Type",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "_type"
+                    ],
+                    "title": "FileDataMeta",
+                    "type": "object"
+                  }
+                },
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "url": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Url"
+                  },
+                  "size": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Size"
+                  },
+                  "orig_name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Orig Name"
+                  },
+                  "mime_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Mime Type"
+                  },
+                  "is_stream": {
+                    "default": false,
+                    "title": "Is Stream",
+                    "type": "boolean"
+                  },
+                  "meta": {
+                    "$ref": "#/$defs/FileDataMeta"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "title": "FileData",
+                "type": "object",
+                "additional_description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "python_type": {
+                "type": "filepath",
+                "description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "component": "Audio",
+              "example_input": {
+                "path": "https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav",
+                "meta": {
+                  "_type": "gradio.FileData"
+                },
+                "orig_name": "audio_sample.wav",
+                "url": "https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav"
+              }
+            }
+          ],
+          "returns": [
+            {
+              "label": "Result",
+              "type": {
+                "$defs": {
+                  "FileDataMeta": {
+                    "properties": {
+                      "_type": {
+                        "const": "gradio.FileData",
+                        "title": "Type",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "_type"
+                    ],
+                    "title": "FileDataMeta",
+                    "type": "object"
+                  }
+                },
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "url": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Url"
+                  },
+                  "size": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Size"
+                  },
+                  "orig_name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Orig Name"
+                  },
+                  "mime_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Mime Type"
+                  },
+                  "is_stream": {
+                    "default": false,
+                    "title": "Is Stream",
+                    "type": "boolean"
+                  },
+                  "meta": {
+                    "$ref": "#/$defs/FileDataMeta"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "title": "FileData",
+                "type": "object",
+                "additional_description": "The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed)."
+              },
+              "python_type": {
+                "type": "filepath",
+                "description": ""
+              },
+              "component": "Video"
+            }
+          ],
+          "description": "Generate a lip-synced video from an input video and a separate audio track. Use this tool when you need to synchronize a visible speaker's mouth movement to match a provided audio file."
+        }
+      },
+      "unnamed_endpoints": {}
+    },
+    "log": "Client.predict() Usage Info\n---------------------------\nNamed API endpoints: 1\n\n - predict(input_video_path, input_audio_path, api_name=\"/generate_lip_sync_video\") -> result\n    Parameters:\n     - [Video] input_video_path: filepath (required)  (The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed).) \n     - [Audio] input_audio_path: filepath (required)  (The FileData class is a subclass of the GradioModel class that represents a file object within a Gradio interface. It is used to store file data and metadata when a file is uploaded.\n\nAttributes:\n    path: The server file path where the file is stored.\n    url: The normalized server URL pointing to the file.\n    size: The size of the file in bytes.\n    orig_name: The original filename before upload.\n    mime_type: The MIME type of the file.\n    is_stream: Indicates whether the file is a stream.\n    meta: Additional metadata used internally (should not be changed).) \n    Returns:\n     - [Video] result: filepath \n\n"
+  }
+}
