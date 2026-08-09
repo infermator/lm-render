@@ -17,6 +17,9 @@ on:
           - analyze
   schedule:
     - cron: '*/5 * * * *'
+  push:
+    paths:
+      - '.github/render-kick'
 
 concurrency:
   group: reaction-video-lab
@@ -63,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           MODE="${INPUT_MODE:-render}"
-          if [ "$EVENT_NAME" = "schedule" ]; then
+          if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "push" ]; then
             MODE="render"
           fi
 
