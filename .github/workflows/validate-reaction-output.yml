@@ -1,0 +1,107 @@
+name: Validate Reaction Output
+
+on:
+  push:
+    paths:
+      - '.github/validate-output-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Download and validate latest completed render
+        run: |
+          set -euo pipefail
+          python - <<'PY' > /tmp/result_url.txt
+          import json
+          from pathlib import Path
+          data = json.loads(Path('.github/last-render-diagnostic.json').read_text())
+          if data.get('status') != 'completed' or not data.get('result_url'):
+              raise SystemExit('Latest diagnostic is not a completed render')
+          print(data['result_url'])
+          PY
+          URL="$(cat /tmp/result_url.txt)"
+          curl --fail --location --retry 3 --output /tmp/final.mp4 "$URL"
+          test -s /tmp/final.mp4
+
+          ffprobe -v error -show_streams -show_format -of json /tmp/final.mp4 > /tmp/ffprobe.json
+
+          # Decode representative frames. If any fail, ffmpeg exits non-zero.
+          for T in 1 5 20 43 52; do
+            ffmpeg -v error -ss "$T" -i /tmp/final.mp4 -frames:v 1 -f null -
+          done
+
+          # Measure representative-frame luminance; useful guard against a blank/black composite.
+          for T in 1 5 20 43 52; do
+            ffmpeg -hide_banner -ss "$T" -i /tmp/final.mp4 -frames:v 1 -vf signalstats -f null - 2>> /tmp/signalstats.log || exit 1
+          done
+
+          python - <<'PY'
+          import hashlib, json, re
+          from pathlib import Path
+          probe = json.loads(Path('/tmp/ffprobe.json').read_text())
+          streams = probe.get('streams', [])
+          video = next((s for s in streams if s.get('codec_type') == 'video'), None)
+          audio = next((s for s in streams if s.get('codec_type') == 'audio'), None)
+          fmt = probe.get('format', {})
+          raw = Path('/tmp/final.mp4').read_bytes()
+          duration = float(fmt.get('duration') or 0)
+          result = {
+              'ok': bool(video and audio),
+              'size_bytes': len(raw),
+              'sha256': hashlib.sha256(raw).hexdigest(),
+              'duration_s': duration,
+              'video': {
+                  'codec': video.get('codec_name') if video else None,
+                  'width': video.get('width') if video else None,
+                  'height': video.get('height') if video else None,
+                  'pix_fmt': video.get('pix_fmt') if video else None,
+                  'avg_frame_rate': video.get('avg_frame_rate') if video else None,
+              },
+              'audio': {
+                  'codec': audio.get('codec_name') if audio else None,
+                  'sample_rate': audio.get('sample_rate') if audio else None,
+                  'channels': audio.get('channels') if audio else None,
+              },
+              'representative_frames_decoded': [1, 5, 20, 43, 52],
+          }
+          checks = {
+              'video_present': video is not None,
+              'audio_present': audio is not None,
+              'vertical_1080x1920': bool(video and video.get('width') == 1080 and video.get('height') == 1920),
+              'h264_video': bool(video and video.get('codec_name') == 'h264'),
+              'aac_audio': bool(audio and audio.get('codec_name') == 'aac'),
+              'duration_expected': 52 <= duration <= 55,
+              'nontrivial_size': len(raw) > 1_000_000,
+          }
+          result['checks'] = checks
+          result['ok'] = all(checks.values())
+          Path('.github/last-output-validation.json').write_text(json.dumps(result, indent=2))
+          print(json.dumps(result, indent=2))
+          if not result['ok']:
+              raise SystemExit('Final MP4 validation failed')
+          PY
+
+      - name: Persist validation
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/last-output-validation.json || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record final Reaction Lab MP4 validation'
+          git pull --rebase origin main
+          git push origin HEAD:main
