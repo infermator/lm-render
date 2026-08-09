@@ -39,13 +39,29 @@ jobs:
           ffprobe -version | head -1
           kaggle --version
 
-      - name: Render one queued Reaction Lab job
+      - name: Render queued Reaction Lab jobs
         env:
           JOB_ID: ${{ inputs.job_id }}
+          EVENT_NAME: ${{ github.event_name }}
           MAM_BASE: 'https://21media-mam.vercel.app'
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           MUSETALK_KAGGLE_WORKER: ${{ github.workspace }}/kaggle/musetalk_lipsync.py
-        run: node scripts/reaction/render-v2.mjs
+        run: |
+          set -euo pipefail
+
+          # An explicit workflow_dispatch with a job UUID should render exactly that job once.
+          if [ -n "${JOB_ID:-}" ]; then
+            node scripts/reaction/render-v2.mjs
+            exit $?
+          fi
+
+          # Scheduled/push workers stay warm for ~5 minutes and poll every 10s.
+          # This removes most of the dead time between a MAM click and the next GitHub cron tick.
+          for attempt in $(seq 1 30); do
+            echo "[reaction-worker] queue poll ${attempt}/30"
+            node scripts/reaction/render-v2.mjs
+            sleep 10
+          done
