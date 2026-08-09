@@ -43,8 +43,8 @@ async function main() {
   source = replaceOnce(
     source,
     "const MUSETALK_WORKER = (process.env.MUSETALK_KAGGLE_WORKER || '').trim();",
-    "const MUSETALK_WORKER = (process.env.MUSETALK_KAGGLE_WORKER || '').trim();\nconst KAGGLE_USERNAME_ENV = (process.env.KAGGLE_USERNAME || '').trim();",
-    'Kaggle username env',
+    "const MUSETALK_WORKER = (process.env.MUSETALK_KAGGLE_WORKER || '').trim();\nconst HF_MUSETALK_WORKER = (process.env.HF_MUSETALK_WORKER || '').trim();\nconst KAGGLE_USERNAME_ENV = (process.env.KAGGLE_USERNAME || '').trim();",
+    'lip-sync worker env',
   );
   source = replaceOnce(
     source,
@@ -53,6 +53,9 @@ async function main() {
     'Kaggle username selection',
   );
 
+  // Keep the hardened Kaggle path in the runtime as a diagnostic fallback, but
+  // the active smoke-test provider below is the public HF MuseTalk endpoint that
+  // has already succeeded with our real Neutral A asset.
   source = replaceOnce(
     source,
     "  await fs.copyFile(MUSETALK_WORKER, path.join(dir, 'musetalk_lipsync.py'));\n  await fs.writeFile(path.join(dir, 'job.json'), JSON.stringify({ video_url: videoUrl, audio_url: audioUrl, bbox_shift: 0 }, null, 2));",
@@ -77,12 +80,12 @@ async function main() {
     'Embed Kaggle job payload',
   );
 
-  const diagnosticHelper = `\nasync function collectKaggleFailure(kernel, outDir, status) {\n  const diagnostics = [];\n  try {\n    const logs = await run('kaggle', ['kernels', 'logs', kernel]);\n    const text = String(logs.stdout || logs.stderr || '').trim();\n    if (text) diagnostics.push('KAGGLE LOG TAIL:\\n' + text.slice(-9000));\n  } catch (error) { diagnostics.push('kaggle kernels logs failed: ' + (error instanceof Error ? error.message : String(error))); }\n  try { await run('kaggle', ['kernels', 'output', kernel, '-p', outDir, '-o']); }\n  catch (error) { diagnostics.push('kaggle kernels output failed: ' + (error instanceof Error ? error.message : String(error))); }\n  try { const errorFile = await findFile(outDir, 'musetalk-error.log'); if (errorFile) diagnostics.push('MUSETALK TRACEBACK:\\n' + (await fs.readFile(errorFile, 'utf8')).slice(-12000)); } catch {}\n  try { const stageFile = await findFile(outDir, 'musetalk-stage.json'); if (stageFile) diagnostics.push('MUSETALK STAGE: ' + (await fs.readFile(stageFile, 'utf8')).slice(-2000)); } catch {}\n  return 'Kaggle status: ' + status.slice(-1500) + (diagnostics.length ? '\\n\\n' + diagnostics.join('\\n\\n') : '');\n}\n\n`;
+  const providerHelpers = `\nasync function hfMuseTalkLipSync({ jobId, index, videoUrl, audioUrl }) {\n  if (!HF_MUSETALK_WORKER) throw new Error('HF_MUSETALK_WORKER missing');\n  try { await fs.access(HF_MUSETALK_WORKER); } catch { throw new Error('HF MuseTalk worker not found: ' + HF_MUSETALK_WORKER); }\n  const local = path.join(workDir, 'lipsync-hf-' + index + '.mp4');\n  const result = await run('python', [HF_MUSETALK_WORKER, '--video-url', videoUrl, '--audio-url', audioUrl, '--output', local, '--space', 'trymonolith/MuseTalk', '--quality', 'Medium', '--fps', '25']);\n  log('HF MuseTalk:', String(result.stdout || '').trim().slice(-1500));\n  const stat = await fs.stat(local).catch(() => null);\n  if (!stat || stat.size < 1024) throw new Error('HF MuseTalk returned no usable MP4');\n  return { local, provider: 'huggingface_public_musetalk', space: 'trymonolith/MuseTalk', bytes: stat.size };\n}\n\nasync function collectKaggleFailure(kernel, outDir, status) {\n  const diagnostics = [];\n  try {\n    const logs = await run('kaggle', ['kernels', 'logs', kernel]);\n    const text = String(logs.stdout || logs.stderr || '').trim();\n    if (text) diagnostics.push('KAGGLE LOG TAIL:\\n' + text.slice(-9000));\n  } catch (error) { diagnostics.push('kaggle kernels logs failed: ' + (error instanceof Error ? error.message : String(error))); }\n  try { await run('kaggle', ['kernels', 'output', kernel, '-p', outDir, '-o']); }\n  catch (error) { diagnostics.push('kaggle kernels output failed: ' + (error instanceof Error ? error.message : String(error))); }\n  try { const errorFile = await findFile(outDir, 'musetalk-error.log'); if (errorFile) diagnostics.push('MUSETALK TRACEBACK:\\n' + (await fs.readFile(errorFile, 'utf8')).slice(-12000)); } catch {}\n  try { const stageFile = await findFile(outDir, 'musetalk-stage.json'); if (stageFile) diagnostics.push('MUSETALK STAGE: ' + (await fs.readFile(stageFile, 'utf8')).slice(-2000)); } catch {}\n  return 'Kaggle status: ' + status.slice(-1500) + (diagnostics.length ? '\\n\\n' + diagnostics.join('\\n\\n') : '');\n}\n\n`;
   source = replaceOnce(
     source,
     'async function kaggleLipSync({ jobId, index, videoUrl, audioUrl, kaggleUsername }) {',
-    diagnosticHelper + 'async function kaggleLipSync({ jobId, index, videoUrl, audioUrl, kaggleUsername }) {',
-    'Kaggle diagnostics helper',
+    providerHelpers + 'async function kaggleLipSync({ jobId, index, videoUrl, audioUrl, kaggleUsername }) {',
+    'lip-sync provider helpers',
   );
   source = replaceOnce(
     source,
@@ -91,7 +94,15 @@ async function main() {
     'Kaggle failed status handling',
   );
 
+  source = replaceOnce(
+    source,
+    "      await progress(jobId, 'lipsync_kaggle_running', { lipsync_provider: 'musetalk_kaggle' });\n      const synced = await kaggleLipSync({ jobId, index: comments.length, videoUrl: asset.video_url, audioUrl: tts.audioUrl, kaggleUsername });",
+    "      await progress(jobId, 'lipsync_hf_running', { lipsync_provider: 'huggingface_public_musetalk', lipsync_space: 'trymonolith/MuseTalk' });\n      const synced = await hfMuseTalkLipSync({ jobId, index: comments.length, videoUrl: asset.video_url, audioUrl: tts.audioUrl });",
+    'active HF lip-sync call',
+  );
+
   source = source
+    .replaceAll("lipsync_provider: comments.length ? 'musetalk_kaggle' : null", "lipsync_provider: comments.length ? 'huggingface_public_musetalk' : null")
     .replaceAll('reaction-v2-', 'reaction-v3-')
     .replaceAll('[reaction-render-v2]', '[reaction-render-v3]')
     .replaceAll('lm-render/github-actions-v2', 'lm-render/github-actions-v3');
