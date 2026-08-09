@@ -61,6 +61,18 @@ async function main() {
     'Kaggle username selection',
   );
 
+  source = replaceOnce(
+    source,
+    "  await fs.copyFile(MUSETALK_WORKER, path.join(dir, 'musetalk_lipsync.py'));\n  await fs.writeFile(path.join(dir, 'job.json'), JSON.stringify({ video_url: videoUrl, audio_url: audioUrl, bbox_shift: 0 }, null, 2));",
+    `  const embeddedJobB64 = Buffer.from(JSON.stringify({ video_url: videoUrl, audio_url: audioUrl, bbox_shift: 0 })).toString('base64');
+  const workerDest = path.join(dir, 'musetalk_lipsync.py');
+  const workerSource = await fs.readFile(MUSETALK_WORKER, 'utf8');
+  const bootstrap = 'import base64,json\\nfrom pathlib import Path\\nPath(__file__).resolve().parent.joinpath("job.json").write_text(base64.b64decode("' + embeddedJobB64 + '").decode())\\n';
+  await fs.writeFile(workerDest, bootstrap + workerSource);
+  await fs.writeFile(path.join(dir, 'job.json'), JSON.stringify({ video_url: videoUrl, audio_url: audioUrl, bbox_shift: 0 }, null, 2));`,
+    'Embed Kaggle job payload',
+  );
+
   const diagnosticHelper = `\nasync function collectKaggleFailure(kernel, outDir, status) {\n  const diagnostics = [];\n  try {\n    const logs = await run('kaggle', ['kernels', 'logs', kernel]);\n    const text = String(logs.stdout || logs.stderr || '').trim();\n    if (text) diagnostics.push('KAGGLE LOG TAIL:\\n' + text.slice(-9000));\n  } catch (error) {\n    diagnostics.push('kaggle kernels logs failed: ' + (error instanceof Error ? error.message : String(error)));\n  }\n  try {\n    await run('kaggle', ['kernels', 'output', kernel, '-p', outDir, '-o']);\n  } catch (error) {\n    diagnostics.push('kaggle kernels output failed: ' + (error instanceof Error ? error.message : String(error)));\n  }\n  try {\n    const errorFile = await findFile(outDir, 'musetalk-error.log');\n    if (errorFile) diagnostics.push('MUSETALK TRACEBACK:\\n' + (await fs.readFile(errorFile, 'utf8')).slice(-12000));\n  } catch {}\n  try {\n    const stageFile = await findFile(outDir, 'musetalk-stage.json');\n    if (stageFile) diagnostics.push('MUSETALK STAGE: ' + (await fs.readFile(stageFile, 'utf8')).slice(-2000));\n  } catch {}\n  return 'Kaggle status: ' + status.slice(-1500) + (diagnostics.length ? '\\n\\n' + diagnostics.join('\\n\\n') : '');\n}\n\n`;
 
   source = replaceOnce(
