@@ -11,44 +11,16 @@ WORKING = Path('/kaggle/working')
 TEMP = Path('/kaggle/temp/reaction-musetalk')
 REPO = TEMP / 'MuseTalk'
 JOB_FILE = Path(__file__).resolve().parent / 'job.json'
-STAGE_FILE = WORKING / 'musetalk-stage.json'
-ERROR_FILE = WORKING / 'musetalk-error.log'
+ERROR_FILE = WORKING / 'lipsync-error.txt'
 
 
 def log(message: str) -> None:
     print(f'[reaction-musetalk] {message}', flush=True)
 
 
-def stage(name: str, **extra) -> None:
-    WORKING.mkdir(parents=True, exist_ok=True)
-    payload = {'stage': name, **extra}
-    STAGE_FILE.write_text(json.dumps(payload, indent=2))
-    log(f'STAGE {name}')
-
-
-def run(args, *, cwd=None) -> str:
-    args = [str(x) for x in args]
-    log('$ ' + ' '.join(args))
-    proc = subprocess.Popen(
-        args,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    tail = []
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        print(line, end='', flush=True)
-        tail.append(line.rstrip())
-        if len(tail) > 160:
-            tail.pop(0)
-    code = proc.wait()
-    output = '\n'.join(tail)
-    if code != 0:
-        raise RuntimeError(f'Command failed ({code}): {" ".join(args)}\n--- tail ---\n{output}')
-    return output
+def run(args, *, cwd=None, env=None) -> None:
+    log('$ ' + ' '.join(str(x) for x in args))
+    subprocess.run([str(x) for x in args], cwd=cwd, env=env, check=True)
 
 
 def download(url: str, dest: Path) -> None:
@@ -63,10 +35,10 @@ def download(url: str, dest: Path) -> None:
 
 
 def install_runtime() -> None:
-    stage('installing_runtime')
+    # Avoid the old mmcv/mmpose stack. A 2026 MuseTalk compatibility report shows
+    # modern Python/PyTorch works when preprocessing is replaced with face-alignment.
     packages = [
-        'setuptools<81',
-        'numpy==1.26.4',
+        'numpy<2',
         'diffusers==0.30.2',
         'accelerate==0.28.0',
         'opencv-python-headless==4.9.0.80',
@@ -75,119 +47,107 @@ def install_runtime() -> None:
         'huggingface_hub==0.30.2',
         'librosa==0.11.0',
         'einops==0.8.1',
-        'gdown',
         'requests',
         'imageio[ffmpeg]',
         'omegaconf',
         'ffmpeg-python',
         'moviepy<2',
-        'tqdm',
+        'face-alignment==1.4.1',
+        'gdown',
     ]
-    run([sys.executable, '-m', 'pip', 'install', '-q', *packages])
+    run([sys.executable, '-m', 'pip', 'install', '-q', '--upgrade', *packages])
 
 
-def patch_modern_runtime() -> None:
-    # MuseTalk's upstream preprocessing imports the MMLab stack. Modern Kaggle
-    # images frequently use Python/PyTorch combos without matching mmcv wheels.
-    # For inference we only need a reliable face crop, so use MuseTalk's own
-    # bundled SFD detector and bypass MMPose entirely.
-    preprocessing = REPO / 'musetalk' / 'utils' / 'preprocessing.py'
-    preprocessing.write_text(r'''import sys
-from pathlib import Path
-
+def patch_preprocessing() -> None:
+    target = REPO / 'musetalk' / 'utils' / 'preprocessing.py'
+    patched = r'''import os
 import cv2
 import numpy as np
 import torch
-
-UTILS_DIR = Path(__file__).resolve().parent
-if str(UTILS_DIR) not in sys.path:
-    sys.path.insert(0, str(UTILS_DIR))
-
-from face_detection import FaceAlignment, LandmarksType
+from tqdm import tqdm
+import face_alignment
 
 coord_placeholder = (0.0, 0.0, 0.0, 0.0)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-fa = FaceAlignment(LandmarksType._2D, flip_input=False, device=device)
+fa = face_alignment.FaceAlignment(
+    face_alignment.LandmarksType.TWO_D,
+    flip_input=False,
+    device=device,
+)
 
 
 def read_imgs(img_list):
     frames = []
-    for img_path in img_list:
-        frame = cv2.imread(str(img_path))
-        if frame is None:
-            raise RuntimeError(f'Could not read frame: {img_path}')
-        frames.append(frame)
+    print('reading images...')
+    for img_path in tqdm(img_list):
+        frames.append(cv2.imread(img_path))
     return frames
 
 
-def _safe_bbox(f, frame):
-    if f is None:
+def _bbox_from_landmarks(frame):
+    landmarks = fa.get_landmarks_from_image(frame)
+    if not landmarks:
         return coord_placeholder
-    x1, y1, x2, y2 = [int(v) for v in f[:4]]
+    pts = np.asarray(landmarks[0], dtype=np.float32)
     h, w = frame.shape[:2]
-    x1 = max(0, min(w - 2, x1))
-    y1 = max(0, min(h - 2, y1))
-    x2 = max(x1 + 1, min(w, x2))
-    y2 = max(y1 + 1, min(h, y2))
-    if x2 - x1 < 24 or y2 - y1 < 24:
+    x1 = float(np.min(pts[:, 0])); x2 = float(np.max(pts[:, 0]))
+    y1 = float(np.min(pts[:, 1])); y2 = float(np.max(pts[:, 1]))
+    bw = max(1.0, x2 - x1); bh = max(1.0, y2 - y1)
+    # MuseTalk wants a stable face region, not a tight mouth crop.
+    x1 -= 0.12 * bw; x2 += 0.12 * bw
+    y1 -= 0.18 * bh; y2 += 0.10 * bh
+    x1 = max(0, int(round(x1))); y1 = max(0, int(round(y1)))
+    x2 = min(w, int(round(x2))); y2 = min(h, int(round(y2)))
+    if x2 <= x1 or y2 <= y1:
         return coord_placeholder
     return (x1, y1, x2, y2)
 
 
 def get_landmark_and_bbox(img_list, upperbondrange=0):
     frames = read_imgs(img_list)
-    if not frames:
-        return [], []
-    detections = fa.get_detections_for_batch(np.asarray(frames))
-    coords = [_safe_bbox(det, frame) for det, frame in zip(detections, frames)]
+    coords = []
+    last_valid = None
+    for frame in tqdm(frames):
+        box = _bbox_from_landmarks(frame)
+        if box == coord_placeholder and last_valid is not None:
+            box = last_valid
+        if box != coord_placeholder:
+            last_valid = box
+        coords.append(box)
+    valid = sum(1 for box in coords if box != coord_placeholder)
+    print(f'face-alignment bbox success: {valid}/{len(coords)}')
+    if not valid:
+        raise RuntimeError('No face detected in avatar video')
     return coords, frames
 
 
 def get_bbox_range(img_list, upperbondrange=0):
-    coords, _ = get_landmark_and_bbox(img_list, upperbondrange)
-    valid = [c for c in coords if c != coord_placeholder]
-    return f'Total frame: {len(coords)}; detected: {len(valid)}; bbox_shift: {upperbondrange}'
-''')
-
-    # PyTorch 2.6+ changed torch.load's default to weights_only=True. MuseTalk's
-    # trusted upstream checkpoints include objects that require the legacy load.
-    # sitecustomize is imported automatically by the inference subprocess.
-    (REPO / 'sitecustomize.py').write_text(r'''import torch
-_original_torch_load = torch.load
-
-def _reaction_torch_load(*args, **kwargs):
-    kwargs.setdefault('weights_only', False)
-    return _original_torch_load(*args, **kwargs)
-
-torch.load = _reaction_torch_load
-''')
-
-
-def download_weights() -> None:
-    stage('downloading_weights')
-    # Use huggingface_hub directly instead of upstream download_weights.sh,
-    # which relies on CLI/mirror behavior that has changed over time.
-    script = r'''
-from pathlib import Path
-from huggingface_hub import hf_hub_download
-
-root = Path("models")
-
-def hf(repo, filename, local_dir):
-    Path(local_dir).mkdir(parents=True, exist_ok=True)
-    hf_hub_download(repo_id=repo, filename=filename, local_dir=local_dir)
-
-hf("TMElyralab/MuseTalk", "musetalkV15/musetalk.json", root)
-hf("TMElyralab/MuseTalk", "musetalkV15/unet.pth", root)
-hf("stabilityai/sd-vae-ft-mse", "config.json", root / "sd-vae")
-hf("stabilityai/sd-vae-ft-mse", "diffusion_pytorch_model.bin", root / "sd-vae")
-hf("openai/whisper-tiny", "config.json", root / "whisper")
-hf("openai/whisper-tiny", "pytorch_model.bin", root / "whisper")
-hf("openai/whisper-tiny", "preprocessor_config.json", root / "whisper")
+    return f'face-alignment preprocessing; bbox_shift={upperbondrange}'
 '''
-    run([sys.executable, '-c', script], cwd=REPO)
+    target.write_text(patched)
+    log('Patched MuseTalk preprocessing to face-alignment backend')
 
-    face_dir = REPO / 'models' / 'face-parse-bisent'
+
+def download_models() -> None:
+    from huggingface_hub import snapshot_download
+
+    models = REPO / 'models'
+    snapshot_download(
+        repo_id='TMElyralab/MuseTalk',
+        local_dir=str(models),
+        allow_patterns=['musetalkV15/musetalk.json', 'musetalkV15/unet.pth'],
+    )
+    snapshot_download(
+        repo_id='stabilityai/sd-vae-ft-mse',
+        local_dir=str(models / 'sd-vae'),
+        allow_patterns=['config.json', 'diffusion_pytorch_model.bin'],
+    )
+    snapshot_download(
+        repo_id='openai/whisper-tiny',
+        local_dir=str(models / 'whisper'),
+        allow_patterns=['config.json', 'pytorch_model.bin', 'preprocessor_config.json'],
+    )
+    face_dir = models / 'face-parse-bisent'
     face_dir.mkdir(parents=True, exist_ok=True)
     run([
         sys.executable, '-m', 'gdown',
@@ -201,10 +161,6 @@ hf("openai/whisper-tiny", "preprocessor_config.json", root / "whisper")
 
 
 def main() -> None:
-    WORKING.mkdir(parents=True, exist_ok=True)
-    ERROR_FILE.unlink(missing_ok=True)
-    STAGE_FILE.unlink(missing_ok=True)
-
     if not JOB_FILE.exists():
         raise RuntimeError(f'Missing {JOB_FILE}')
     job = json.loads(JOB_FILE.read_text())
@@ -215,28 +171,24 @@ def main() -> None:
 
     shutil.rmtree(TEMP, ignore_errors=True)
     TEMP.mkdir(parents=True, exist_ok=True)
+    WORKING.mkdir(parents=True, exist_ok=True)
+    ERROR_FILE.unlink(missing_ok=True)
 
-    stage('gpu_preflight')
+    log('GPU check')
     run(['nvidia-smi'])
-    run([sys.executable, '-c', 'import torch,sys; print(sys.version); print(torch.__version__); print(torch.version.cuda); print(torch.cuda.get_device_name(0)); print(torch.cuda.get_device_capability(0))'])
-
     install_runtime()
 
-    stage('cloning_musetalk')
     run(['git', 'clone', '--depth', '1', 'https://github.com/TMElyralab/MuseTalk.git', str(REPO)])
-    patch_modern_runtime()
-    download_weights()
+    patch_preprocessing()
+    download_models()
 
-    raw_video = TEMP / 'source-input'
+    raw_video = TEMP / 'source-input.mp4'
     raw_audio = TEMP / 'audio-input'
     video = TEMP / 'source-25fps.mp4'
     audio = TEMP / 'speech.wav'
-
-    stage('downloading_media')
     download(video_url, raw_video)
     download(audio_url, raw_audio)
 
-    stage('normalizing_media')
     run([
         'ffmpeg', '-y', '-i', str(raw_video),
         '-an', '-vf', 'fps=25', '-c:v', 'libx264', '-preset', 'veryfast',
@@ -252,19 +204,10 @@ def main() -> None:
         'task_0:\n'
         f'  video_path: "{video}"\n'
         f'  audio_path: "{audio}"\n'
-        '  bbox_shift: 0\n'
     )
     result_dir = TEMP / 'results'
     result_dir.mkdir(parents=True, exist_ok=True)
 
-    stage('preflight_import')
-    run([
-        sys.executable, '-c',
-        'import torch; from musetalk.utils.preprocessing import get_landmark_and_bbox; '
-        'from musetalk.utils.face_parsing import FaceParsing; print("MuseTalk imports OK")',
-    ], cwd=REPO)
-
-    stage('musetalk_inference')
     run([
         sys.executable, '-m', 'scripts.inference',
         '--inference_config', str(config),
@@ -272,28 +215,29 @@ def main() -> None:
         '--unet_model_path', 'models/musetalkV15/unet.pth',
         '--unet_config', 'models/musetalkV15/musetalk.json',
         '--version', 'v15',
+        '--batch_size', '4',
         '--use_float16',
     ], cwd=REPO)
 
     candidates = sorted(result_dir.rglob('*.mp4'), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
-        candidates = sorted(REPO.rglob('*.mp4'), key=lambda p: p.stat().st_mtime, reverse=True)
-        candidates = [p for p in candidates if 'results' in p.parts]
+        candidates = [
+            p for p in sorted(REPO.rglob('*.mp4'), key=lambda p: p.stat().st_mtime, reverse=True)
+            if 'results' in p.parts
+        ]
     if not candidates:
         raise RuntimeError('MuseTalk completed but no output MP4 was found')
 
-    stage('publishing_result')
     final = WORKING / 'lipsync-result.mp4'
     shutil.copy2(candidates[0], final)
     metadata = {
         'engine': 'MuseTalk 1.5',
-        'preprocessing': 'bundled_sfd_bbox_fallback',
+        'preprocessing': 'face-alignment-modern',
         'video_url': video_url,
         'audio_url': audio_url,
         'result': final.name,
     }
     (WORKING / 'lipsync-result.json').write_text(json.dumps(metadata, indent=2))
-    stage('complete', result=final.name, size_bytes=final.stat().st_size)
     log(f'Done: {final} ({final.stat().st_size / 1024 / 1024:.1f} MiB)')
 
 
@@ -302,13 +246,7 @@ if __name__ == '__main__':
         main()
     except Exception:
         WORKING.mkdir(parents=True, exist_ok=True)
-        details = traceback.format_exc()
-        ERROR_FILE.write_text(details)
-        try:
-            stage_payload = json.loads(STAGE_FILE.read_text()) if STAGE_FILE.exists() else {}
-        except Exception:
-            stage_payload = {}
-        stage_payload['failed'] = True
-        STAGE_FILE.write_text(json.dumps(stage_payload, indent=2))
-        print(details, flush=True)
+        tb = traceback.format_exc()
+        ERROR_FILE.write_text(tb)
+        print(tb, flush=True)
         raise
