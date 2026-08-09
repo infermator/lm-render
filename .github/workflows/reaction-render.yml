@@ -7,14 +7,6 @@ on:
         description: 'Optional exact reaction_jobs UUID (blank = oldest queued)'
         required: false
         default: ''
-      mode:
-        description: 'Analyze source or render a queued Reaction Lab job'
-        required: true
-        default: 'render'
-        type: choice
-        options:
-          - render
-          - analyze
   schedule:
     - cron: '*/5 * * * *'
   push:
@@ -30,17 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - name: Checkout renderer helpers
+      - name: Checkout renderer
         uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-
-      - name: Clone private MAM worker
-        run: |
-          git clone --depth 1 \
-            "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository_owner }}/21media-mam.git" work
 
       - name: Install media and Kaggle tooling
         run: |
@@ -52,26 +39,13 @@ jobs:
           ffprobe -version | head -1
           kaggle --version
 
-      - name: Analyze or render one reaction job
+      - name: Render one queued Reaction Lab job
         env:
           JOB_ID: ${{ inputs.job_id }}
-          INPUT_MODE: ${{ inputs.mode }}
-          EVENT_NAME: ${{ github.event_name }}
           MAM_BASE: 'https://21media-mam.vercel.app'
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           MUSETALK_KAGGLE_WORKER: ${{ github.workspace }}/kaggle/musetalk_lipsync.py
-        run: |
-          set -euo pipefail
-          MODE="${INPUT_MODE:-render}"
-          if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "push" ]; then
-            MODE="render"
-          fi
-
-          if [ "$MODE" = "render" ]; then
-            node work/scripts/reaction/render-v2.mjs
-          else
-            node work/scripts/reaction/analyze.mjs
-          fi
+        run: node scripts/reaction/render-v2.mjs
