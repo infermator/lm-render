@@ -1,2 +1,2 @@
-probe 2026-08-09T21:40Z
-reason explicit GPU docker image + docker_image_pinning_type latest + T4
+probe 2026-08-09T21:44Z
+reason brand-new kernel slug + exact Kaggle v170 GPU image + original pin + T4
