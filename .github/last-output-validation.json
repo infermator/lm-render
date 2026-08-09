@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "size_bytes": 20565167,
+  "sha256": "e876410477f017b4c56f62c5a2d3991e631f22e9c02f64d9af9d9f9c82d1d88f",
+  "duration_s": 53.586867,
+  "video": {
+    "codec": "h264",
+    "width": 1080,
+    "height": 1920,
+    "pix_fmt": "yuv420p",
+    "avg_frame_rate": "30000/1001"
+  },
+  "audio": {
+    "codec": "aac",
+    "sample_rate": "48000",
+    "channels": 1
+  },
+  "representative_frames_decoded": [
+    1,
+    5,
+    20,
+    43,
+    52
+  ],
+  "checks": {
+    "video_present": true,
+    "audio_present": true,
+    "vertical_1080x1920": true,
+    "h264_video": true,
+    "aac_audio": true,
+    "duration_expected": true,
+    "nontrivial_size": true
+  }
+}
