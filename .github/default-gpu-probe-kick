@@ -1,0 +1,2 @@
+probe 2026-08-09T21:55Z
+reason test enable_gpu=true without explicit accelerator override
