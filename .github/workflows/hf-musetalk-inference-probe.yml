@@ -1,0 +1,99 @@
+name: HF MuseTalk Real Avatar Probe
+
+on:
+  push:
+    paths:
+      - '.github/hf-musetalk-inference-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test real Neutral A through public MuseTalk API
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python -m pip install -q --upgrade gradio_client
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+          from gradio_client import Client, handle_file
+
+          base = os.environ['SUPABASE_URL'].rstrip('/')
+          key = os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          params = urllib.parse.urlencode({
+              'persona': 'eq.default',
+              'reaction_type': 'eq.neutral',
+              'enabled': 'eq.true',
+              'select': 'id,label,video_url,created_at',
+              'order': 'created_at.desc',
+              'limit': '1',
+          })
+          req = urllib.request.Request(
+              f'{base}/rest/v1/reaction_assets?{params}',
+              headers={'apikey': key, 'Authorization': f'Bearer {key}'},
+          )
+          with urllib.request.urlopen(req, timeout=30) as response:
+              rows = json.loads(response.read().decode())
+          if not rows:
+              raise RuntimeError('No enabled neutral asset found')
+          asset = rows[0]
+          video_url = asset['video_url']
+
+          # Public Gradio audio fixture: no ElevenLabs cost for provider smoke-test.
+          audio_url = 'https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav'
+          result = {
+              'space': 'trymonolith/MuseTalk',
+              'asset': asset,
+              'audio_url': audio_url,
+              'api_name': '/generate_lipsync_video',
+          }
+          try:
+              client = Client('trymonolith/MuseTalk', verbose=False)
+              output = client.predict(
+                  audio_file=handle_file(audio_url),
+                  video_file=handle_file(video_url),
+                  fps=25,
+                  quality='Low',
+                  api_name='/generate_lipsync_video',
+              )
+              result['ok'] = True
+              result['output'] = str(output)
+              # Copy returned temp video into workspace if gradio_client downloaded it.
+              candidate = output[0] if isinstance(output, (tuple, list)) else output
+              candidate_path = getattr(candidate, 'path', candidate)
+              if candidate_path and Path(str(candidate_path)).exists():
+                  dest = Path('.github/hf-musetalk-probe-result.mp4')
+                  dest.write_bytes(Path(str(candidate_path)).read_bytes())
+                  result['result_bytes'] = dest.stat().st_size
+          except Exception as exc:
+              result['ok'] = False
+              result['error'] = repr(exc)
+              raise
+          finally:
+              Path('.github/last-hf-musetalk-inference.json').write_text(json.dumps(result, indent=2, default=str))
+              print(json.dumps(result, indent=2, default=str))
+          PY
+
+      - name: Persist probe diagnostics
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/last-hf-musetalk-inference.json || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record public MuseTalk inference probe'
+          git pull --rebase origin main
+          git push origin HEAD:main
