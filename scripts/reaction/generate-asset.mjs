@@ -15,13 +15,41 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+
+function run(bin, args) {
+  return execFileSync(bin, args, { encoding: 'utf8' });
+}
 
 const FAL_KEY = String(process.env.FAL_KEY || '').trim();
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_KEY = String(process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
 const PERSONA = String(process.env.REACTION_PERSONA || 'default').trim();
 const MODEL = String(process.env.FAL_VIDEO_MODEL || 'fal-ai/kling-video/v3/pro/image-to-video').trim();
-const PRICE_PER_S = Number(process.env.FAL_VIDEO_PRICE_PER_S || 0.112);
+
+// Field names differ per family, and getting one wrong costs a round trip
+// through the queue before the API says so.
+const MODEL_SPECS = {
+  'fal-ai/kling-video/v3/pro/image-to-video':      { start: 'start_image_url', end: 'end_image_url', pricePerS: 0.112, durationAsString: true },
+  'fal-ai/kling-video/o1/standard/image-to-video': { start: 'start_image_url', end: 'end_image_url', pricePerS: 0.084, durationAsString: true },
+  'bytedance/seedance-2.0/image-to-video':         { start: 'image_url', end: 'end_image_url', pricePerS: 0.24, durationAsString: true },
+  'fal-ai/bytedance/seedance/v1/pro/image-to-video': { start: 'image_url', end: 'end_image_url', pricePerS: 0.05, durationAsString: true, extra: { resolution: '1080p' } },
+  'fal-ai/veo3.1/fast/first-last-frame-to-video':  { start: 'first_frame_url', end: 'last_frame_url', pricePerS: 0.15, durations: [4, 6, 8], extra: { generate_audio: false, resolution: '1080p' } },
+  'fal-ai/wan-flf2v':                              { start: 'start_image_url', end: 'end_image_url', pricePerS: 0.02 },
+};
+const SPEC = MODEL_SPECS[MODEL] || { start: 'start_image_url', end: 'end_image_url', pricePerS: 0.112, durationAsString: true };
+const PRICE_PER_S = Number(process.env.FAL_VIDEO_PRICE_PER_S || SPEC.pricePerS);
+
+// Anchoring both ends in the request costs the performance. Measured on the same
+// model, prompt and seed budget: with an end frame the smirk peaked at 1.79
+// against the first frame, without it at 9.47. Forced to land back on an
+// identical frame within three seconds, the model simply barely moves.
+//
+// So the clip is generated free and anchored afterwards, by morphing its tail
+// back to the reference still. That restores the anchor (7.27 -> 0.72) while
+// leaving the expression untouched (9.47 -> 9.45).
+const USE_END_FRAME = process.env.FAL_END_FRAME === '1';
+const ANCHOR_FADE_S = Number(process.env.FAL_ANCHOR_FADE_S || 0.45);
 const BUCKET = 'reaction-media';
 
 // Shared by every clip. Lifted out of the per-clip prompts so a change lands
@@ -148,19 +176,24 @@ async function main() {
   console.log(`[generate-asset] reference: ${reference.video_url}`);
 
   const prompt = `${preset.performance} ${COMMON}`;
-  console.log(`[generate-asset] ${preset.label} — ${preset.duration}s via ${MODEL} (~$${(preset.duration * PRICE_PER_S).toFixed(2)})`);
+  let duration = preset.duration;
+  if (SPEC.durations && !SPEC.durations.includes(duration)) {
+    duration = SPEC.durations.reduce((best, value) => (Math.abs(value - preset.duration) < Math.abs(best - preset.duration) ? value : best));
+    console.log(`[generate-asset] ${MODEL} only offers ${SPEC.durations.join('/')}s; using ${duration}s`);
+  }
 
-  const queued = await fal(`https://queue.fal.run/${MODEL}`, {
-    method: 'POST',
-    body: JSON.stringify({
-      prompt,
-      negative_prompt: NEGATIVE,
-      start_image_url: reference.video_url,
-      end_image_url: reference.video_url,
-      duration: String(preset.duration),
-      cfg_scale: 0.5,
-    }),
-  });
+  const payload = {
+    prompt,
+    negative_prompt: NEGATIVE,
+    [SPEC.start]: reference.video_url,
+    duration: SPEC.durationAsString === false ? duration : String(duration),
+    ...(SPEC.extra || {}),
+  };
+  if (USE_END_FRAME) payload[SPEC.end] = reference.video_url;
+  else console.log('[generate-asset] end frame OFF — the clip will not return to the anchor on its own');
+
+  console.log(`[generate-asset] ${preset.label} — ${duration}s via ${MODEL} (~$${(duration * PRICE_PER_S).toFixed(2)})`);
+  const queued = await fal(`https://queue.fal.run/${MODEL}`, { method: 'POST', body: JSON.stringify(payload) });
   const statusUrl = String(queued.status_url || '');
   const responseUrl = String(queued.response_url || '');
   if (!statusUrl || !responseUrl) fail(`fal did not queue: ${JSON.stringify(queued).slice(0, 400)}`);
@@ -189,12 +222,41 @@ async function main() {
   const bytes = Buffer.from(await download.arrayBuffer());
   await fs.writeFile(local, bytes);
 
+  // Restore the anchor the request deliberately did not ask for.
+  let upload = local;
+  if (!USE_END_FRAME) {
+    const refFile = path.join(workDir, 'reference' + (path.extname(new URL(reference.video_url).pathname) || '.png'));
+    const refResponse = await fetch(reference.video_url);
+    if (!refResponse.ok) fail(`Could not download the reference still: HTTP ${refResponse.status}`);
+    await fs.writeFile(refFile, Buffer.from(await refResponse.arrayBuffer()));
+
+    const probe = run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate', '-show_entries', 'format=duration', '-of', 'json', local]);
+    const info = JSON.parse(probe);
+    const stream = info.streams[0];
+    const clipDuration = Number(info.format.duration);
+    const fps = Math.round(eval(stream.r_frame_rate)) || 24;
+    const fade = Math.min(ANCHOR_FADE_S, clipDuration / 4);
+
+    const anchorClip = path.join(workDir, 'anchor.mp4');
+    run('ffmpeg', ['-y', '-loop', '1', '-i', refFile,
+      '-vf', `scale=${stream.width}:${stream.height}:force_original_aspect_ratio=increase,crop=${stream.width}:${stream.height},fps=${fps},setsar=1`,
+      '-c:v', 'libx264', '-crf', '16', '-pix_fmt', 'yuv420p', '-t', (fade + 0.4).toFixed(3), anchorClip]);
+
+    upload = path.join(workDir, 'anchored.mp4');
+    run('ffmpeg', ['-y', '-i', local, '-i', anchorClip, '-an',
+      '-filter_complex', `[0:v][1:v]xfade=transition=fade:duration=${fade.toFixed(3)}:offset=${(clipDuration - fade).toFixed(3)}[v]`,
+      '-map', '[v]', '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-pix_fmt', 'yuv420p',
+      '-t', clipDuration.toFixed(3), upload]);
+    console.log(`[generate-asset] anchored the tail back to the reference over ${fade.toFixed(2)}s`);
+  }
+  const uploadBytes = await fs.readFile(upload);
+
   const assetId = crypto.randomUUID();
   const storagePath = `assets/${PERSONA}/${assetId}/${key}.mp4`;
   await supabase(`/storage/v1/object/${BUCKET}/${storagePath}`, {
     method: 'POST',
     headers: { 'Content-Type': 'video/mp4', 'x-upsert': 'true' },
-    body: bytes,
+    body: uploadBytes,
   });
   const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${storagePath}`;
 
@@ -207,25 +269,25 @@ async function main() {
       id: assetId,
       persona: PERSONA,
       reaction_type: preset.reactionType,
-      label: preset.label,
+      label: `${preset.label}${process.env.FAL_LABEL_SUFFIX || ''}`,
       video_url: publicUrl,
       storage_path: storagePath,
-      duration_s: preset.duration,
+      duration_s: duration,
       speech_ready: false,
       anchor_role: preset.reactionType === 'neutral' ? 'neutral' : 'none',
       enabled: false,
       metadata: {
         preset: key,
         generated_by: MODEL,
-        anchored: 'first_and_last_frame_are_the_reference_still',
+        anchored: USE_END_FRAME ? 'first_and_last_frame_are_the_reference_still' : 'first_frame_only',
         generated_at: new Date().toISOString(),
-        cost_estimate_usd: Number((preset.duration * PRICE_PER_S).toFixed(3)),
+        cost_estimate_usd: Number((duration * PRICE_PER_S).toFixed(3)),
       },
     }),
   });
 
   await fs.rm(workDir, { recursive: true, force: true });
-  console.log(`[generate-asset] stored ${(bytes.length / 1048576).toFixed(1)} MB`);
+  console.log(`[generate-asset] stored ${(uploadBytes.length / 1048576).toFixed(1)} MB`);
   console.log(`[generate-asset] ${publicUrl}`);
   console.log('[generate-asset] registered DISABLED — enable it in Reaction Lab once it passes review');
 }
