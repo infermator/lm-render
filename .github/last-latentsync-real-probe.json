@@ -1,0 +1,11 @@
+{
+  "asset": {
+    "id": "ea6ce519-fff0-4dd3-98c9-22574caf385e",
+    "label": "2WIaP3dMIOEHxsLRUF1Z-0.mp4",
+    "video_url": "https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/assets/default/188c7ff4-a9c7-4e90-a2ef-599f3dc55674/2WIaP3dMIOEHxsLRUF1Z-0.mp4"
+  },
+  "audio_url": "https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/tts/424b81afa591f5a9d39a764551b184f71a444cb6b5e38c97c09852ec54fda325.mp3",
+  "space": "fffiloni/LatentSync",
+  "ok": false,
+  "error": "AppError('The requested GPU duration (180s) is larger than the maximum allowed')"
+}
