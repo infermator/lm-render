@@ -433,6 +433,109 @@ async function hfMuseTalkLipSync({ index, videoUrl, audioUrl, expectedDuration }
   return { local, provider: 'huggingface_public_musetalk', space: 'trymonolith/MuseTalk', bytes: stat.size, duration };
 }
 
+// MuseTalk returns a whole frame with a regenerated rectangular face block. Its
+// edge is visible, and where the block overlaps the green plate it shifts those
+// pixels enough that the chroma key stops removing them — which is why a dark
+// rectangle appeared over the avatar for exactly the duration of the line.
+//
+// Only the mouth is worth keeping. The provider's own output locates it: the
+// static part of the block differs from the carrier by a roughly constant
+// amount, while the mouth differs by an amount that CHANGES every frame. Cells
+// are therefore ranked by the temporal deviation of the difference, not by its
+// magnitude.
+async function locateLipSyncPatch(bedFile, syncedFile) {
+  const raw = path.join(workDir, `lipsync-diff-${crypto.randomBytes(3).toString('hex')}.raw`);
+  await run('ffmpeg', ['-y', '-i', bedFile, '-i', syncedFile,
+    '-filter_complex', `[0:v][1:v]blend=all_mode=difference,format=gray,scale=${GRID_W}:${GRID_H}:flags=area`,
+    '-pix_fmt', 'gray', '-f', 'rawvideo', raw]);
+  const bytes = await fs.readFile(raw);
+  await fs.rm(raw, { force: true });
+
+  const cells = GRID_W * GRID_H;
+  const frameCount = Math.floor(bytes.length / cells);
+  if (frameCount < 4) throw new Error('Could not compare the lip-sync output with its carrier');
+
+  const deviation = new Array(cells).fill(0);
+  let maxDeviation = 0;
+  for (let cell = 0; cell < cells; cell++) {
+    let sum = 0;
+    for (let frame = 0; frame < frameCount; frame++) sum += bytes[frame * cells + cell];
+    const mean = sum / frameCount;
+    let variance = 0;
+    for (let frame = 0; frame < frameCount; frame++) {
+      const delta = bytes[frame * cells + cell] - mean;
+      variance += delta * delta;
+    }
+    deviation[cell] = Math.sqrt(variance / frameCount);
+    if (deviation[cell] > maxDeviation) maxDeviation = deviation[cell];
+  }
+
+  // A provider can return a technically valid MP4 whose mouth never moves. That
+  // is a failed render, not a successful one.
+  if (maxDeviation < 1.5) {
+    throw new Error(`Lip-sync output has no moving region: peak temporal deviation ${maxDeviation.toFixed(2)}`);
+  }
+
+  const threshold = Math.max(1.2, maxDeviation * 0.35);
+  let minX = GRID_W; let maxX = -1; let minY = GRID_H; let maxY = -1;
+  let weight = 0; let cxSum = 0; let cySum = 0;
+  for (let cell = 0; cell < cells; cell++) {
+    if (deviation[cell] < threshold) continue;
+    const x = cell % GRID_W;
+    const y = Math.floor(cell / GRID_W);
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    cxSum += x * deviation[cell]; cySum += y * deviation[cell]; weight += deviation[cell];
+  }
+  if (maxX < 0) throw new Error('Lip-sync output has no coherent moving region');
+
+  const scaleX = AVATAR_W / GRID_W;
+  const scaleY = AVATAR_H / GRID_H;
+  const centreX = ((cxSum / weight) + 0.5) * scaleX;
+  const centreY = ((cySum / weight) + 0.5) * scaleY;
+  // Grow past the detected motion so the feather lands on still skin, but stay
+  // well inside the face so the patch never reaches the plate.
+  const halfW = clamp(((maxX - minX + 1) * scaleX) * 0.85, AVATAR_W * 0.06, AVATAR_W * 0.20);
+  const halfH = clamp(((maxY - minY + 1) * scaleY) * 0.85, AVATAR_H * 0.08, AVATAR_H * 0.26);
+
+  const even = value => Math.max(2, Math.round(value / 2) * 2);
+  let width = even(halfW * 2);
+  let height = even(halfH * 2);
+  let x = even(clamp(centreX - width / 2, 0, AVATAR_W - width));
+  let y = even(clamp(centreY - height / 2, 0, AVATAR_H - height));
+  width = Math.min(width, AVATAR_W - x);
+  height = Math.min(height, AVATAR_H - y);
+
+  return {
+    x, y, width, height,
+    peak_deviation: Number(maxDeviation.toFixed(2)),
+    moving_cells: deviation.filter(value => value >= threshold).length,
+  };
+}
+
+// Keep the provider's mouth, discard everything else it touched.
+async function blendLipSyncPatch(bedFile, syncedFile, index) {
+  const patch = await locateLipSyncPatch(bedFile, syncedFile);
+  const mask = path.join(workDir, `lipsync-mask-${index}.png`);
+  await run('ffmpeg', ['-y', '-f', 'lavfi', '-i', `color=black:s=${patch.width}x${patch.height}`,
+    '-vf', "geq=lum='255*clip(1.35-1.35*hypot((X-W/2)/(W/2),(Y-H/2)/(H/2)),0,1)'",
+    '-frames:v', '1', mask]);
+
+  const bedDuration = await probeDuration(bedFile);
+  const out = path.join(workDir, `lipsync-blended-${index}.mp4`);
+  await run('ffmpeg', ['-y', '-i', bedFile, '-i', syncedFile, '-loop', '1', '-i', mask,
+    '-filter_complex', [
+      `[1:v]crop=${patch.width}:${patch.height}:${patch.x}:${patch.y}[roi]`,
+      `[2:v]format=gray,scale=${patch.width}:${patch.height}[m]`,
+      '[roi][m]alphamerge[patchv]',
+      `[0:v][patchv]overlay=${patch.x}:${patch.y}:format=auto[out]`,
+    ].join(';'),
+    '-map', '[out]', '-an', ...avatarEncodeArgs(), '-t', bedDuration.toFixed(3), out]);
+
+  log(`Lip-sync patch ${patch.width}x${patch.height}+${patch.x}+${patch.y} (peak deviation ${patch.peak_deviation}, ${patch.moving_cells} cells)`);
+  return { file: out, patch };
+}
+
 async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
   const neutralAssets = enabledAssets(assets).filter(asset => asset.reaction_type === 'neutral' && asset.speech_ready !== true);
   if (!neutralAssets.length) throw new Error('No enabled neutral reaction asset');
@@ -487,10 +590,11 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
 
       // The segment runs exactly as long as the padded line, so it opens and
       // closes on the carrier's closed-mouth anchor.
+      const blended = await blendLipSyncPatch(bed.file, synced.local, comments.length);
       duration = tts.duration;
       asset = carriers[0];
-      localOverride = synced.local;
-      lipsyncMeta = { ...synced, carrier_ids: bed.carrierIds };
+      localOverride = blended.file;
+      lipsyncMeta = { ...synced, carrier_ids: bed.carrierIds, patch: blended.patch };
       comments.push({
         start,
         text: event.comment.trim(),
@@ -501,6 +605,7 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
         lipsync_provider: synced.provider,
         lipsync_duration: synced.duration,
         speech_carrier_ids: bed.carrierIds,
+        lipsync_patch: blended.patch,
       });
     } else {
       asset = chooseAsset(assets, String(event.type), Number(event.intensity ?? 0.35))
@@ -828,6 +933,7 @@ try {
       lipsync_provider: comment.lipsync_provider,
       lipsync_duration: comment.lipsync_duration,
       speech_carrier_ids: comment.speech_carrier_ids,
+      lipsync_patch: comment.lipsync_patch,
     })),
     adapted_plan: plan,
   };
