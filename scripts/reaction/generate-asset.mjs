@@ -53,6 +53,17 @@ const PRICE_PER_S = Number(process.env.FAL_VIDEO_PRICE_PER_S || SPEC.pricePerS);
 // leaving the expression untouched (9.47 -> 9.45).
 const USE_END_FRAME = process.env.FAL_END_FRAME === '1';
 const ANCHOR_FADE_S = Number(process.env.FAL_ANCHOR_FADE_S || 0.45);
+const ANCHOR_MODE = String(process.env.FAL_ANCHOR_MODE || 'pingpong').trim(); // pingpong | trim | morph | none
+
+// Asking for the return in the prompt is not the same as pinning the last frame
+// in the request. The flat attempts did both at once; this is the direction on
+// its own.
+// Piling on instructions made this worse, not better. A short prompt is the
+// baseline these models are actually tuned for.
+const MINIMAL = process.env.FAL_PROMPT_MODE === 'minimal';
+const MINIMAL_COMMON = 'Static locked-off camera, plain green screen background, photoreal, same person and framing as the image.';
+
+const RELEASE_DIRECTION = ' Finally the expression drains away completely and he returns to the same calm, neutral, attentive watching face he had at the very start, settling back into exactly the posture and gaze he began with, and holds it there.';
 const BUCKET = 'reaction-media';
 
 // Shared by every clip. Lifted out of the per-clip prompts so a change lands
@@ -85,42 +96,49 @@ const NEGATIVE = [
 
 const PRESETS = {
   neutral_b: {
+    minimal: 'He watches something off-screen, calm and still. He blinks once and breathes. No expression change.',
     label: 'Neutral B',
     reactionType: 'neutral',
     duration: 4,
     performance: 'A quiet idle beat, three seconds of a man simply watching. He breathes. He blinks once, unhurried. His eyes drift a few degrees along whatever he is watching and come back. His head and shoulders settle by a couple of millimetres, the way a person shifts without noticing. His expression stays calm, attentive and completely neutral from the first frame to the last — no amusement, no surprise, no reaction of any kind. The stillness is the performance.',
   },
   smirk_a: {
+    minimal: 'He watches something off-screen, then smirks — one corner of his mouth lifts, amused and knowing — then his face relaxes back to neutral.',
     label: 'Smirk A',
     reactionType: 'smirk',
-    duration: 3,
+    duration: 10,
     performance: 'He watches, neutral. Then something in what he is watching quietly amuses him, and it surfaces on his face: one corner of his mouth draws up and back into a clear, lopsided smirk, the cheek on that side lifting with it, the eyes narrowing slightly and creasing at the outer corner the way a real smile reaches the eyes. He holds it, enjoying it privately. It is the look of someone thinking "of course that happened" — knowing, a little smug, entirely closed-mouthed. No wide grin, no teeth, no laugh. Then it eases off and his face relaxes.',
   },
   cringe_a: {
+    minimal: 'He watches something off-screen, then winces with second-hand embarrassment, then his face relaxes back to neutral.',
     label: 'Cringe A',
     reactionType: 'cringe',
     duration: 3,
     performance: 'He watches, neutral. Then something lands awkwardly and he winces with second-hand embarrassment: the mouth pulls tight and sideways, the nose wrinkles, one eye squints half shut, the brow tightens, the chin tucks slightly and his head draws back an inch as if to get away from it. His shoulders lift a fraction. It is the face of someone watching another person embarrass themselves — pained and sympathetic, not disgusted, not frightened, not comic. He holds the wince a moment, then lets it drain away.',
   },
   disbelief_a: {
+    minimal: 'He watches something off-screen, narrows his eyes in disbelief and shakes his head once slowly, then his face relaxes back to neutral.',
     label: 'Disbelief A',
     reactionType: 'disbelief',
     duration: 3,
     performance: 'He watches, neutral. Then something he cannot accept happens, and disbelief settles over his face: the eyes narrow, one eyebrow climbs while the other stays down, the lips press together and push slightly to one side, the jaw sets. He gives a single slow shake of the head, small but unmistakable, the way someone says "no way" without speaking. He keeps watching throughout. Then his face loosens again.',
   },
   surprise_a: {
+    minimal: 'He watches something off-screen, then his eyes widen and eyebrows lift in surprise, then his face relaxes back to neutral.',
     label: 'Surprise A',
     reactionType: 'surprise',
     duration: 3,
     performance: 'He watches, neutral. Then something genuinely unexpected happens: his eyes widen, his eyebrows jump up, his lips part slightly and his head pulls back and up a little as the moment registers. The whole face opens for a beat. It is real, human surprise — the flinch of not seeing something coming — not shock, not fear, not exaggerated reaction acting. Then it settles and his expression closes again.',
   },
   suspicious_a: {
+    minimal: 'He watches something off-screen, then narrows his eyes suspiciously and leans in slightly, then his face relaxes back to neutral.',
     label: 'Suspicious A',
     reactionType: 'suspicious',
     duration: 3,
     performance: 'He watches, neutral. Then doubt creeps in: both eyes narrow into a sceptical squint, one eyebrow lowers, one side of his mouth tightens, and his head tilts a few degrees and leans in slightly, as if trying to see what he is missing. He studies it. It is the look of someone who does not buy what he is being shown. He holds the scrutiny, then eases back.',
   },
   laugh_a: {
+    minimal: 'He watches something off-screen, then laughs quietly with his mouth closed, shoulders shaking, then his face relaxes back to neutral.',
     label: 'Laugh A',
     reactionType: 'laugh',
     duration: 3,
@@ -184,7 +202,9 @@ async function main() {
   if (!reference) fail(`No enabled reference still for persona "${PERSONA}". Upload one in Reaction Lab first.`);
   console.log(`[generate-asset] reference: ${reference.video_url}`);
 
-  const prompt = `${preset.performance} ${COMMON}`;
+  const prompt = MINIMAL
+    ? `${preset.minimal || preset.performance} ${MINIMAL_COMMON}`
+    : `${preset.performance}${process.env.FAL_RELEASE === '1' ? RELEASE_DIRECTION : ''} ${COMMON}`;
   let duration = preset.duration;
   if (SPEC.durations && !SPEC.durations.includes(duration)) {
     duration = SPEC.durations.reduce((best, value) => (Math.abs(value - preset.duration) < Math.abs(best - preset.duration) ? value : best));
@@ -193,7 +213,7 @@ async function main() {
 
   const payload = {
     prompt,
-    negative_prompt: NEGATIVE,
+    ...(MINIMAL ? {} : { negative_prompt: NEGATIVE }),
     [SPEC.start]: reference.video_url,
     duration: SPEC.durationAsString === false ? duration : String(duration),
     ...(SPEC.extra || {}),
@@ -233,7 +253,108 @@ async function main() {
 
   // Restore the anchor the request deliberately did not ask for.
   let upload = local;
-  if (!USE_END_FRAME) {
+  let loopReport = null;
+
+  // Cutting beats blending. A cross-dissolve back to the still ghosts, because
+  // the head has drifted by then and two positions get double-exposed. Instead
+  // the clip is scanned for the frame that genuinely matches frame 0 and cut
+  // there, which is a real loop rather than a disguised one.
+  // Forward to the peak of the expression, then the same run reversed. The last
+  // frame IS the first frame, so the loop is exact by construction rather than
+  // by luck — and the reverse of an expression forming is an expression fading,
+  // which is what the reaction does anyway.
+  //
+  // Trimming to the closest frame was not enough: the model never returns to its
+  // own opening frame. The hair alone keeps drifting, and a difference pass shows
+  // clear outlines around the head and the earbud cable at the best match found.
+  if (!USE_END_FRAME && ANCHOR_MODE === 'pingpong') {
+    const grid = path.join(workDir, 'scan.raw');
+    const W = 48; const H = 44;
+    run('ffmpeg', ['-y', '-i', local, '-vf', `scale=${W}:${H}`, '-pix_fmt', 'gray', '-f', 'rawvideo', grid]);
+    const bytes = await fs.readFile(grid);
+    const cells = W * H;
+    const frames = [];
+    for (let i = 0; i + cells <= bytes.length; i += cells) frames.push(bytes.subarray(i, i + cells));
+    const distance = (a, b) => {
+      let total = 0;
+      for (let i = 0; i < cells; i++) total += Math.abs(a[i] - b[i]);
+      return total / cells;
+    };
+    let peak = { index: 1, score: -1 };
+    for (let i = 1; i < frames.length; i++) {
+      const score = distance(frames[0], frames[i]);
+      if (score > peak.score) peak = { index: i, score };
+    }
+    const probe = run('ffprobe', ['-select_streams', 'v:0', '-show_entries', 'stream=r_frame_rate', '-of', 'json', local]);
+    const fps = Math.round(eval(JSON.parse(probe).streams[0].r_frame_rate)) || 24;
+    const seconds = (peak.index + 1) / fps;
+
+    const forward = path.join(workDir, 'fwd.mp4');
+    const reverse = path.join(workDir, 'rev.mp4');
+    const list = path.join(workDir, 'pp.txt');
+    const enc = ['-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-pix_fmt', 'yuv420p'];
+    run('ffmpeg', ['-y', '-i', local, '-t', seconds.toFixed(3), '-an', ...enc, forward]);
+    run('ffmpeg', ['-y', '-i', forward, '-vf', 'reverse', '-an', ...enc, reverse]);
+    await fs.writeFile(list, `file '${forward}'\nfile '${reverse}'\n`);
+    upload = path.join(workDir, 'pingpong.mp4');
+    run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', upload]);
+
+    loopReport = {
+      mode: 'pingpong',
+      peak_s: Number(seconds.toFixed(3)),
+      peak_distance: Number(peak.score.toFixed(2)),
+      exact: true,
+    };
+    console.log(`[generate-asset] ping-pong loop: forward to the peak at ${seconds.toFixed(2)}s, then reversed`);
+  }
+
+  if (!USE_END_FRAME && ANCHOR_MODE === 'trim') {
+    const grid = path.join(workDir, 'scan.raw');
+    const W = 48; const H = 44;
+    run('ffmpeg', ['-y', '-i', local, '-vf', `scale=${W}:${H}`, '-pix_fmt', 'gray', '-f', 'rawvideo', grid]);
+    const bytes = await fs.readFile(grid);
+    const cells = W * H;
+    const frames = [];
+    for (let i = 0; i + cells <= bytes.length; i += cells) frames.push(bytes.subarray(i, i + cells));
+
+    const distance = (a, b) => {
+      let total = 0;
+      for (let i = 0; i < cells; i++) total += Math.abs(a[i] - b[i]);
+      return total / cells;
+    };
+    let noise = 0;
+    for (let i = 0; i < 4; i++) noise += distance(frames[i], frames[i + 1]);
+    noise /= 4;
+
+    const probe = run('ffprobe', ['-select_streams', 'v:0', '-show_entries', 'stream=r_frame_rate', '-of', 'json', local]);
+    const fps = Math.round(eval(JSON.parse(probe).streams[0].r_frame_rate)) || 24;
+
+    // Anything before this is still inside the reaction itself.
+    const earliest = Math.floor(frames.length * 0.45);
+    let best = { index: frames.length - 1, score: Infinity };
+    for (let i = earliest; i < frames.length; i++) {
+      const score = distance(frames[0], frames[i]);
+      if (score < best.score) best = { index: i, score };
+    }
+
+    const seconds = (best.index + 1) / fps;
+    loopReport = {
+      loop_point_s: Number(seconds.toFixed(3)),
+      loop_distance: Number(best.score.toFixed(2)),
+      noise_floor: Number(noise.toFixed(2)),
+      ratio: Number((best.score / Math.max(0.01, noise)).toFixed(2)),
+      seamless: best.score <= noise * 2.2,
+    };
+    console.log(`[generate-asset] loop point ${seconds.toFixed(2)}s — distance ${best.score.toFixed(2)} against a ${noise.toFixed(2)} noise floor (${loopReport.ratio}x)`);
+    if (!loopReport.seamless) {
+      console.log('[generate-asset] WARNING: the clip never returns close enough to its first frame to loop seamlessly');
+    }
+
+    upload = path.join(workDir, 'looped.mp4');
+    run('ffmpeg', ['-y', '-i', local, '-an', '-t', seconds.toFixed(3), '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-pix_fmt', 'yuv420p', upload]);
+  }
+
+  if (!USE_END_FRAME && ANCHOR_MODE === 'morph') {
     const refFile = path.join(workDir, 'reference' + (path.extname(new URL(reference.video_url).pathname) || '.png'));
     const refResponse = await fetch(reference.video_url);
     if (!refResponse.ok) fail(`Could not download the reference still: HTTP ${refResponse.status}`);
@@ -288,7 +409,9 @@ async function main() {
       metadata: {
         preset: key,
         generated_by: MODEL,
-        anchored: USE_END_FRAME ? 'first_and_last_frame_are_the_reference_still' : 'first_frame_only',
+        anchored: USE_END_FRAME ? 'first_and_last_frame_are_the_reference_still' : `first_frame_only_${ANCHOR_MODE}`,
+        loop: loopReport,
+        prompt_mode: MINIMAL ? 'minimal' : 'detailed',
         generated_at: new Date().toISOString(),
         cost_estimate_usd: Number((duration * PRICE_PER_S).toFixed(3)),
       },
