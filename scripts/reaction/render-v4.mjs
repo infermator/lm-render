@@ -29,7 +29,13 @@ const AVATAR_W = Math.round((AVATAR_H * 16) / 9 / 2) * 2;
 // Silence wrapped around every TTS line. It makes the lip-sync model produce a
 // closed mouth at both ends of the speech segment, which is what makes the cut
 // into and out of a speech carrier invisible, and it doubles as a breath-in.
-const SPEECH_PAD_S = 0.3;
+// Lead-in only has to let the mouth start closed; the tail is longer because
+// the clip is morphed back to the anchor pose during it, and the generator bills
+// by the second.
+const SPEECH_LEAD_S = 0.15;
+const SPEECH_TAIL_S = 0.35;
+const SPEECH_PAD_S = SPEECH_LEAD_S;
+const ANCHOR_RETURN_S = 0.28;
 
 // The voice stem is normalised to this, then the source is ducked under it and
 // the sum is limited. Without this the mix clipped at +2.9 dBFS and still went
@@ -409,7 +415,7 @@ async function createTts(text, index) {
   const padded = path.join(workDir, `comment-${index}.mp3`);
   await run('ffmpeg', [
     '-y', '-i', raw,
-    '-af', `adelay=${Math.round(SPEECH_PAD_S * 1000)}:all=1,apad=pad_dur=${SPEECH_PAD_S.toFixed(3)}`,
+    '-af', `adelay=${Math.round(SPEECH_LEAD_S * 1000)}:all=1,apad=pad_dur=${SPEECH_TAIL_S.toFixed(3)}`,
     '-c:a', 'libmp3lame', '-q:a', '2', padded,
   ]);
   const measured = await measureLoudness(padded);
@@ -527,20 +533,71 @@ async function falQueue(model, payload, expectedDuration, label) {
   return url;
 }
 
+// The generator is free to reinterpret the pose, and it does: left alone it
+// turns him toward the camera and lifts his head, so the cut back to a neutral
+// clip sitting at the anchor jumps. This asks for the pose to be held.
+const AVATAR_PROMPT = [
+  'Keep the exact head orientation, body orientation, camera angle, framing and gaze direction of the reference image.',
+  'He keeps looking off-screen to the left and never turns toward the camera.',
+  'Minimal head movement: only the small natural motion that comes with speaking.',
+  'No camera movement, no zoom, no reframing, no posture change.',
+  'Natural mouth and jaw articulation for the speech.',
+  'Keep the plain green background completely clean and unchanged.',
+].join(' ');
+
 // Generates the whole spoken performance from the persona still. There is no
 // mouth patch afterwards: every pixel is generated coherently, so patching one
 // region back would be the only thing capable of introducing a seam.
 async function falKlingAvatar({ index, imageUrl, audioUrl, expectedDuration }) {
-  const url = await falQueue(FAL_AVATAR_MODEL, { image_url: imageUrl, audio_url: audioUrl }, expectedDuration, 'fal Kling AI Avatar');
+  // Re-rendering the same line is common while tuning everything around it, and
+  // the generator bills per second every time. The clip is keyed on exactly what
+  // determines it.
+  const cacheKey = crypto.createHash('sha1').update(`${FAL_AVATAR_MODEL}::${imageUrl}::${audioUrl}::${AVATAR_PROMPT}`).digest('hex');
+  const cachePath = `cache/avatar/${cacheKey}.mp4`;
+  const cacheUrl = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${cachePath}`;
   const local = path.join(workDir, `avatar-fal-${index}.mp4`);
+
+  const cached = await fetch(cacheUrl);
+  if (cached.ok) {
+    await fs.writeFile(local, Buffer.from(await cached.arrayBuffer()));
+    const duration = await probeDuration(local);
+    const size = await frameSize(local);
+    log(`Kling AI Avatar: reused cached clip ${size.width}x${size.height}, ${duration.toFixed(2)}s`);
+    return { local, provider: 'fal_kling_ai_avatar', model: FAL_AVATAR_MODEL, duration, width: size.width, height: size.height, cached: true };
+  }
+
+  const url = await falQueue(FAL_AVATAR_MODEL, { image_url: imageUrl, audio_url: audioUrl, prompt: AVATAR_PROMPT }, expectedDuration, 'fal Kling AI Avatar');
   await download(url, local);
+  await uploadToBucket(local, cachePath, 'video/mp4').catch(error => log('Could not cache the avatar clip:', error.message));
   const duration = await probeDuration(local);
   if (duration + 0.35 < expectedDuration) {
     throw new Error(`Avatar output does not cover the line: ${duration.toFixed(2)}s < ${expectedDuration.toFixed(2)}s`);
   }
   const size = await frameSize(local);
-  log(`Kling AI Avatar: ${size.width}x${size.height}, ${duration.toFixed(2)}s`);
-  return { local, provider: 'fal_kling_ai_avatar', model: FAL_AVATAR_MODEL, duration, width: size.width, height: size.height };
+  log(`Kling AI Avatar: generated ${size.width}x${size.height}, ${duration.toFixed(2)}s`);
+  return { local, provider: 'fal_kling_ai_avatar', model: FAL_AVATAR_MODEL, duration, width: size.width, height: size.height, cached: false };
+}
+
+// Whatever pose the generator drifts into, the clip has to hand back to a
+// neutral clip that sits at the anchor. The trailing silence is exactly the
+// right place to morph home, so the hard cut at the segment boundary stays
+// valid and nothing jumps.
+async function returnToAnchor(clipFile, imageFile, index) {
+  const duration = await probeDuration(clipFile);
+  const fade = Math.min(ANCHOR_RETURN_S, duration / 3);
+  const size = await frameSize(clipFile);
+  const anchor = path.join(workDir, `anchor-${index}.mp4`);
+  await run('ffmpeg', ['-y', '-loop', '1', '-i', imageFile,
+    '-vf', `scale=${size.width}:${size.height}:force_original_aspect_ratio=increase,crop=${size.width}:${size.height},fps=${FPS},setsar=1`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-pix_fmt', 'yuv420p', '-t', (fade + 0.2).toFixed(3), anchor]);
+
+  const out = path.join(workDir, `anchored-${index}.mp4`);
+  await run('ffmpeg', ['-y', '-i', clipFile, '-i', anchor, '-an',
+    '-filter_complex', `[0:v][1:v]xfade=transition=fade:duration=${fade.toFixed(3)}:offset=${(duration - fade).toFixed(3)}[v]`,
+    '-map', '[v]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-pix_fmt', 'yuv420p',
+    '-t', duration.toFixed(3), out]);
+  log(`Anchored the spoken clip home over its last ${fade.toFixed(2)}s of silence`);
+  return out;
 }
 
 async function falKlingLipSync({ index, videoUrl, audioUrl, expectedDuration }) {
@@ -896,7 +953,7 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
       let finalSpeech;
       let patch = null;
       if (generated) {
-        finalSpeech = generated.local;
+        finalSpeech = referenceFile ? await returnToAnchor(generated.local, referenceFile, comments.length) : generated.local;
       } else {
         const blended = await blendLipSyncPatch(baseFile, synced.local, comments.length);
         patch = blended.patch;
@@ -929,6 +986,7 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
         lead_in_s: SPEECH_PAD_S,
         lipsync_provider: synced.provider,
         lipsync_duration: synced.duration,
+        lipsync_cached: synced.cached === true,
         lipsync_source: source,
         speech_carrier_ids: carrierIds,
         lipsync_patch: patch,
@@ -1268,6 +1326,7 @@ try {
       speech_carrier_ids: comment.speech_carrier_ids,
       lipsync_patch: comment.lipsync_patch,
       lipsync_source: comment.lipsync_source,
+      lipsync_cached: comment.lipsync_cached,
       plate_hex: comment.plate_hex,
       plate_drift: comment.plate_drift,
       voice_loudness_lufs: comment.loudness_lufs,
