@@ -1,0 +1,381 @@
+[
+  {
+    "id": "13c910a2-fff8-489c-a269-97d61ff86902",
+    "status": "failed",
+    "current_stage": "render_failed",
+    "error": "Kaggle MuseTalk failed:\nKaggle status: nililu/reaction-lipsync-13c910a2-msmbd4r0-0 has status \"KernelWorkerStatus.ERROR\"\n\nKAGGLE LOG TAIL:\n[{\"stream_name\":\"stdout\",\"time\":1.5480744560000002,\"data\":\"[reaction-musetalk] STAGE gpu_preflight\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":1.5564081939999999,\"data\":\"[reaction-musetalk] nvidia-smi binary unavailable; validating GPU through torch.cuda\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":1.556448553,\"data\":\"[reaction-musetalk] $ /usr/bin/python3 -c import torch,sys; print(sys.version); print(torch.__version__); print(torch.version.cuda); print(torch.cuda.get_device_name(0)); print(torch.cuda.get_device_capability(0))\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.141188992,\"data\":\"Traceback (most recent call last):\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.141284347,\"data\":\"  File \\\"\\u003cstring\\u003e\\\", line 1, in \\u003cmodule\\u003e\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.14129439,\"data\":\"  File \\\"/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py\\\", line 599, in get_device_name\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.141360096,\"data\":\"    return get_device_properties(device).name\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.141366805,\"data\":\"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.141371039,\"data\":\"  File \\\"/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py\\\", line 632, in get_device_properties\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.14167436,\"data\":\"    _lazy_init()  # will define _get_device_properties\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.141692607,\"data\":\"    ^^^^^^^^^^^^\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.141697184,\"data\":\"  File \\\"/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py\\\", line 417, in _lazy_init\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.141864915,\"data\":\"    raise AssertionError(\\\"Torch not compiled with CUDA enabled\\\")\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.141875076,\"data\":\"AssertionError: Torch not compiled with CUDA enabled\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.148093471,\"data\":\"3.12.13 (main, Mar  4 2026, 09:23:07) [GCC 11.4.0]\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.148133589,\"data\":\"2.10.0+cpu\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.148201153,\"data\":\"None\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.629769629,\"data\":\"Traceback (most recent call last):\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.629808387,\"data\":\"  File \\\"/kaggle/src/script.py\\\", line 309, in \\u003cmodule\\u003e\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.629815142,\"data\":\"    main()\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.62981901,\"data\":\"  File \\\"/kaggle/src/script.py\\\", line 228, in main\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.629823061,\"data\":\"    run([sys.executable, '-c', 'import torch,sys; print(sys.version); print(torch.__version__); print(torch.version.cuda); print(torch.cuda.get_device_name(0)); print(torch.cuda.get_device_capability(0))'])\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.629829165,\"data\":\"  File \\\"/kaggle/src/script.py\\\", line 52, in run\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.629833228,\"data\":\"    raise RuntimeError(f'Command failed ({code}): {\\\" \\\".join(args)}\\\\n--- tail ---\\\\n{output}')\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.629837739,\"data\":\"RuntimeError: Command failed (1): /usr/bin/python3 -c import torch,sys; print(sys.version); print(torch.__version__); print(torch.version.cuda); print(torch.cuda.get_device_name(0)); print(torch.cuda.get_device_capability(0))\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.629841923,\"data\":\"--- tail ---\\n\"}\n,{\"stream_name\":\"stderr\",\"time\":7.629817656,\"data\":\"Traceback (most recent call last):\\n\"}\n,{\"stream_name\":\"stderr\",\"time\":7.629863284,\"data\":\"  File \\\"/kaggle/src/script.py\\\", line 309, in \\u003cmodule\\u003e\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.6298453649999995,\"data\":\"Traceback (most recent call last):\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.62987457,\"data\":\"  File \\\"\\u003cstring\\u003e\\\", line 1, in \\u003cmodule\\u003e\\n\"}\n,{\"stream_name\":\"stdout\",\"time\":7.629893677,\"data\":\"  File \\\"/usr/local/lib/python3.12/dist-packages/torch/cuda/__in",
+    "result_url": null,
+    "created_at": "2026-08-09T21:02:11.706721+00:00",
+    "updated_at": "2026-08-09T21:28:17.799+00:00",
+    "completed_at": "2026-08-09T21:28:17.799+00:00",
+    "attempts": 1,
+    "render_meta": {
+      "renderer": "lm-render/github-actions-v3",
+      "frame_count": 14,
+      "failed_stage": "render",
+      "analysis_only": false,
+      "analysis_model": "google/gemini-2.5-flash",
+      "render_request": {
+        "avatar_mode": "pip",
+        "requested_at": "2026-08-09T21:03:02.049Z",
+        "voice_lipsync": true,
+        "reuse_analysis": true,
+        "kaggle_username": "Nilinu",
+        "lipsync_provider": "musetalk_kaggle",
+        "max_voice_comments": 1,
+        "available_asset_types": [
+          "cringe",
+          "neutral",
+          "smirk"
+        ]
+      },
+      "visual_sampling": "browser_scene_aware_v1",
+      "source_media_used": true,
+      "director_vocabulary": [
+        "cringe",
+        "neutral",
+        "smirk"
+      ],
+      "source_analysis_mode": "source_video_audio_plus_frame_anchors",
+      "used_real_asset_vocabulary": true
+    },
+    "reaction_plan": {
+      "tone": "amused",
+      "events": [
+        {
+          "gaze": "content",
+          "time": 3.2,
+          "type": "smirk",
+          "reason": "The first 'Lidl Super Market' sign appears with a ladybug logo, which is not typical for the actual Lidl brand, creating a humorous, slightly off-brand visual.",
+          "comment": "That's not the Lidl I know!",
+          "duration": 1.5,
+          "intensity": 0.4
+        },
+        {
+          "gaze": "content",
+          "time": 7.35,
+          "type": "smirk",
+          "reason": "A second 'Lidl Super Market' sign, also with a ladybug logo, comes into view, doubling the humorous, off-brand effect.",
+          "comment": "Two of them?",
+          "duration": 2,
+          "intensity": 0.5
+        }
+      ],
+      "summary": "The video shows a street scene at night with two 'Lidl Super Market' signs, one of which has a ladybug logo, while accordion music plays."
+    },
+    "source_filename": "v24044gl0000d9qenm7og65qbivjhra0.mp4"
+  },
+  {
+    "id": "185df8b1-b394-4e3c-84bf-2e1e9a178fd9",
+    "status": "rendering",
+    "current_stage": "lipsync_hf_running",
+    "error": null,
+    "result_url": null,
+    "created_at": "2026-08-09T20:38:20.46975+00:00",
+    "updated_at": "2026-08-10T05:07:40.331+00:00",
+    "completed_at": null,
+    "attempts": 10,
+    "render_meta": {
+      "comments": [
+        {
+          "text": "6:42 AM? That's quite early.",
+          "start": 4.65,
+          "duration": 2.638367,
+          "lipsync_skipped": false,
+          "lipsync_provider": "huggingface_public_musetalk"
+        }
+      ],
+      "renderer": "lm-render/github-actions-v4",
+      "duration_s": 53.568,
+      "avatar_mode": "chroma",
+      "event_count": 2,
+      "frame_count": 14,
+      "adapted_plan": {
+        "tone": "amused, slightly cringed",
+        "events": [
+          {
+            "gaze": "content",
+            "time": 4.65,
+            "type": "smirk",
+            "reason": "The speaker mentions the guest arrived at 6:42 AM, which is unusually early for a guest, prompting a slight smirk.",
+            "comment": "6:42 AM? That's quite early.",
+            "duration": 1.5,
+            "intensity": 0.3
+          },
+          {
+            "gaze": "content",
+            "time": 43,
+            "type": "cringe",
+            "reason": "The speaker reveals the guest sat right outside the front door for hours despite being told to leave and come back later, which is a socially awkward and cringe",
+            "duration": 2,
+            "intensity": 0.4
+          }
+        ],
+        "summary": "The reactor is amused and slightly cringed by the guest's lack of social awareness and disregard for instructions."
+      },
+      "failed_stage": "render",
+      "analysis_only": false,
+      "comment_count": 1,
+      "lipsync_space": "trymonolith/MuseTalk",
+      "segment_count": 8,
+      "voice_lipsync": true,
+      "active_comment": "6:42 AM? That's quite early.",
+      "analysis_model": "google/gemini-2.5-flash",
+      "render_request": {
+        "avatar_mode": "pip",
+        "requested_at": "2026-08-09T20:39:08.308Z",
+        "voice_lipsync": true,
+        "reuse_analysis": true,
+        "kaggle_username": "1",
+        "lipsync_provider": "musetalk_kaggle",
+        "max_voice_comments": 1,
+        "available_asset_types": [
+          "cringe",
+          "neutral",
+          "smirk"
+        ]
+      },
+      "timeline_clock": "absolute_preserved_xfade_v1",
+      "visual_sampling": "browser_scene_aware_v1",
+      "absolute_start_s": 4.65,
+      "lipsync_provider": "huggingface_public_musetalk",
+      "source_media_used": true,
+      "adapted_event_count": 2,
+      "director_vocabulary": [
+        "cringe",
+        "neutral",
+        "smirk"
+      ],
+      "source_analysis_mode": "source_video_audio_plus_frame_anchors",
+      "lipsync_skipped_count": 0,
+      "planned_voice_comments": 1,
+      "used_real_asset_vocabulary": true
+    },
+    "reaction_plan": {
+      "tone": "amused, slightly cringed",
+      "events": [
+        {
+          "gaze": "content",
+          "time": 4.65,
+          "type": "smirk",
+          "reason": "The speaker mentions the guest arrived at 6:42 AM, which is unusually early for a guest, prompting a slight smirk.",
+          "comment": "6:42 AM? That's quite early.",
+          "duration": 1.5,
+          "intensity": 0.3
+        },
+        {
+          "gaze": "content",
+          "time": 43,
+          "type": "cringe",
+          "reason": "The speaker reveals the guest sat right outside the front door for hours despite being told to leave and come back later, which is a socially awkward and cringe",
+          "comment": "She just sat there? Awkward.",
+          "duration": 2,
+          "intensity": 0.4
+        }
+      ],
+      "summary": "The reactor is amused and slightly cringed by the guest's lack of social awareness and disregard for instructions."
+    },
+    "source_filename": "The-Worst-Financial-Audit-Guest-of-ALL-Time.mp4"
+  },
+  {
+    "id": "ce228436-fa8f-48da-b24b-5f935e0e301b",
+    "status": "failed",
+    "current_stage": "render_failed",
+    "error": "Kaggle MuseTalk failed: nililu/reaction-lipsync-ce228436-msma3zrl-0 has status \"KernelWorkerStatus.ERROR\"",
+    "result_url": null,
+    "created_at": "2026-08-09T20:05:28.392117+00:00",
+    "updated_at": "2026-08-09T20:52:53.754+00:00",
+    "completed_at": "2026-08-09T20:52:53.754+00:00",
+    "attempts": 2,
+    "render_meta": {
+      "renderer": "lm-render/github-actions-v2",
+      "frame_count": 14,
+      "failed_stage": "render",
+      "analysis_only": false,
+      "analysis_model": "google/gemini-2.5-flash",
+      "render_request": {
+        "avatar_mode": "pip",
+        "requested_at": "2026-08-09T20:37:44.487Z",
+        "voice_lipsync": true,
+        "reuse_analysis": true,
+        "kaggle_username": "1",
+        "lipsync_provider": "musetalk_kaggle",
+        "max_voice_comments": 1,
+        "available_asset_types": [
+          "cringe",
+          "neutral",
+          "smirk"
+        ]
+      },
+      "visual_sampling": "browser_scene_aware_v1",
+      "source_media_used": true,
+      "director_vocabulary": [
+        "cringe",
+        "neutral",
+        "smirk"
+      ],
+      "source_analysis_mode": "source_video_audio_plus_frame_anchors",
+      "used_real_asset_vocabulary": true
+    },
+    "reaction_plan": {
+      "tone": "amused, slightly cringed",
+      "events": [
+        {
+          "gaze": "content",
+          "time": 4.5,
+          "type": "smirk",
+          "reason": "The speaker mentions the guest arrived at 6:42 AM, which is an unusually early time for a guest, prompting a slight smirk.",
+          "comment": "That's a bit much.",
+          "duration": 1.5,
+          "intensity": 0.4
+        },
+        {
+          "gaze": "content",
+          "time": 43,
+          "type": "cringe",
+          "reason": "The speaker reveals the guest sat right outside the front door after being told to wait, which is a socially awkward and persistent behavior, eliciting a cringe",
+          "comment": "Oh, that's awkward.",
+          "duration": 2,
+          "intensity": 0.6
+        }
+      ],
+      "summary": "The reactor is amused and slightly cringed by the guest's audacity to show up extremely early and then wait outside the door."
+    },
+    "source_filename": "The-Worst-Financial-Audit-Guest-of-ALL-Time.mp4"
+  },
+  {
+    "id": "9c75888d-17ec-4502-a0ba-b5149e415a8e",
+    "status": "completed",
+    "current_stage": "analysis_ready",
+    "error": null,
+    "result_url": null,
+    "created_at": "2026-08-09T19:01:31.976898+00:00",
+    "updated_at": "2026-08-09T19:01:52.775+00:00",
+    "completed_at": "2026-08-09T19:01:52.775+00:00",
+    "attempts": 0,
+    "render_meta": {
+      "frame_count": 14,
+      "analysis_only": true,
+      "analysis_model": "google/gemini-2.5-flash",
+      "visual_sampling": "browser_scene_aware_v1",
+      "source_media_used": true,
+      "director_vocabulary": [
+        "neutral",
+        "comment",
+        "suspicious",
+        "smirk",
+        "surprise",
+        "disbelief",
+        "cringe",
+        "laugh"
+      ],
+      "source_analysis_mode": "source_video_audio_plus_frame_anchors"
+    },
+    "reaction_plan": {
+      "tone": "amused",
+      "events": [
+        {
+          "gaze": "content",
+          "time": 4.5,
+          "type": "surprise",
+          "reason": "The speaker reveals the guest arrived at 6:42 AM, which is an unusually early time, causing the reactor to show surprise.",
+          "comment": "6:42 AM? That's really early!",
+          "duration": 1.5,
+          "intensity": 0.6
+        },
+        {
+          "gaze": "content",
+          "time": 43,
+          "type": "laugh",
+          "reason": "The speaker describes the guest sitting right outside the front door for hours, which is a humorous and persistent action, making the reactor laugh.",
+          "comment": "She just waited outside? That's dedication.",
+          "duration": 2,
+          "intensity": 0.7
+        }
+      ],
+      "summary": "The reactor is surprised and amused by a guest's extreme punctuality and persistence."
+    },
+    "source_filename": "The-Worst-Financial-Audit-Guest-of-ALL-Time.mp4"
+  },
+  {
+    "id": "a33ce47a-362f-4d30-b4f4-25d177c3ae1f",
+    "status": "completed",
+    "current_stage": "analysis_ready",
+    "error": null,
+    "result_url": null,
+    "created_at": "2026-08-09T18:44:08.193985+00:00",
+    "updated_at": "2026-08-09T18:44:12.113+00:00",
+    "completed_at": "2026-08-09T18:44:12.113+00:00",
+    "attempts": 0,
+    "render_meta": {
+      "frame_count": 14,
+      "analysis_only": true,
+      "analysis_model": "google/gemini-2.5-flash",
+      "visual_sampling": "browser_scene_aware_v1",
+      "director_vocabulary": [
+        "neutral",
+        "comment",
+        "suspicious",
+        "smirk",
+        "surprise",
+        "disbelief",
+        "cringe",
+        "laugh"
+      ],
+      "source_analysis_mode": "visual_frames_only"
+    },
+    "reaction_plan": {
+      "tone": "amused disbelief",
+      "events": [
+        {
+          "gaze": "content",
+          "time": 3.83,
+          "type": "disbelief",
+          "reason": "The host mentions a guest arriving at 6:42 AM, which is an unusually early time for a podcast recording.",
+          "comment": "6:42 AM is wild.",
+          "duration": 2,
+          "intensity": 0.6
+        },
+        {
+          "gaze": "content",
+          "time": 34.44,
+          "type": "smirk",
+          "reason": "The host explicitly states the rule 'no early birds' in the confirmation email, highlighting the guest's disregard for instructions.",
+          "comment": "No early birds, indeed.",
+          "duration": 2,
+          "intensity": 0.7
+        }
+      ],
+      "summary": "A podcast host recounts a frustrating experience with an early guest, leading to a security intervention."
+    },
+    "source_filename": "The-Worst-Financial-Audit-Guest-of-ALL-Time.mp4"
+  },
+  {
+    "id": "5e09da93-ad6a-4632-b998-ca9b61d6e43f",
+    "status": "failed",
+    "current_stage": "analysis_failed",
+    "error": "preview-analysis: ElevenLabs transcription failed (401): {\"detail\":{\"type\":\"authentication_error\",\"code\":\"unauthorized\",\"message\":\"The API key you used is missing the permission speech_to_text to execute this operation.\",\"status\":\"missing_permissions\",\"request_id\":\"aa211a66f1c89b5468d7cbd16e33b5b0\"}}",
+    "result_url": null,
+    "created_at": "2026-08-09T18:33:04.313288+00:00",
+    "updated_at": "2026-08-09T18:33:06.013+00:00",
+    "completed_at": "2026-08-09T18:33:06.013+00:00",
+    "attempts": 0,
+    "render_meta": {},
+    "reaction_plan": null,
+    "source_filename": "The-Worst-Financial-Audit-Guest-of-ALL-Time.mp4"
+  },
+  {
+    "id": "8b3d0cf8-190c-40dc-8866-7b6372faf4e1",
+    "status": "cancelled",
+    "current_stage": "queued",
+    "error": null,
+    "result_url": null,
+    "created_at": "2026-08-09T17:54:41.066358+00:00",
+    "updated_at": "2026-08-09T18:32:54.881+00:00",
+    "completed_at": null,
+    "attempts": 0,
+    "render_meta": {},
+    "reaction_plan": null,
+    "source_filename": "The-Worst-Financial-Audit-Guest-of-ALL-Time.mp4"
+  }
+]
