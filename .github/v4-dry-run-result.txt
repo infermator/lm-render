@@ -1,0 +1,4 @@
+ok
+speech_ready_selection=true
+immutable_results=true
+kaggle_active_path=false
