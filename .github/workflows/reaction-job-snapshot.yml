@@ -1,0 +1,45 @@
+name: Reaction Job Snapshot
+
+on:
+  push:
+    paths:
+      - '.github/job-snapshot-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Snapshot latest jobs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          base=os.environ['SUPABASE_URL'].rstrip('/')
+          key=os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          q=urllib.parse.urlencode({
+            'select':'id,status,current_stage,error,result_url,created_at,updated_at,completed_at,attempts,render_meta,reaction_plan,source_filename',
+            'order':'created_at.desc',
+            'limit':'12',
+          })
+          req=urllib.request.Request(f'{base}/rest/v1/reaction_jobs?{q}',headers={'apikey':key,'Authorization':f'Bearer {key}'})
+          with urllib.request.urlopen(req,timeout=30) as r: rows=json.loads(r.read().decode())
+          with open('.github/latest-reaction-jobs.json','w') as f: json.dump(rows,f,indent=2,ensure_ascii=False)
+          print(json.dumps(rows,indent=2,ensure_ascii=False))
+          PY
+      - name: Commit snapshot
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/latest-reaction-jobs.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record latest Reaction Lab jobs'
+          git pull --rebase origin main
+          git push origin HEAD:main
