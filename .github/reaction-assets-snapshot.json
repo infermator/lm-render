@@ -1,0 +1,44 @@
+[
+  {
+    "id": "50505c82-bc28-49aa-94de-2f07c213998e",
+    "persona": "default",
+    "reaction_type": "neutral",
+    "label": "Neutral A",
+    "video_url": "https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/assets/default/239306d3-4c6e-4df9-97d6-34c62ba09e64/kxrAVqEKf9EyZ0FSaiTV-0.mp4",
+    "duration_s": null,
+    "speech_ready": false,
+    "anchor_role": "neutral",
+    "intensity_min": 0,
+    "intensity_max": 1,
+    "enabled": true,
+    "created_at": "2026-08-09T19:35:52.530967+00:00"
+  },
+  {
+    "id": "ea6ce519-fff0-4dd3-98c9-22574caf385e",
+    "persona": "default",
+    "reaction_type": "smirk",
+    "label": "2WIaP3dMIOEHxsLRUF1Z-0.mp4",
+    "video_url": "https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/assets/default/188c7ff4-a9c7-4e90-a2ef-599f3dc55674/2WIaP3dMIOEHxsLRUF1Z-0.mp4",
+    "duration_s": null,
+    "speech_ready": false,
+    "anchor_role": "none",
+    "intensity_min": 0,
+    "intensity_max": 1,
+    "enabled": true,
+    "created_at": "2026-08-09T19:41:45.363984+00:00"
+  },
+  {
+    "id": "168ef5e8-a0c3-4205-afb7-b2815ae86ca8",
+    "persona": "default",
+    "reaction_type": "cringe",
+    "label": "tQw1ak566ChiZhKuf6wk-0.mp4",
+    "video_url": "https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/assets/default/55d59db8-e817-4022-9471-c41447d5bdd0/tQw1ak566ChiZhKuf6wk-0.mp4",
+    "duration_s": null,
+    "speech_ready": false,
+    "anchor_role": "none",
+    "intensity_min": 0,
+    "intensity_max": 1,
+    "enabled": true,
+    "created_at": "2026-08-09T19:42:16.690868+00:00"
+  }
+]
