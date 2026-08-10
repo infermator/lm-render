@@ -5,11 +5,16 @@ on:
     paths:
       - '.github/v4-dry-run-kick'
 
+permissions:
+  contents: write
+
 jobs:
   dry-run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -17,6 +22,17 @@ jobs:
         env:
           REACTION_V4_HARDEN_DRY_RUN: '1'
         run: |
+          set -euo pipefail
           node --check scripts/reaction/render-v4.mjs
           node --check scripts/reaction/run-v4-hardened.mjs
           node scripts/reaction/run-v4-hardened.mjs
+          printf 'ok\nspeech_ready_selection=true\nimmutable_results=true\nkaggle_active_path=false\n' > .github/v4-dry-run-result.txt
+      - name: Persist success marker
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/v4-dry-run-result.txt
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record hardened Reaction Lab v4 dry-run'
+          git pull --rebase origin main
+          git push origin HEAD:main
