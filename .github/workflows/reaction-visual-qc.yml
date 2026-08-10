@@ -1,0 +1,62 @@
+name: Reaction Visual QC
+
+on:
+  push:
+    paths:
+      - '.github/visual-qc-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  qc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Download final and build contact sheet
+        run: |
+          set -euo pipefail
+          URL='https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/results/185df8b1-b394-4e3c-84bf-2e1e9a178fd9.mp4'
+          curl -L --fail --retry 3 "$URL?v=$(date +%s)" -o /tmp/final.mp4
+          mkdir -p .github/qc
+          # Full-frame snapshots: before, during and after the spoken comment, plus the later reaction.
+          rm -f /tmp/qc-*.jpg
+          for spec in '01:4.20' '02:4.65' '03:4.95' '04:5.30' '05:5.70' '06:6.20' '07:7.20' '08:42.80' '09:43.10' '10:43.60'; do
+            name="${spec%%:*}"; t="${spec#*:}"
+            ffmpeg -hide_banner -loglevel error -ss "$t" -i /tmp/final.mp4 -frames:v 1 -vf "scale=360:640" -q:v 3 "/tmp/qc-${name}.jpg"
+          done
+          ffmpeg -hide_banner -loglevel error \
+            -i /tmp/qc-01.jpg -i /tmp/qc-02.jpg -i /tmp/qc-03.jpg -i /tmp/qc-04.jpg -i /tmp/qc-05.jpg \
+            -i /tmp/qc-06.jpg -i /tmp/qc-07.jpg -i /tmp/qc-08.jpg -i /tmp/qc-09.jpg -i /tmp/qc-10.jpg \
+            -filter_complex "[0:v][1:v][2:v][3:v][4:v]hstack=inputs=5[top];[5:v][6:v][7:v][8:v][9:v]hstack=inputs=5[bot];[top][bot]vstack=inputs=2[out]" \
+            -map '[out]' -frames:v 1 -q:v 3 .github/qc/185df8b1-contact-sheet.jpg
+
+          # Avatar-region crops around the spoken interval. Bottom-right placement is deterministic in v4.
+          rm -f /tmp/mouth-*.jpg
+          for spec in '01:4.55' '02:4.80' '03:5.05' '04:5.30' '05:5.55' '06:5.80' '07:6.05' '08:6.30'; do
+            name="${spec%%:*}"; t="${spec#*:}"
+            ffmpeg -hide_banner -loglevel error -ss "$t" -i /tmp/final.mp4 -frames:v 1 \
+              -vf "crop=620:1100:440:808,scale=310:550" -q:v 2 "/tmp/mouth-${name}.jpg"
+          done
+          ffmpeg -hide_banner -loglevel error \
+            -i /tmp/mouth-01.jpg -i /tmp/mouth-02.jpg -i /tmp/mouth-03.jpg -i /tmp/mouth-04.jpg \
+            -i /tmp/mouth-05.jpg -i /tmp/mouth-06.jpg -i /tmp/mouth-07.jpg -i /tmp/mouth-08.jpg \
+            -filter_complex "[0:v][1:v][2:v][3:v]hstack=inputs=4[top];[4:v][5:v][6:v][7:v]hstack=inputs=4[bot];[top][bot]vstack=inputs=2[out]" \
+            -map '[out]' -frames:v 1 -q:v 2 .github/qc/185df8b1-avatar-speaking.jpg
+
+          ffprobe -v error -show_streams -show_format -of json /tmp/final.mp4 > .github/qc/185df8b1-ffprobe.json
+      - name: Commit QC
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/qc
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record Reaction Lab v4 visual QC'
+          git pull --rebase origin main
+          git push origin HEAD:main
