@@ -1,0 +1,22 @@
+name: Reaction V4 Dry Run
+
+on:
+  push:
+    paths:
+      - '.github/v4-dry-run-kick'
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify hardened runtime source
+        env:
+          REACTION_V4_HARDEN_DRY_RUN: '1'
+        run: |
+          node --check scripts/reaction/render-v4.mjs
+          node --check scripts/reaction/run-v4-hardened.mjs
+          node scripts/reaction/run-v4-hardened.mjs
