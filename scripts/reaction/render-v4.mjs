@@ -383,6 +383,15 @@ function adaptPlan(plan, assets, request) {
   return { ...plan, events };
 }
 
+// A generated reaction is a whole performance: it opens neutral, peaks, and
+// settles back. The Director's timestamp marks the moment the reaction should
+// land, which is the peak — not the moment the clip starts rolling.
+function assetPeak(asset, duration) {
+  const stored = Number(asset?.metadata?.loop?.peak_s);
+  if (Number.isFinite(stored) && stored > 0 && stored < duration) return stored;
+  return duration / 2;
+}
+
 async function assetDuration(asset, localFile) {
   const declared = Number(asset?.duration_s);
   if (Number.isFinite(declared) && declared > 0.2) return declared;
@@ -996,10 +1005,24 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
     } else {
       asset = chooseAsset(assets, String(event.type), Number(event.intensity ?? 0.35))
         || neutralAssets[neutralState.index++ % neutralAssets.length];
+
+      // Play the clip whole and slide it so its peak sits on the event time.
+      // Cutting it to the Director's duration would show only the neutral
+      // opening beat and never the reaction itself.
+      const local = await cachedDownload(asset.video_url, asset.video_url.toLowerCase().includes('.webm') ? '.webm' : '.mp4');
+      const full = await assetDuration(asset, local);
+      const peak = assetPeak(asset, full);
+      const desired = Number(event.time) - peak;
+      const earliest = cursor + 0.08;
+      start = clamp(Math.max(desired, earliest), 0, Math.max(0, totalDuration - 0.1));
+      duration = full;
+      if (desired < earliest) {
+        log(`Reaction at ${Number(event.time).toFixed(2)}s starts late: the previous segment runs to ${cursor.toFixed(2)}s`);
+      }
     }
 
     duration = Math.min(duration, totalDuration - start);
-    segments.push({ start, duration, asset, localOverride, kind: hasComment ? 'comment' : 'reaction', event, lipsyncMeta });
+    segments.push({ start, duration, asset, localOverride, kind: hasComment ? 'comment' : 'reaction', event, lipsyncMeta, peak_s: assetPeak(asset, duration) });
     cursor = start + duration;
   }
 
