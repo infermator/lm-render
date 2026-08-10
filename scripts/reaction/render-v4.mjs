@@ -477,26 +477,40 @@ async function locateLipSyncPatch(bedFile, syncedFile) {
   }
 
   const threshold = Math.max(1.2, maxDeviation * 0.35);
-  let minX = GRID_W; let maxX = -1; let minY = GRID_H; let maxY = -1;
-  let weight = 0; let cxSum = 0; let cySum = 0;
+  let weight = 0; let cxSum = 0; let cySum = 0; let moving = 0;
   for (let cell = 0; cell < cells; cell++) {
     if (deviation[cell] < threshold) continue;
-    const x = cell % GRID_W;
-    const y = Math.floor(cell / GRID_W);
-    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
-    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
-    cxSum += x * deviation[cell]; cySum += y * deviation[cell]; weight += deviation[cell];
+    moving += 1;
+    cxSum += (cell % GRID_W) * deviation[cell];
+    cySum += Math.floor(cell / GRID_W) * deviation[cell];
+    weight += deviation[cell];
   }
-  if (maxX < 0) throw new Error('Lip-sync output has no coherent moving region');
+  if (!moving) throw new Error('Lip-sync output has no coherent moving region');
+
+  // A bounding box is set by its outliers, and the provider regenerates the
+  // whole face block every frame, so a handful of scattered cells stretched the
+  // patch to the size of the block itself — which put the block's own edge back
+  // inside the patch. The weighted spread is not moved by those outliers.
+  const meanX = cxSum / weight;
+  const meanY = cySum / weight;
+  let varX = 0; let varY = 0;
+  for (let cell = 0; cell < cells; cell++) {
+    if (deviation[cell] < threshold) continue;
+    varX += deviation[cell] * ((cell % GRID_W) - meanX) ** 2;
+    varY += deviation[cell] * (Math.floor(cell / GRID_W) - meanY) ** 2;
+  }
+  const spreadX = Math.sqrt(varX / weight);
+  const spreadY = Math.sqrt(varY / weight);
 
   const scaleX = AVATAR_W / GRID_W;
   const scaleY = AVATAR_H / GRID_H;
-  const centreX = ((cxSum / weight) + 0.5) * scaleX;
-  const centreY = ((cySum / weight) + 0.5) * scaleY;
-  // Grow past the detected motion so the feather lands on still skin, but stay
-  // well inside the face so the patch never reaches the plate.
-  const halfW = clamp(((maxX - minX + 1) * scaleX) * 0.85, AVATAR_W * 0.06, AVATAR_W * 0.20);
-  const halfH = clamp(((maxY - minY + 1) * scaleY) * 0.85, AVATAR_H * 0.08, AVATAR_H * 0.26);
+  const centreX = (meanX + 0.5) * scaleX;
+  const centreY = (meanY + 0.5) * scaleY;
+  // Mouth-sized, never face-sized. The ceiling matters more than the floor: the
+  // patch must stay comfortably smaller than the provider's block so the block's
+  // edge is never copied.
+  const halfW = clamp(spreadX * 1.9 * scaleX, AVATAR_W * 0.045, AVATAR_W * 0.105);
+  const halfH = clamp(spreadY * 1.9 * scaleY, AVATAR_H * 0.055, AVATAR_H * 0.130);
 
   const even = value => Math.max(2, Math.round(value / 2) * 2);
   let width = even(halfW * 2);
@@ -509,7 +523,8 @@ async function locateLipSyncPatch(bedFile, syncedFile) {
   return {
     x, y, width, height,
     peak_deviation: Number(maxDeviation.toFixed(2)),
-    moving_cells: deviation.filter(value => value >= threshold).length,
+    moving_cells: moving,
+    centre: [Math.round(centreX), Math.round(centreY)],
   };
 }
 
