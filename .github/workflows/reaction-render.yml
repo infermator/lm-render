@@ -16,8 +16,10 @@ on:
 permissions:
   contents: write
 
+# One worker at a time. Scheduled runs are single-shot now, so an old checkout
+# cannot sit around for five minutes and claim a future job with stale code.
 concurrency:
-  group: reaction-video-lab-${{ github.event_name }}
+  group: reaction-video-lab-worker
   cancel-in-progress: false
 
 jobs:
@@ -39,9 +41,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
           python -m pip install --upgrade pip
-          python -m pip install 'kaggle>=2.2.3' 'gradio_client>=1.13.0'
+          python -m pip install 'gradio_client>=1.13.0'
           ffmpeg -version | head -1
           ffprobe -version | head -1
+          node --check scripts/reaction/render-v4.mjs
 
       - name: Resolve render target
         env:
@@ -61,29 +64,18 @@ jobs:
           echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
           echo "FORCE_REQUEUE=$FORCE_REQUEUE" >> "$GITHUB_ENV"
           echo "REPLAY_JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
-          echo "[reaction-worker] event=$EVENT_NAME job=${JOB_ID:-queue} force_requeue=$FORCE_REQUEUE"
+          echo "[reaction-worker-v4] event=$EVENT_NAME job=${JOB_ID:-queue} force_requeue=$FORCE_REQUEUE"
 
-      - name: Render Reaction Lab job
+      - name: Render one Reaction Lab job
         env:
           MAM_BASE: 'https://21media-mam.vercel.app'
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
-          KAGGLE_USERNAME: 'nililu'
-          MUSETALK_KAGGLE_WORKER: ${{ github.workspace }}/kaggle/musetalk_lipsync.py
           HF_MUSETALK_WORKER: ${{ github.workspace }}/scripts/reaction/hf_musetalk_lipsync.py
         run: |
           set -euo pipefail
-          if [ -n "${JOB_ID:-}" ]; then
-            node scripts/reaction/render-v3.mjs
-            exit $?
-          fi
-          for attempt in $(seq 1 30); do
-            echo "[reaction-worker] queue poll ${attempt}/30"
-            JOB_ID='' FORCE_REQUEUE=0 node scripts/reaction/render-v3.mjs
-            sleep 10
-          done
+          node scripts/reaction/render-v4.mjs
 
       - name: Persist diagnostic replay result
         if: always() && github.event_name == 'push'
@@ -103,7 +95,7 @@ jobs:
           job = os.environ['REPLAY_JOB_ID']
           query = urllib.parse.urlencode({
               'id': f'eq.{job}',
-              'select': 'id,status,current_stage,error,result_url,result_path,completed_at,updated_at,attempts',
+              'select': 'id,status,current_stage,error,result_url,result_path,completed_at,updated_at,attempts,render_meta,reaction_plan',
           })
           req = urllib.request.Request(
               f'{base}/rest/v1/reaction_jobs?{query}',
@@ -124,6 +116,6 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "Record Reaction Lab replay diagnostic"
+          git commit -m "Record Reaction Lab v4 replay diagnostic"
           git pull --rebase origin main
           git push origin HEAD:main
