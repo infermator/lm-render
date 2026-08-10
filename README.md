@@ -1,32 +1,102 @@
 # lm-render
 
-Free-tier render runner. This is a public repo *only* so that GitHub-hosted
-Actions minutes are unlimited (the 2,000 min/mo cap applies to private repos
-only).
+Public GitHub Actions media-render/orchestration repo for 21Media projects.
 
-**No application code lives here.** Each workflow clones the relevant private
-repo at runtime using the `GH_PAT` secret, runs the generator/worker there, and
-enqueues or uploads the output. Remotion templates, scripts and business logic
-stay private.
+Historically this repo was only a thin free-tier runner that cloned private generator code. That description is no longer fully true: **Reaction Video Lab v4 renderer/orchestration code now lives directly in this repo** so the worker can run without cloning the private MAM application.
 
-### Why this is safe to be public
-- Workflows trigger only on `schedule` + `workflow_dispatch` — neither is
-  fork-triggerable, and `workflow_dispatch` needs write access. Strangers
-  cannot run these jobs or push into the backlog.
-- Pull requests from forks run with **no secrets** by default, so the tokens
-  here can't be exfiltrated.
+## Why this repo is public
 
-### Required secrets
-| Secret | What it is |
+GitHub-hosted Actions on public repositories can be used as the low-volume render runner without the private-repo Actions-minute cap that originally motivated this repo.
+
+This repo must therefore contain **no application secrets**. Secrets are provided only at Actions runtime.
+
+Forked pull requests do not receive repository secrets by default. Production workflows are triggered by controlled `schedule`, `workflow_dispatch`, or owner-controlled push paths rather than arbitrary external input.
+
+## Reaction Video Lab
+
+Reaction Video Lab product/UI/state lives in private repo:
+
+`infermator/21media-mam`
+
+This repo owns the async media worker side.
+
+### Active flow
+
+`MAM render request → reaction_jobs queued → GitHub Actions worker → renderer v4 → optional TTS/lip-sync → chroma composite → QC/validation → Supabase result → MAM preview`
+
+### Important files
+
+- `.github/workflows/reaction-render.yml` — active Reaction Lab worker workflow
+- `scripts/reaction/render-v4.mjs` — base v4 renderer
+- `scripts/reaction/run-v4-hardened.mjs` — active hardened entrypoint
+- `scripts/reaction/hf_musetalk_lipsync.py` — current public Hugging Face MuseTalk smoke-provider adapter
+- `docs/reaction-renderer-v4.md` — technical renderer status, invariants, known debt and next implementation steps
+
+The product-level source of truth is `21media-mam/docs/reaction-video-lab.md`.
+
+## Reaction worker triggers
+
+`reaction-render.yml` currently supports:
+
+- `workflow_dispatch` with optional exact `reaction_jobs` UUID
+- scheduled polling every 5 minutes
+- owner-controlled `.github/render-kick` push trigger
+
+Scheduled runs are intentionally single-shot. A worker should not stay alive for several minutes with a stale checkout and later claim a newly queued job.
+
+## Reaction worker secrets
+
+The active Reaction Lab workflow requires:
+
+| Secret | Purpose |
 | --- | --- |
-| `GH_PAT` | fine-grained PAT, Contents:read on the private generator repos. Reaction Lab additionally needs read access to `infermator/21media-mam`. |
-| `BUFFER_PUSH_SECRET` | enqueue/worker bearer token |
-| `BLOB_READ_WRITE_TOKEN` | Vercel Blob upload |
+| `BUFFER_PUSH_SECRET` | bearer token for protected MAM worker endpoints |
 | `SUPABASE_URL` | MAM Supabase project URL |
-| `MAM_SUPABASE_SERVICE_ROLE_KEY` | MAM Supabase service-role JWT |
+| `MAM_SUPABASE_SERVICE_ROLE_KEY` | service-role access for Reaction Lab job/storage operations |
 
-### Workflows
-- `daily-fresh-clips.yml` — 04:00 UTC, generates N video clips
-- `daily-fresh-photo.yml` — 03:00 UTC, generates 1 photo slideshow
-- `render-clips.yml` — manual parallel backlog renderer
-- `reaction-render.yml` — manual MVP Reaction Lab renderer; accepts an exact job UUID or claims the oldest queued job. Enable scheduled polling after the first end-to-end render is approved.
+The Reaction v4 worker **does not require Kaggle credentials** and does not clone `21media-mam` at runtime.
+
+Other older workflows in this repository may still use additional secrets such as `GH_PAT` or `BLOB_READ_WRITE_TOKEN`; do not assume those are Reaction Lab requirements.
+
+## Current Reaction v4 decisions
+
+- final output remains 1080×1920 9:16
+- reusable avatar source library is moving to **16:9 chroma-green short clips**
+- current recommended motion units are ~3s reactions, 4s neutrals and 5s speech-ready carriers
+- Kling is persona setup only, not called per source video
+- spoken comments require a reusable `speech_ready` asset
+- ElevenLabs is TTS only
+- Kaggle GPU Batch is not in the active path
+- public Hugging Face MuseTalk is a smoke backend, **not yet a visually approved production lip-sync provider**
+- source audio must survive for the whole source duration
+- re-renders should use immutable/versioned result objects
+- provider/API success alone is not enough to pass lip-sync QC
+
+## Hardened v4 entrypoint
+
+The workflow runs:
+
+`scripts/reaction/run-v4-hardened.mjs`
+
+The launcher currently enforces two safeguards that were added quickly after live-output failures:
+
+1. spoken events must use an enabled `speech_ready` reusable avatar asset
+2. re-renders must use immutable/versioned result paths instead of overwriting one public object
+
+It also explicitly keeps Kaggle out of the active runtime.
+
+This runtime source-patching approach is **temporary technical debt**. Once 16:9 avatar-source support is implemented, these safeguards should be folded directly into the canonical `render-v4.mjs` source and the launcher simplified/removed.
+
+## Current biggest renderer gap
+
+The base v4 renderer still prepares avatar segments through a legacy 720×1280 portrait normalization/crop. That is incompatible with the newly agreed 16:9 green-screen persona library.
+
+Before the next serious avatar-quality test, renderer segment preparation must preserve the 16:9 avatar source, chroma-key it, then scale/position the resulting cutout into the final 1080×1920 composition.
+
+See `docs/reaction-renderer-v4.md` for the exact migration plan.
+
+## Existing non-Reaction workflows
+
+This repo also contains older media automation workflows such as daily clip/photo generation and backlog rendering. They are separate from Reaction Video Lab and can retain their own private-repo clone/secrets model until intentionally migrated.
+
+Do not copy assumptions from those workflows into the Reaction Lab architecture.
