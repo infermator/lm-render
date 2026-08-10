@@ -74,6 +74,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
           HF_MUSETALK_WORKER: ${{ github.workspace }}/scripts/reaction/hf_musetalk_lipsync.py
+          FAL_KEY: ${{ secrets.FAL_KEY }}
         run: |
           set -euo pipefail
           node scripts/reaction/run-v4-hardened.mjs
