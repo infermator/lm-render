@@ -1,0 +1,61 @@
+name: Reaction Audio QC
+
+on:
+  push:
+    paths:
+      - '.github/audio-qc-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  qc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Compare source and final audio after TTS
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, urllib.parse, urllib.request, re
+          from pathlib import Path
+
+          jid='185df8b1-b394-4e3c-84bf-2e1e9a178fd9'
+          base=os.environ['SUPABASE_URL'].rstrip('/'); key=os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          q=urllib.parse.urlencode({'id':f'eq.{jid}','select':'id,source_url,result_url,reaction_plan,render_meta','limit':'1'})
+          req=urllib.request.Request(f'{base}/rest/v1/reaction_jobs?{q}',headers={'apikey':key,'Authorization':f'Bearer {key}'})
+          with urllib.request.urlopen(req,timeout=30) as r: row=json.loads(r.read().decode())[0]
+          for name,url in [('source',row['source_url']),('final',row['result_url'])]: urllib.request.urlretrieve(url+'?audioqc=1',f'/tmp/{name}.mp4')
+
+          def rms(file,start,duration):
+            cmd=['ffmpeg','-hide_banner','-nostats','-ss',str(start),'-t',str(duration),'-i',file,'-vn','-af','volumedetect','-f','null','-']
+            p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            m=re.search(r'mean_volume:\s*(-?[0-9.]+) dB',p.stderr)
+            return float(m.group(1)) if m else None
+
+          windows=[(8,4),(15,5),(25,5),(40,5),(48,4)]
+          checks=[]
+          for start,dur in windows:
+            s=rms('/tmp/source.mp4',start,dur); f=rms('/tmp/final.mp4',start,dur)
+            checks.append({'start':start,'duration':dur,'source_mean_db':s,'final_mean_db':f,'delta_db':None if s is None or f is None else f-s,'final_audible':f is not None and f>-55})
+          payload={'job_id':jid,'result_url':row['result_url'],'windows':checks,'all_post_tts_windows_audible':all(c['final_audible'] for c in checks)}
+          Path('.github/qc').mkdir(exist_ok=True)
+          Path('.github/qc/audio-after-tts-qc.json').write_text(json.dumps(payload,indent=2))
+          print(json.dumps(payload,indent=2))
+          PY
+      - name: Commit QC
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/qc/audio-after-tts-qc.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record Reaction Lab post-TTS audio QC'
+          git pull --rebase origin main
+          git push origin HEAD:main
