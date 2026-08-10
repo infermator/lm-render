@@ -1,0 +1,115 @@
+name: Wav2Lip Real Probe
+
+on:
+  push:
+    paths:
+      - '.github/wav2lip-probe-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install client and ffmpeg
+        run: |
+          python -m pip install -q 'gradio_client>=1.13.0'
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Run real Wav2Lip GAN probe
+        env:
+          MAM_BASE: 'https://21media-mam.vercel.app'
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request, subprocess
+          from pathlib import Path
+          from gradio_client import Client, handle_file
+
+          base=os.environ['SUPABASE_URL'].rstrip('/')
+          key=os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          q=urllib.parse.urlencode({
+            'persona':'eq.default','reaction_type':'eq.smirk','enabled':'eq.true',
+            'select':'id,label,video_url','order':'created_at.asc','limit':'1'
+          })
+          req=urllib.request.Request(f'{base}/rest/v1/reaction_assets?{q}',headers={'apikey':key,'Authorization':f'Bearer {key}'})
+          with urllib.request.urlopen(req,timeout=30) as r: assets=json.loads(r.read().decode())
+          if not assets: raise RuntimeError('No enabled default/smirk asset')
+          asset=assets[0]
+
+          tts_req=urllib.request.Request(
+            os.environ['MAM_BASE'].rstrip('/')+'/api/reaction/tts',
+            data=json.dumps({'text':"6:42 AM? That's quite early."}).encode(),
+            headers={'Authorization':'Bearer '+os.environ['BUFFER_PUSH_SECRET'],'Content-Type':'application/json'},
+            method='POST')
+          with urllib.request.urlopen(tts_req,timeout=60) as r: tts=json.loads(r.read().decode())
+          audio=tts['audio_url']
+
+          payload={'asset':asset,'audio_url':audio,'space':'manavisrani07/gradio-lipsync-wav2lip','checkpoint':'wav2lip_gan','ok':False}
+          try:
+            client=Client('manavisrani07/gradio-lipsync-wav2lip',verbose=True)
+            result=client.predict(
+              handle_file(asset['video_url']),
+              handle_file(audio),
+              'wav2lip_gan',
+              0, 10, 0, 0, 1,
+              api_name='/generate',
+            )
+            path=None
+            if isinstance(result,dict):
+              video=result.get('video')
+              if isinstance(video,dict): path=video.get('path') or video.get('url')
+              elif video: path=video
+              if not path: path=result.get('path') or result.get('url')
+            elif isinstance(result,(list,tuple)) and result:
+              first=result[0]
+              if isinstance(first,dict):
+                video=first.get('video')
+                if isinstance(video,dict): path=video.get('path') or video.get('url')
+                elif video: path=video
+                if not path: path=first.get('path') or first.get('url')
+              else: path=first
+            else: path=result
+            path=str(path or '')
+            if not path or not os.path.exists(path): raise RuntimeError(f'Wav2Lip result is not local file: {result!r}')
+            size=os.path.getsize(path)
+            if size<20000: raise RuntimeError(f'Wav2Lip result too small: {size}')
+
+            probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',path]))
+            duration=float(probe.get('format',{}).get('duration') or 0)
+            storage='results/debug/wav2lip-real-probe.mp4'
+            data=Path(path).read_bytes()
+            upload=urllib.request.Request(
+              f'{base}/storage/v1/object/reaction-media/{storage}',data=data,method='POST',
+              headers={'apikey':key,'Authorization':f'Bearer {key}','Content-Type':'video/mp4','x-upsert':'true'})
+            with urllib.request.urlopen(upload,timeout=120) as r: r.read()
+            result_url=f'{base}/storage/v1/object/public/reaction-media/{storage}'
+
+            # Create five small frames across the first spoken seconds for real visual comparison.
+            qcdir=Path('.github/qc/wav2lip'); qcdir.mkdir(parents=True,exist_ok=True)
+            times=[0.35,0.70,1.05,1.40,1.75,2.10]
+            for i,t in enumerate(times,1):
+              subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y','-ss',str(t),'-i',path,'-frames:v','1','-vf','scale=240:-2','-q:v','5',str(qcdir/f'frame-{i:02d}.jpg')],check=True)
+            payload.update({'ok':True,'bytes':size,'duration_s':duration,'result_url':result_url,'raw_result':repr(result)[:2000]})
+          except Exception as e:
+            payload['error']=repr(e)
+          Path('.github/last-wav2lip-real-probe.json').write_text(json.dumps(payload,indent=2))
+          print(json.dumps(payload,indent=2))
+          PY
+      - name: Persist probe
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/last-wav2lip-real-probe.json .github/qc/wav2lip || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record real Wav2Lip GAN probe'
+          git pull --rebase origin main
+          git push origin HEAD:main
