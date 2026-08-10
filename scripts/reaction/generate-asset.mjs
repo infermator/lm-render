@@ -99,7 +99,7 @@ const PRESETS = {
     minimal: 'He watches something off-screen, calm and still. He blinks once and breathes. No expression change.',
     label: 'Neutral B',
     reactionType: 'neutral',
-    duration: 4,
+    duration: 10,
     performance: 'A quiet idle beat, three seconds of a man simply watching. He breathes. He blinks once, unhurried. His eyes drift a few degrees along whatever he is watching and come back. His head and shoulders settle by a couple of millimetres, the way a person shifts without noticing. His expression stays calm, attentive and completely neutral from the first frame to the last — no amusement, no surprise, no reaction of any kind. The stillness is the performance.',
   },
   smirk_a: {
@@ -113,21 +113,21 @@ const PRESETS = {
     minimal: 'He watches something off-screen, then winces with second-hand embarrassment, then his face relaxes back to neutral.',
     label: 'Cringe A',
     reactionType: 'cringe',
-    duration: 3,
+    duration: 10,
     performance: 'He watches, neutral. Then something lands awkwardly and he winces with second-hand embarrassment: the mouth pulls tight and sideways, the nose wrinkles, one eye squints half shut, the brow tightens, the chin tucks slightly and his head draws back an inch as if to get away from it. His shoulders lift a fraction. It is the face of someone watching another person embarrass themselves — pained and sympathetic, not disgusted, not frightened, not comic. He holds the wince a moment, then lets it drain away.',
   },
   disbelief_a: {
     minimal: 'He watches something off-screen, narrows his eyes in disbelief and shakes his head once slowly, then his face relaxes back to neutral.',
     label: 'Disbelief A',
     reactionType: 'disbelief',
-    duration: 3,
+    duration: 10,
     performance: 'He watches, neutral. Then something he cannot accept happens, and disbelief settles over his face: the eyes narrow, one eyebrow climbs while the other stays down, the lips press together and push slightly to one side, the jaw sets. He gives a single slow shake of the head, small but unmistakable, the way someone says "no way" without speaking. He keeps watching throughout. Then his face loosens again.',
   },
   surprise_a: {
     minimal: 'He watches something off-screen, then his eyes widen and eyebrows lift in surprise, then his face relaxes back to neutral.',
     label: 'Surprise A',
     reactionType: 'surprise',
-    duration: 3,
+    duration: 10,
     performance: 'He watches, neutral. Then something genuinely unexpected happens: his eyes widen, his eyebrows jump up, his lips part slightly and his head pulls back and up a little as the moment registers. The whole face opens for a beat. It is real, human surprise — the flinch of not seeing something coming — not shock, not fear, not exaggerated reaction acting. Then it settles and his expression closes again.',
   },
   suspicious_a: {
@@ -280,10 +280,17 @@ async function main() {
       for (let i = 0; i < cells; i++) total += Math.abs(a[i] - b[i]);
       return total / cells;
     };
-    let peak = { index: 1, score: -1 };
-    for (let i = 1; i < frames.length; i++) {
-      const score = distance(frames[0], frames[i]);
-      if (score > peak.score) peak = { index: i, score };
+    // An idle clip has no peak to find — the largest difference from frame 0 is
+    // just whichever frame caught a blink. Neutrals ping-pong whole, which also
+    // makes them the longest clips in the library, and they are the ones that
+    // repeat most.
+    let peak = { index: frames.length - 1, score: 0 };
+    if (preset.reactionType !== 'neutral') {
+      peak = { index: 1, score: -1 };
+      for (let i = 1; i < frames.length; i++) {
+        const score = distance(frames[0], frames[i]);
+        if (score > peak.score) peak = { index: i, score };
+      }
     }
     const probe = run('ffprobe', ['-select_streams', 'v:0', '-show_entries', 'stream=r_frame_rate', '-of', 'json', local]);
     const fps = Math.round(eval(JSON.parse(probe).streams[0].r_frame_rate)) || 24;
@@ -380,6 +387,12 @@ async function main() {
     console.log(`[generate-asset] anchored the tail back to the reference over ${fade.toFixed(2)}s`);
   }
   const uploadBytes = await fs.readFile(upload);
+  // The renderer cuts neutral chunks on this value, so it has to be what the
+  // stored file actually is — a ping-pong is roughly twice the peak offset,
+  // never the duration that was requested.
+  const storedDuration = Number(JSON.parse(
+    run('ffprobe', ['-show_entries', 'format=duration', '-of', 'json', upload]),
+  ).format.duration);
 
   const assetId = crypto.randomUUID();
   const storagePath = `assets/${PERSONA}/${assetId}/${key}.mp4`;
@@ -402,7 +415,7 @@ async function main() {
       label: `${preset.label}${process.env.FAL_LABEL_SUFFIX || ''}`,
       video_url: publicUrl,
       storage_path: storagePath,
-      duration_s: duration,
+      duration_s: Number(storedDuration.toFixed(3)),
       speech_ready: false,
       anchor_role: preset.reactionType === 'neutral' ? 'neutral' : 'none',
       enabled: false,
@@ -413,6 +426,7 @@ async function main() {
         loop: loopReport,
         prompt_mode: MINIMAL ? 'minimal' : 'detailed',
         generated_at: new Date().toISOString(),
+        requested_duration_s: duration,
         cost_estimate_usd: Number((duration * PRICE_PER_S).toFixed(3)),
       },
     }),
