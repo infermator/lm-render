@@ -1,0 +1,40 @@
+name: Reaction Asset Snapshot
+
+on:
+  push:
+    paths:
+      - '.github/assets-snapshot-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Snapshot assets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          base=os.environ['SUPABASE_URL'].rstrip('/'); key=os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          q=urllib.parse.urlencode({'select':'id,persona,reaction_type,label,video_url,duration_s,speech_ready,anchor_role,intensity_min,intensity_max,enabled,created_at','order':'created_at.asc'})
+          req=urllib.request.Request(f'{base}/rest/v1/reaction_assets?{q}',headers={'apikey':key,'Authorization':f'Bearer {key}'})
+          with urllib.request.urlopen(req,timeout=30) as r: rows=json.loads(r.read().decode())
+          open('.github/reaction-assets-snapshot.json','w').write(json.dumps(rows,indent=2,ensure_ascii=False))
+          print(json.dumps(rows,indent=2,ensure_ascii=False))
+          PY
+      - name: Commit
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/reaction-assets-snapshot.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record Reaction Lab asset roles'
+          git pull --rebase origin main
+          git push origin HEAD:main
