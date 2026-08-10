@@ -1,0 +1,118 @@
+name: MuseTalk Face Crop Probe
+
+on:
+  push:
+    paths:
+      - '.github/musetalk-facecrop-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install -q 'gradio_client>=1.13.0' 'opencv-python-headless>=4.10' numpy
+      - name: Crop face and run MuseTalk
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          ASSET='https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/assets/default/188c7ff4-a9c7-4e90-a2ef-599f3dc55674/2WIaP3dMIOEHxsLRUF1Z-0.mp4'
+          AUDIO='https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/tts/424b81afa591f5a9d39a764551b184f71a444cb6b5e38c97c09852ec54fda325.mp3'
+          curl -L --fail "$ASSET" -o /tmp/avatar.mp4
+          curl -L --fail "$AUDIO" -o /tmp/tts.mp3
+
+          python - <<'PY'
+          import cv2, json, numpy as np
+          cap=cv2.VideoCapture('/tmp/avatar.mp4')
+          fw=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); fh=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)); fps=cap.get(cv2.CAP_PROP_FPS) or 30
+          cascade=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_frontalface_default.xml')
+          profile=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_profileface.xml')
+          boxes=[]; idx=0
+          while True:
+            ok,frame=cap.read()
+            if not ok: break
+            if idx%max(1,int(fps//3))==0:
+              gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+              found=[]
+              for c,flip in [(cascade,False),(profile,False),(profile,True)]:
+                g=cv2.flip(gray,1) if flip else gray
+                for x,y,w,h in c.detectMultiScale(g,1.07,3,minSize=(45,45)):
+                  if flip: x=fw-x-w
+                  found.append((w*h,x,y,w,h))
+              if found:
+                _,x,y,w,h=max(found)
+                boxes.append((x,y,w,h))
+            idx+=1
+          cap.release()
+          if not boxes: raise SystemExit('No face detected in smirk asset')
+          a=np.asarray(boxes,float)
+          x,y,w,h=np.median(a,axis=0)
+          cx=x+w/2; cy=y+h*.52
+          side=max(w,h)*2.35
+          side=min(side,fw,fh)
+          x0=max(0,min(fw-side,cx-side/2)); y0=max(0,min(fh-side,cy-side*.43))
+          x0=int(round(x0)); y0=int(round(y0)); side=int(round(side))
+          # enforce even dimensions for h264
+          x0-=x0%2; y0-=y0%2; side-=side%2
+          meta={'frame':[fw,fh],'fps':fps,'detections':len(boxes),'median_face':[float(x),float(y),float(w),float(h)],'crop':[x0,y0,side,side]}
+          open('/tmp/crop.json','w').write(json.dumps(meta,indent=2)); print(json.dumps(meta,indent=2))
+          PY
+          CROP=$(python - <<'PY'
+          import json
+          x,y,s,_=json.load(open('/tmp/crop.json'))['crop']
+          print(f'{s}:{s}:{x}:{y}')
+          PY
+          )
+          ffmpeg -hide_banner -loglevel error -y -i /tmp/avatar.mp4 -vf "crop=$CROP,scale=512:512:flags=lanczos" -an -c:v libx264 -crf 18 -pix_fmt yuv420p /tmp/facecrop.mp4
+          python scripts/reaction/hf_musetalk_lipsync.py --video-url file:///tmp/facecrop.mp4 --audio-url file:///tmp/tts.mp3 --output /tmp/lipsync.mp4 --space trymonolith/MuseTalk --quality Medium --fps 30 || {
+            # helper uses handle_file and may not accept file://; invoke client directly.
+            python - <<'PY'
+          from gradio_client import Client, handle_file
+          import shutil, os
+          c=Client('trymonolith/MuseTalk',verbose=True)
+          r=c.predict(handle_file('/tmp/tts.mp3'),handle_file('/tmp/facecrop.mp4'),30,'Medium',api_name='/generate_lipsync_video')
+          p=r[0] if isinstance(r,(list,tuple)) else r
+          if isinstance(p,dict): p=p.get('path') or p.get('url')
+          if not p or not os.path.exists(str(p)): raise RuntimeError(repr(r))
+          shutil.copy2(str(p),'/tmp/lipsync.mp4')
+          PY
+          }
+
+          mkdir -p .github/qc/musetalk-facecrop
+          for spec in '01:0.30' '02:0.60' '03:0.90' '04:1.20' '05:1.50' '06:1.80' '07:2.10' '08:2.40'; do
+            n="${spec%%:*}"; t="${spec#*:}"
+            ffmpeg -hide_banner -loglevel error -y -ss "$t" -i /tmp/lipsync.mp4 -frames:v 1 -vf 'scale=256:256' -q:v 3 ".github/qc/musetalk-facecrop/frame-$n.jpg"
+          done
+          cp /tmp/crop.json .github/qc/musetalk-facecrop/crop.json
+          ffprobe -v error -show_streams -show_format -of json /tmp/lipsync.mp4 > .github/qc/musetalk-facecrop/ffprobe.json
+
+          python - <<'PY'
+          import json, os, urllib.request
+          from pathlib import Path
+          base=os.environ['SUPABASE_URL'].rstrip('/'); key=os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          data=Path('/tmp/lipsync.mp4').read_bytes(); storage='results/debug/musetalk-facecrop-probe.mp4'
+          req=urllib.request.Request(f'{base}/storage/v1/object/reaction-media/{storage}',data=data,method='POST',headers={'apikey':key,'Authorization':f'Bearer {key}','Content-Type':'video/mp4','x-upsert':'true'})
+          with urllib.request.urlopen(req,timeout=120) as r:r.read()
+          meta=json.load(open('/tmp/crop.json')); meta.update({'ok':True,'bytes':len(data),'result_url':f'{base}/storage/v1/object/public/reaction-media/{storage}'})
+          Path('.github/last-musetalk-facecrop-probe.json').write_text(json.dumps(meta,indent=2))
+          PY
+      - name: Persist
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/qc/musetalk-facecrop .github/last-musetalk-facecrop-probe.json || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record face-cropped MuseTalk probe'
+          git pull --rebase origin main
+          git push origin HEAD:main
