@@ -558,12 +558,30 @@ async function renderSegment(segment, index) {
 async function assembleAvatarTrack(rendered, totalDuration) {
   const merged = path.join(workDir, 'avatar-merged.mp4');
   await concatFiles(rendered.map(item => item.file), merged);
+  const mergedDuration = await probeDuration(merged);
+
+  // Every segment is encoded at 30fps, so its real duration rounds to a whole
+  // frame. Over a long timeline those roundings accumulate into a shortfall of a
+  // few frames. That is quantisation, not a planning error, so the tail is
+  // extended by holding the anchor frame. A large gap still means the timeline
+  // logic is wrong and must fail.
+  const shortfall = totalDuration - mergedDuration;
+  if (shortfall > 1.0) {
+    throw new Error(`Avatar timeline is short by ${shortfall.toFixed(3)}s: expected ${totalDuration.toFixed(3)}s, got ${mergedDuration.toFixed(3)}s`);
+  }
 
   const out = path.join(workDir, 'avatar-track.mp4');
-  await run('ffmpeg', ['-y', '-i', merged, '-an', '-t', totalDuration.toFixed(3), '-c', 'copy', out]);
+  if (shortfall > 0.005) {
+    log(`Padding avatar tail by ${shortfall.toFixed(3)}s of frame-quantisation drift`);
+    await run('ffmpeg', ['-y', '-i', merged, '-an',
+      '-vf', `tpad=stop_mode=clone:stop_duration=${(shortfall + 0.5).toFixed(3)}`,
+      ...avatarEncodeArgs(), '-t', totalDuration.toFixed(3), out]);
+  } else {
+    await run('ffmpeg', ['-y', '-i', merged, '-an', '-t', totalDuration.toFixed(3), '-c', 'copy', out]);
+  }
 
   const producedDuration = await probeDuration(out);
-  if (Math.abs(producedDuration - totalDuration) > 0.2) {
+  if (Math.abs(producedDuration - totalDuration) > 0.15) {
     throw new Error(`Avatar timeline drifted: expected ${totalDuration.toFixed(3)}s, got ${producedDuration.toFixed(3)}s`);
   }
   return out;
