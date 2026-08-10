@@ -279,11 +279,37 @@ Worker requests generated comment audio from MAM:
 
 `POST /api/reaction/tts`
 
-The worker downloads the returned MP3 and probes its real duration.
+The returned MP3 is then padded locally with **300 ms of silence at each end**
+(`adelay` + `apad`) before anything else touches it.
 
-The event segment is expanded as needed to contain the TTS plus a small margin, bounded by current timeline limits.
+This is what makes a spoken segment cut cleanly. The lip-sync model produces a
+closed mouth wherever the audio is silent, so the segment opens and closes on the
+same closed-mouth anchor pose as every other clip. It also reads as a natural
+breath before the line.
+
+The padded duration — not the raw TTS duration — is the contract for the speech
+bed, the lip-sync output check and the segment length. The voice is delayed to
+the event's absolute time, so the words land 300 ms later, which is intended.
 
 ## Lip-sync
+
+### Speech bed
+
+Lip-sync no longer runs against a single raw asset.
+
+Every speech carrier opens and closes on the same reference frame, so carriers
+are chained with hard cuts into a **bed at least as long as the padded line**,
+then normalized and uploaded to `reaction-media/tmp/lipsync/`. The Hugging Face
+Space takes URLs, so both the bed and the padded voice are uploaded before the
+call. The bed is encoded yuv420p for decoder compatibility, not in the 4:4:4
+intermediate format used inside the renderer.
+
+This closes a real failure mode. A production render recorded
+`lipsync_duration: 12.03s` for a 1.62s line: the provider's output length tracks
+the **input video**, not the audio. With a 5s carrier and a longer line the mouth
+froze while the voice kept playing, and the only guard accepted anything over
+0.75s. The renderer now rejects a lip-sync clip that does not cover the padded
+line.
 
 ### Current smoke implementation
 
@@ -292,8 +318,6 @@ The base v4 worker invokes public HF Space:
 `trymonolith/MuseTalk`
 
 via `hf_musetalk_lipsync.py`.
-
-The result is accepted technically only if a usable MP4 exists and has a minimum duration.
 
 ### Why that is not enough
 
