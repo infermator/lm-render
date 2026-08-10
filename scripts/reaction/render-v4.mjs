@@ -40,8 +40,11 @@ const VOICE_TARGET_LUFS = -13;
 // generated carrier. Inside the 1102x620 avatar frame the face measures ~207px;
 // at this size it is roughly 540px, which is what these models actually need.
 // fal's Kling lip-sync also requires both axes between 720 and 1920.
+// Both axes divisible by 16. Asked for 1920x1080 the provider returned
+// 1920x1072 and the difference pass could not run at all; 1080 is not a
+// multiple of 16 and it silently conformed the frame.
 const STILL_W = 1920;
-const STILL_H = 1080;
+const STILL_H = 1088;
 const FAL_LIPSYNC_MODEL = 'fal-ai/kling-video/lipsync/audio-to-video';
 const FAL_MAX_CLIP_S = 10;
 
@@ -472,7 +475,7 @@ async function addMicroDrift(file, index) {
 async function buildStillVideo(imageFile, durationSeconds, index) {
   const out = path.join(workDir, `still-${index}.mp4`);
   await run('ffmpeg', ['-y', '-loop', '1', '-i', imageFile,
-    '-vf', `scale=${STILL_W}:${STILL_H}:force_original_aspect_ratio=decrease,pad=${STILL_W}:${STILL_H}:(ow-iw)/2:(oh-ih)/2,fps=${FPS},setsar=1`,
+    '-vf', `scale=${STILL_W}:${STILL_H}:force_original_aspect_ratio=increase,crop=${STILL_W}:${STILL_H},fps=${FPS},setsar=1`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-pix_fmt', 'yuv420p',
     '-t', durationSeconds.toFixed(3), out]);
   return out;
@@ -560,6 +563,29 @@ async function hfMuseTalkLipSync({ index, videoUrl, audioUrl, expectedDuration }
 // amount, while the mouth differs by an amount that CHANGES every frame. Cells
 // are therefore ranked by the temporal deviation of the difference, not by its
 // magnitude.
+async function frameSize(file) {
+  const data = await probeJson(file);
+  const video = (data.streams || []).find(stream => stream.codec_type === 'video');
+  if (!video) throw new Error(`No video stream in ${file}`);
+  return { width: Number(video.width), height: Number(video.height) };
+}
+
+// Providers quietly conform frame sizes. Rescaling to match would shift the whole
+// face and light up the difference pass everywhere instead of on the mouth, so
+// the frame is centred back to size at its original scale.
+async function conformFrameSize(file, target, index) {
+  const size = await frameSize(file);
+  if (size.width === target.width && size.height === target.height) return file;
+  log(`Lip-sync output is ${size.width}x${size.height}; conforming to ${target.width}x${target.height} without rescaling`);
+  const out = path.join(workDir, `conformed-${index}.mp4`);
+  await run('ffmpeg', ['-y', '-i', file, '-an', '-vf', [
+    `crop=min(iw\,${target.width}):min(ih\,${target.height})`,
+    `pad=${target.width}:${target.height}:(ow-iw)/2:(oh-ih)/2:color=0x${BACKGROUND_HEX}`,
+    'setsar=1',
+  ].join(','), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-pix_fmt', 'yuv420p', out]);
+  return out;
+}
+
 async function locateLipSyncPatch(bedFile, syncedFile) {
   const raw = path.join(workDir, `lipsync-diff-${crypto.randomBytes(3).toString('hex')}.raw`);
   await run('ffmpeg', ['-y', '-i', bedFile, '-i', syncedFile,
@@ -631,8 +657,9 @@ async function locateLipSyncPatch(bedFile, syncedFile) {
     weight += deviation[cell];
   }
 
-  const scaleX = AVATAR_W / GRID_W;
-  const scaleY = AVATAR_H / GRID_H;
+  const base = await frameSize(bedFile);
+  const scaleX = base.width / GRID_W;
+  const scaleY = base.height / GRID_H;
   let centreX;
   let centreY;
   let spreadX;
@@ -666,16 +693,16 @@ async function locateLipSyncPatch(bedFile, syncedFile) {
     located = 'face_block_geometry';
   }
 
-  const halfW = clamp(Math.max(spreadX * 1.9, blockW * scaleX * 0.20), AVATAR_W * 0.045, AVATAR_W * 0.105);
-  const halfH = clamp(Math.max(spreadY * 1.9, blockH * scaleY * 0.14), AVATAR_H * 0.055, AVATAR_H * 0.130);
+  const halfW = clamp(Math.max(spreadX * 1.9, blockW * scaleX * 0.20), base.width * 0.045, base.width * 0.105);
+  const halfH = clamp(Math.max(spreadY * 1.9, blockH * scaleY * 0.14), base.height * 0.055, base.height * 0.130);
 
   const even = value => Math.max(2, Math.round(value / 2) * 2);
   let width = even(halfW * 2);
   let height = even(halfH * 2);
-  let x = even(clamp(centreX - width / 2, 0, AVATAR_W - width));
-  let y = even(clamp(centreY - height / 2, 0, AVATAR_H - height));
-  width = Math.min(width, AVATAR_W - x);
-  height = Math.min(height, AVATAR_H - y);
+  let x = even(clamp(centreX - width / 2, 0, base.width - width));
+  let y = even(clamp(centreY - height / 2, 0, base.height - height));
+  width = Math.min(width, base.width - x);
+  height = Math.min(height, base.height - y);
 
   return {
     x, y, width, height,
@@ -691,7 +718,8 @@ async function locateLipSyncPatch(bedFile, syncedFile) {
 }
 
 // Keep the provider's mouth, discard everything else it touched.
-async function blendLipSyncPatch(bedFile, syncedFile, index) {
+async function blendLipSyncPatch(bedFile, rawSyncedFile, index) {
+  const syncedFile = await conformFrameSize(rawSyncedFile, await frameSize(bedFile), index);
   const patch = await locateLipSyncPatch(bedFile, syncedFile);
   const mask = path.join(workDir, `lipsync-mask-${index}.png`);
   await run('ffmpeg', ['-y', '-f', 'lavfi', '-i', `color=black:s=${patch.width}x${patch.height}`,
