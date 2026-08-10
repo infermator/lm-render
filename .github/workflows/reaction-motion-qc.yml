@@ -1,0 +1,129 @@
+name: Reaction Motion QC
+
+on:
+  push:
+    paths:
+      - '.github/motion-qc-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  qc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install OpenCV
+        run: python -m pip install -q 'opencv-python-headless>=4.10' numpy
+      - name: Measure avatar mouth motion and green residue
+        run: |
+          python - <<'PY'
+          import cv2, json, math, os, urllib.request
+          import numpy as np
+          from pathlib import Path
+
+          jobs=[
+            ('185df8b1-b394-4e3c-84bf-2e1e9a178fd9',4.65,7.29),
+            ('13c910a2-fff8-489c-a269-97d61ff86902',3.20,4.82),
+          ]
+          base='https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/results/'
+          frontal=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_frontalface_default.xml')
+          profile=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_profileface.xml')
+          results=[]
+
+          def detect_face(gray):
+            found=[]
+            for cascade,flipped in [(frontal,False),(profile,False),(profile,True)]:
+              img=cv2.flip(gray,1) if flipped else gray
+              faces=cascade.detectMultiScale(img,scaleFactor=1.08,minNeighbors=3,minSize=(55,55))
+              for x,y,w,h in faces:
+                if flipped: x=gray.shape[1]-x-w
+                found.append((w*h,x,y,w,h))
+            return max(found)[1:] if found else None
+
+          def frame_at(cap,t):
+            cap.set(cv2.CAP_PROP_POS_MSEC,t*1000)
+            ok,frame=cap.read()
+            return frame if ok else None
+
+          def motion_series(cap,t0,t1,face,step=.08):
+            x,y,w,h=face
+            # generous lower-face/mouth band versus forehead/upper-face control.
+            mx0=int(x+w*.16); mx1=int(x+w*.84); my0=int(y+h*.52); my1=int(y+h*.84)
+            fx0=int(x+w*.18); fx1=int(x+w*.82); fy0=int(y+h*.12); fy1=int(y+h*.38)
+            vals=[]; prev_m=None; prev_f=None; t=t0
+            while t<=t1+1e-6:
+              frame=frame_at(cap,t)
+              if frame is None: t+=step; continue
+              # Avatar is deterministic bottom-right in 1080x1920 v4 output.
+              crop=frame[max(0,frame.shape[0]-1130):,max(0,frame.shape[1]-650):]
+              gray=cv2.cvtColor(crop,cv2.COLOR_BGR2GRAY)
+              m=gray[my0:my1,mx0:mx1]
+              f=gray[fy0:fy1,fx0:fx1]
+              if m.size and f.size and prev_m is not None and prev_m.shape==m.shape and prev_f.shape==f.shape:
+                md=float(cv2.absdiff(m,prev_m).mean())
+                fd=float(cv2.absdiff(f,prev_f).mean())
+                vals.append((t,md,fd,md/(fd+1e-3)))
+              prev_m=m.copy(); prev_f=f.copy(); t+=step
+            return vals
+
+          for jid,speech_start,speech_end in jobs:
+            local=f'/tmp/{jid}.mp4'
+            urllib.request.urlretrieve(base+jid+'.mp4?motionqc=1',local)
+            cap=cv2.VideoCapture(local)
+            width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps=float(cap.get(cv2.CAP_PROP_FPS) or 0)
+
+            # Find a face across several moments around the spoken segment.
+            candidates=[]
+            for t in np.linspace(max(.2,speech_start-.8),speech_end,12):
+              frame=frame_at(cap,float(t))
+              if frame is None: continue
+              crop=frame[max(0,height-1130):,max(0,width-650):]
+              gray=cv2.cvtColor(crop,cv2.COLOR_BGR2GRAY)
+              face=detect_face(gray)
+              if face: candidates.append(face)
+            face=max(candidates,key=lambda q:q[2]*q[3]) if candidates else None
+
+            # Green residue on a representative speaking frame, within avatar placement rectangle.
+            rep=frame_at(cap,speech_start+.35)
+            green_ratio=None
+            if rep is not None:
+              crop=rep[max(0,height-1130):,max(0,width-650):]
+              b,g,r=cv2.split(crop)
+              mask=(g>135)&(g.astype(np.float32)>r.astype(np.float32)*1.35)&(g.astype(np.float32)>b.astype(np.float32)*1.25)
+              green_ratio=float(mask.mean())
+
+            entry={'id':jid,'size':[width,height],'fps':fps,'face_detected':bool(face),'face_box':list(map(int,face)) if face else None,'green_pixel_ratio':green_ratio}
+            if face:
+              before=motion_series(cap,max(.2,speech_start-.95),max(.3,speech_start-.15),face)
+              during=motion_series(cap,speech_start+.08,max(speech_start+.18,speech_end-.05),face)
+              def avg(arr,i): return float(np.mean([v[i] for v in arr])) if arr else None
+              bm,bf,br=avg(before,1),avg(before,2),avg(before,3)
+              dm,df,dr=avg(during,1),avg(during,2),avg(during,3)
+              entry.update({
+                'before_mouth_motion':bm,'before_forehead_motion':bf,'before_mouth_forehead_ratio':br,
+                'during_mouth_motion':dm,'during_forehead_motion':df,'during_mouth_forehead_ratio':dr,
+                'mouth_motion_gain_vs_before': (dm/(bm+1e-3)) if dm is not None and bm is not None else None,
+                'during_samples':len(during),'before_samples':len(before),
+                'mouth_motion_signal': bool(during and dm is not None and dm>=1.0 and dr is not None and dr>=1.05),
+              })
+            results.append(entry)
+            cap.release()
+
+          Path('.github/qc').mkdir(parents=True,exist_ok=True)
+          Path('.github/qc/lipsync-motion-qc.json').write_text(json.dumps(results,indent=2))
+          print(json.dumps(results,indent=2))
+          PY
+      - name: Commit QC
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/qc/lipsync-motion-qc.json || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record Reaction Lab mouth motion QC'
+          git pull --rebase origin main
+          git push origin HEAD:main
