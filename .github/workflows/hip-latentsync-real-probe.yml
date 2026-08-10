@@ -1,0 +1,71 @@
+name: HiPeking LatentSync Real Probe
+
+on:
+  push:
+    paths:
+      - '.github/hip-latentsync-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          python -m pip install -q 'gradio_client>=1.13.0'
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Run LatentSync
+        env:
+          MAM_BASE: 'https://21media-mam.vercel.app'
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, urllib.parse, urllib.request
+          from pathlib import Path
+          from gradio_client import Client, handle_file
+          base=os.environ['SUPABASE_URL'].rstrip('/'); key=os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          q=urllib.parse.urlencode({'persona':'eq.default','reaction_type':'eq.smirk','enabled':'eq.true','select':'id,label,video_url','order':'created_at.asc','limit':'1'})
+          req=urllib.request.Request(f'{base}/rest/v1/reaction_assets?{q}',headers={'apikey':key,'Authorization':f'Bearer {key}'})
+          with urllib.request.urlopen(req,timeout=30) as r: asset=json.loads(r.read().decode())[0]
+          tts_req=urllib.request.Request(os.environ['MAM_BASE'].rstrip('/')+'/api/reaction/tts',data=json.dumps({'text':"6:42 AM? That's quite early."}).encode(),headers={'Authorization':'Bearer '+os.environ['BUFFER_PUSH_SECRET'],'Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(tts_req,timeout=60) as r: audio=json.loads(r.read().decode())['audio_url']
+          payload={'space':'HiPeking/latentSync','asset':asset,'audio_url':audio,'ok':False}
+          try:
+            c=Client('HiPeking/latentSync',verbose=True)
+            result=c.predict(handle_file(asset['video_url']),handle_file(audio),1.5,20,1247,api_name='/process_video')
+            p=result[0] if isinstance(result,(list,tuple)) else result
+            if isinstance(p,dict): p=p.get('path') or p.get('url') or p.get('video')
+            if isinstance(p,dict): p=p.get('path') or p.get('url')
+            p=str(p or '')
+            if not os.path.exists(p): raise RuntimeError(f'LatentSync result is not local: {result!r}')
+            size=os.path.getsize(p)
+            probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_format','-of','json',p]))
+            dur=float(probe.get('format',{}).get('duration') or 0)
+            storage='results/debug/hip-latentsync-real-probe.mp4'
+            data=Path(p).read_bytes()
+            up=urllib.request.Request(f'{base}/storage/v1/object/reaction-media/{storage}',data=data,method='POST',headers={'apikey':key,'Authorization':f'Bearer {key}','Content-Type':'video/mp4','x-upsert':'true'})
+            with urllib.request.urlopen(up,timeout=120) as r: r.read()
+            qc=Path('.github/qc/hip-latentsync'); qc.mkdir(parents=True,exist_ok=True)
+            for i,t in enumerate([.35,.7,1.05,1.4,1.75,2.1],1): subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y','-ss',str(t),'-i',p,'-frames:v','1','-vf','scale=240:-2','-q:v','5',str(qc/f'frame-{i:02d}.jpg')],check=True)
+            payload.update({'ok':True,'bytes':size,'duration_s':dur,'result_url':f'{base}/storage/v1/object/public/reaction-media/{storage}','raw_result':repr(result)[:1500]})
+          except Exception as e: payload['error']=repr(e)
+          Path('.github/last-hip-latentsync-probe.json').write_text(json.dumps(payload,indent=2))
+          print(json.dumps(payload,indent=2))
+          PY
+      - name: Persist
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/last-hip-latentsync-probe.json .github/qc/hip-latentsync || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record alternate LatentSync real probe'
+          git pull --rebase origin main
+          git push origin HEAD:main
