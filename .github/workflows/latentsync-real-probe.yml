@@ -1,0 +1,83 @@
+name: LatentSync Real Probe
+
+on:
+  push:
+    paths:
+      - '.github/latentsync-probe-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install client
+        run: python -m pip install -q 'gradio_client>=1.13.0'
+      - name: Run real LatentSync probe
+        env:
+          MAM_BASE: 'https://21media-mam.vercel.app'
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, shutil, time, urllib.parse, urllib.request
+          from pathlib import Path
+          from gradio_client import Client, handle_file
+
+          base=os.environ['SUPABASE_URL'].rstrip('/')
+          key=os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          q=urllib.parse.urlencode({
+            'persona':'eq.default','reaction_type':'eq.smirk','enabled':'eq.true',
+            'select':'id,label,video_url','order':'created_at.asc','limit':'1'
+          })
+          req=urllib.request.Request(f'{base}/rest/v1/reaction_assets?{q}',headers={'apikey':key,'Authorization':f'Bearer {key}'})
+          with urllib.request.urlopen(req,timeout=30) as r: assets=json.loads(r.read().decode())
+          if not assets: raise RuntimeError('No enabled default/smirk asset')
+          asset=assets[0]
+
+          tts_req=urllib.request.Request(
+            os.environ['MAM_BASE'].rstrip('/')+'/api/reaction/tts',
+            data=json.dumps({'text':"6:42 AM? That's quite early."}).encode(),
+            headers={'Authorization':'Bearer '+os.environ['BUFFER_PUSH_SECRET'],'Content-Type':'application/json'},
+            method='POST')
+          with urllib.request.urlopen(tts_req,timeout=60) as r: tts=json.loads(r.read().decode())
+          audio=tts['audio_url']
+
+          payload={'asset':asset,'audio_url':audio,'space':'fffiloni/LatentSync','ok':False}
+          try:
+            client=Client('fffiloni/LatentSync',verbose=True)
+            result=client.predict(handle_file(asset['video_url']),handle_file(audio),api_name='/generate_lip_sync_video')
+            path=result[0] if isinstance(result,(list,tuple)) else result
+            if isinstance(path,dict): path=path.get('path') or path.get('url')
+            path=str(path)
+            if not os.path.exists(path): raise RuntimeError(f'LatentSync result is not local file: {result!r}')
+            size=os.path.getsize(path)
+            if size<20000: raise RuntimeError(f'LatentSync result too small: {size}')
+            storage='results/debug/latentsync-real-probe.mp4'
+            data=Path(path).read_bytes()
+            upload=urllib.request.Request(
+              f'{base}/storage/v1/object/{storage}',data=data,method='POST',
+              headers={'apikey':key,'Authorization':f'Bearer {key}','Content-Type':'video/mp4','x-upsert':'true'})
+            with urllib.request.urlopen(upload,timeout=120) as r: r.read()
+            payload.update({'ok':True,'bytes':size,'result_url':f'{base}/storage/v1/object/public/reaction-media/{storage}'})
+          except Exception as e:
+            payload['error']=repr(e)
+          Path('.github/last-latentsync-real-probe.json').write_text(json.dumps(payload,indent=2))
+          print(json.dumps(payload,indent=2))
+          PY
+      - name: Persist probe
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/last-latentsync-real-probe.json || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record real LatentSync probe'
+          git pull --rebase origin main
+          git push origin HEAD:main
