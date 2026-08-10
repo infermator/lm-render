@@ -46,7 +46,15 @@ const VOICE_TARGET_LUFS = -13;
 const STILL_W = 1920;
 const STILL_H = 1088;
 const FAL_LIPSYNC_MODEL = 'fal-ai/kling-video/lipsync/audio-to-video';
+const FAL_AVATAR_MODEL = 'fal-ai/kling-video/ai-avatar/v2/standard';
 const FAL_MAX_CLIP_S = 10;
+
+// `avatar` generates the performance from the still and the audio, so the mouth
+// genuinely opens and the head moves. `lipsync` only repaints a mouth onto an
+// existing frame, which on a three-quarter face produced texture that shifted
+// without the lips ever parting. `avatar` costs ~$0.0562/s against $0.014 per
+// 5s block; at one line per video that is cents either way.
+const LIPSYNC_MODE = String(process.env.REACTION_LIPSYNC_MODE || 'avatar').trim();
 
 // Supabase enforces the smaller of the bucket limit and the project plan's
 // global upload limit. The bucket allows 250 MB but the project caps uploads at
@@ -493,6 +501,48 @@ async function falRequest(pathname, options = {}) {
   return data;
 }
 
+async function falQueue(model, payload, expectedDuration, label) {
+  const queued = await falRequest(`https://queue.fal.run/${model}`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  const statusUrl = String(queued.status_url || '');
+  const responseUrl = String(queued.response_url || '');
+  if (!statusUrl || !responseUrl) throw new Error(`fal did not queue the request: ${JSON.stringify(queued).slice(0, 400)}`);
+
+  const deadline = Date.now() + 15 * 60 * 1000;
+  let status = String(queued.status || 'IN_QUEUE');
+  while (status !== 'COMPLETED') {
+    if (Date.now() > deadline) throw new Error(`${label} timed out after 15 minutes`);
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    const poll = await falRequest(statusUrl);
+    status = String(poll.status || '');
+    if (status === 'FAILED' || status === 'ERROR') {
+      throw new Error(`${label} failed: ${JSON.stringify(poll).slice(0, 600)}`);
+    }
+  }
+  const result = await falRequest(responseUrl);
+  const url = String(result?.video?.url || '');
+  if (!url) throw new Error(`${label} returned no video: ${JSON.stringify(result).slice(0, 400)}`);
+  return url;
+}
+
+// Generates the whole spoken performance from the persona still. There is no
+// mouth patch afterwards: every pixel is generated coherently, so patching one
+// region back would be the only thing capable of introducing a seam.
+async function falKlingAvatar({ index, imageUrl, audioUrl, expectedDuration }) {
+  const url = await falQueue(FAL_AVATAR_MODEL, { image_url: imageUrl, audio_url: audioUrl }, expectedDuration, 'fal Kling AI Avatar');
+  const local = path.join(workDir, `avatar-fal-${index}.mp4`);
+  await download(url, local);
+  const duration = await probeDuration(local);
+  if (duration + 0.35 < expectedDuration) {
+    throw new Error(`Avatar output does not cover the line: ${duration.toFixed(2)}s < ${expectedDuration.toFixed(2)}s`);
+  }
+  const size = await frameSize(local);
+  log(`Kling AI Avatar: ${size.width}x${size.height}, ${duration.toFixed(2)}s`);
+  return { local, provider: 'fal_kling_ai_avatar', model: FAL_AVATAR_MODEL, duration, width: size.width, height: size.height };
+}
+
 async function falKlingLipSync({ index, videoUrl, audioUrl, expectedDuration }) {
   if (expectedDuration > FAL_MAX_CLIP_S) {
     throw new Error(`Spoken line is ${expectedDuration.toFixed(1)}s; the lip-sync endpoint accepts at most ${FAL_MAX_CLIP_S}s`);
@@ -775,7 +825,8 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
     let lipsyncMeta = null;
 
     if (hasComment) {
-      const useStill = Boolean(referenceFile && FAL_KEY);
+      const useAvatar = Boolean(reference && FAL_KEY && LIPSYNC_MODE === 'avatar');
+      const useStill = !useAvatar && Boolean(referenceFile && FAL_KEY);
       if (!useStill && !carriers.length) {
         throw new Error('Voice render requires one enabled speech-ready reusable avatar asset; refusing to fake lip-sync on an unvalidated reaction clip.');
       }
@@ -783,11 +834,26 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
       const tts = await createTts(event.comment.trim(), comments.length);
       const audioUpload = await uploadToBucket(tts.local, `tmp/lipsync/${jobId}-${comments.length}-voice.mp3`, 'audio/mpeg');
 
-      let baseFile;
+      let baseFile = null;
       let carrierIds = [];
       let synced;
+      let generated = null;
 
-      if (useStill) {
+      if (useAvatar) {
+        await progress(jobId, 'avatar_generating', {
+          padded_tts_duration_s: Number(tts.duration.toFixed(3)),
+          lipsync_provider: 'fal_kling_ai_avatar',
+          lipsync_model: FAL_AVATAR_MODEL,
+          absolute_start_s: start,
+        });
+        generated = await falKlingAvatar({
+          index: comments.length,
+          imageUrl: reference.video_url,
+          audioUrl: audioUpload.url,
+          expectedDuration: tts.duration,
+        });
+        synced = generated;
+      } else if (useStill) {
         await progress(jobId, 'speech_still_building', {
           padded_tts_duration_s: Number(tts.duration.toFixed(3)),
           lipsync_source: 'persona_reference_still',
@@ -824,13 +890,34 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
         });
       }
 
-      const blended = await blendLipSyncPatch(baseFile, synced.local, comments.length);
-      const finalSpeech = useStill ? await addMicroDrift(blended.file, comments.length) : blended.file;
+      // A generated performance is coherent everywhere; the mouth patch exists
+      // only to discard a repainted block, so applying it here could only add a
+      // seam that is not there.
+      let finalSpeech;
+      let patch = null;
+      if (generated) {
+        finalSpeech = generated.local;
+      } else {
+        const blended = await blendLipSyncPatch(baseFile, synced.local, comments.length);
+        patch = blended.patch;
+        finalSpeech = useStill ? await addMicroDrift(blended.file, comments.length) : blended.file;
+      }
 
+      const plate = await sampleBackgroundColour(finalSpeech);
+      const keyDrift = Math.hypot(
+        plate.rgb[0] - CHROMA_KEY_RGB[0],
+        plate.rgb[1] - CHROMA_KEY_RGB[1],
+        plate.rgb[2] - CHROMA_KEY_RGB[2],
+      );
+      if (keyDrift > 34) {
+        log(`WARNING: the spoken clip's plate is 0x${plate.hex}, ${keyDrift.toFixed(0)} away from the calibrated key 0x${BACKGROUND_HEX}; its edges may key differently`);
+      }
+
+      const source = generated ? 'generated_from_reference' : useStill ? 'reference_still' : 'speech_bed';
       duration = tts.duration;
       asset = carriers[0] || neutralAssets[0];
       localOverride = finalSpeech;
-      lipsyncMeta = { ...synced, carrier_ids: carrierIds, patch: blended.patch, source: useStill ? 'reference_still' : 'speech_bed' };
+      lipsyncMeta = { ...synced, carrier_ids: carrierIds, patch, source, plate_hex: plate.hex, plate_drift: Number(keyDrift.toFixed(1)) };
       comments.push({
         start,
         gain_db: tts.gain_db,
@@ -842,9 +929,11 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
         lead_in_s: SPEECH_PAD_S,
         lipsync_provider: synced.provider,
         lipsync_duration: synced.duration,
-        lipsync_source: useStill ? 'reference_still' : 'speech_bed',
+        lipsync_source: source,
         speech_carrier_ids: carrierIds,
-        lipsync_patch: blended.patch,
+        lipsync_patch: patch,
+        plate_hex: plate.hex,
+        plate_drift: Number(keyDrift.toFixed(1)),
       });
     } else {
       asset = chooseAsset(assets, String(event.type), Number(event.intensity ?? 0.35))
@@ -862,6 +951,7 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
 }
 
 let BACKGROUND_HEX = '00ff00';
+let CHROMA_KEY_RGB = [0, 255, 0];
 let CHROMA_SIMILARITY = 0.08;
 
 // 16:9 in, 16:9 out. The old portrait crop cut the subject in half, because he
@@ -1099,6 +1189,7 @@ try {
   const referenceLocal = await cachedDownload(referenceAsset.video_url, referenceAsset.video_url.toLowerCase().includes('.webm') ? '.webm' : '.mp4');
   const background = await sampleBackgroundColour(referenceLocal);
   BACKGROUND_HEX = background.hex;
+  CHROMA_KEY_RGB = background.rgb;
   const chroma = await calibrateChromaKey(referenceLocal, background.hex, background.rgb);
   CHROMA_SIMILARITY = chroma.similarity;
   const despillAvailable = await ffmpegHasFilter('despill');
@@ -1177,6 +1268,8 @@ try {
       speech_carrier_ids: comment.speech_carrier_ids,
       lipsync_patch: comment.lipsync_patch,
       lipsync_source: comment.lipsync_source,
+      plate_hex: comment.plate_hex,
+      plate_drift: comment.plate_drift,
       voice_loudness_lufs: comment.loudness_lufs,
       voice_gain_db: comment.gain_db,
     })),
