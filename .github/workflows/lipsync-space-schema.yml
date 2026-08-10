@@ -1,0 +1,55 @@
+name: LipSync Space Schema
+
+on:
+  push:
+    paths:
+      - '.github/lipsync-space-schema-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python -m pip install -q 'gradio_client>=1.13.0'
+      - name: Inspect public APIs
+        run: |
+          python - <<'PY'
+          import contextlib, io, json
+          from pathlib import Path
+          from gradio_client import Client
+          spaces=[
+            'manavisrani07/gradio-lipsync-wav2lip',
+            'aobatroz/LatentSync',
+            'codewdhruv/latent-sync-testing',
+            'HiPeking/latentSync',
+            'dominic1021/LatentSync',
+            'ONLYRECEIPT-Inc/LatentSync',
+          ]
+          out={}
+          for space in spaces:
+            buf=io.StringIO()
+            try:
+              with contextlib.redirect_stdout(buf):
+                c=Client(space,verbose=False)
+                api=c.view_api(return_format='dict')
+              out[space]={'ok':True,'api':api,'log':buf.getvalue()[-4000:]}
+            except Exception as e:
+              out[space]={'ok':False,'error':repr(e),'log':buf.getvalue()[-4000:]}
+          Path('.github/lipsync-space-schema.json').write_text(json.dumps(out,indent=2))
+          print(json.dumps(out,indent=2))
+          PY
+      - name: Persist
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/lipsync-space-schema.json || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record alternate lip sync Space schemas'
+          git pull --rebase origin main
+          git push origin HEAD:main
