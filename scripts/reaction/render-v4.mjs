@@ -879,16 +879,31 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
   let cursor = 0;
 
   for (const event of plan.events || []) {
-    let start = clamp(Number(event.time), 0, Math.max(0, totalDuration - 0.1));
-    if (start < cursor + 0.08) start = cursor + 0.08;
-    if (start >= totalDuration - 0.05) break;
-    if (start > cursor) segments.push(...neutralChunks(cursor, start, neutralAssets, neutralState));
-
     const hasComment = request.voice_lipsync === true && typeof event.comment === 'string' && event.comment.trim().length > 0;
     let duration = clamp(Number(event.duration ?? 2.4), 0.8, 8);
     let asset = null;
     let localOverride = null;
     let lipsyncMeta = null;
+    let start = clamp(Number(event.time), 0, Math.max(0, totalDuration - 0.1));
+
+    // The asset has to be chosen before the gap is filled: a reaction is placed
+    // by its peak, so its start depends on which clip plays. Filling neutral up
+    // to the event time first would push the whole reaction a peak-offset late,
+    // which is exactly what happened — a peak measured at 9.4s for an event
+    // scheduled at 4.5s.
+    if (!hasComment) {
+      asset = chooseAsset(assets, String(event.type), Number(event.intensity ?? 0.35))
+        || neutralAssets[neutralState.index % neutralAssets.length];
+      const local = await cachedDownload(asset.video_url, asset.video_url.toLowerCase().includes('.webm') ? '.webm' : '.mp4');
+      const full = await assetDuration(asset, local);
+      const peak = assetPeak(asset, full);
+      start = Number(event.time) - peak;
+      duration = full;
+    }
+
+    if (start < cursor + 0.08) start = cursor + 0.08;
+    if (start >= totalDuration - 0.05) break;
+    if (start > cursor) segments.push(...neutralChunks(cursor, start, neutralAssets, neutralState));
 
     if (hasComment) {
       const useAvatar = Boolean(reference && FAL_KEY && LIPSYNC_MODE === 'avatar');
@@ -1003,22 +1018,6 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
         plate_drift: Number(keyDrift.toFixed(1)),
       });
     } else {
-      asset = chooseAsset(assets, String(event.type), Number(event.intensity ?? 0.35))
-        || neutralAssets[neutralState.index++ % neutralAssets.length];
-
-      // Play the clip whole and slide it so its peak sits on the event time.
-      // Cutting it to the Director's duration would show only the neutral
-      // opening beat and never the reaction itself.
-      const local = await cachedDownload(asset.video_url, asset.video_url.toLowerCase().includes('.webm') ? '.webm' : '.mp4');
-      const full = await assetDuration(asset, local);
-      const peak = assetPeak(asset, full);
-      const desired = Number(event.time) - peak;
-      const earliest = cursor + 0.08;
-      start = clamp(Math.max(desired, earliest), 0, Math.max(0, totalDuration - 0.1));
-      duration = full;
-      if (desired < earliest) {
-        log(`Reaction at ${Number(event.time).toFixed(2)}s starts late: the previous segment runs to ${cursor.toFixed(2)}s`);
-      }
     }
 
     duration = Math.min(duration, totalDuration - start);
