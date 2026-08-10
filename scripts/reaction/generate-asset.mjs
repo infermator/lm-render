@@ -18,18 +18,21 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 function run(bin, args) {
-  return execFileSync(bin, args, { encoding: 'utf8' });
+  // ffmpeg writes its banner and per-frame progress to stderr; inherited, it
+  // buries the one line that matters.
+  return execFileSync(bin, ['-hide_banner', '-loglevel', 'error', ...args], { encoding: 'utf8' });
 }
 
 const FAL_KEY = String(process.env.FAL_KEY || '').trim();
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_KEY = String(process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
 const PERSONA = String(process.env.REACTION_PERSONA || 'default').trim();
-const MODEL = String(process.env.FAL_VIDEO_MODEL || 'fal-ai/kling-video/v3/pro/image-to-video').trim();
+const MODEL = String(process.env.FAL_VIDEO_MODEL || 'fal-ai/kling-video/v3/standard/image-to-video').trim();
 
 // Field names differ per family, and getting one wrong costs a round trip
 // through the queue before the API says so.
 const MODEL_SPECS = {
+  'fal-ai/kling-video/v3/standard/image-to-video': { start: 'start_image_url', end: 'end_image_url', pricePerS: 0.084, durationAsString: true },
   'fal-ai/kling-video/v3/pro/image-to-video':      { start: 'start_image_url', end: 'end_image_url', pricePerS: 0.112, durationAsString: true },
   'fal-ai/kling-video/o1/standard/image-to-video': { start: 'start_image_url', end: 'end_image_url', pricePerS: 0.084, durationAsString: true },
   'bytedance/seedance-2.0/image-to-video':         { start: 'image_url', end: 'end_image_url', pricePerS: 0.24, durationAsString: true },
@@ -60,11 +63,17 @@ const BUCKET = 'reaction-media';
 //
 // No @Image1/@Image2 references: that syntax belongs to the o1 endpoint and v3
 // rejects the request outright with "Invalid reference index 1 for image".
+// Detailed but deliberately silent about the ending. Asking the model to finish
+// on the reference pose is what flattened every earlier attempt; the tail is
+// morphed home afterwards instead.
 const COMMON = [
-  'The supplied first and last frames are the same photograph, so the clip begins and ends on that identical pose.',
-  'Same person, hairstyle, black hoodie, white wired earbuds, framing, lighting and flat chroma-green background throughout, holding the head orientation, body orientation and off-screen gaze of the reference.',
-  'Locked-off camera, clean static green background, no camera movement, no hand gestures.',
-  'Photoreal skin with visible pores and stubble, no beauty filter, no plastic AI look.',
+  'Photoreal footage of the exact same young man from the reference image, in the same black hoodie with the same white wired earbuds, seated in the same chair against the same flat chroma-green studio backdrop.',
+  'He sits on the right of the frame in a medium close-up, turned in a three-quarter view away from the camera, watching something off-screen to his left at eye level. He never looks into the lens and never turns to face the camera.',
+  'The camera is locked off on a tripod: no pan, no tilt, no zoom, no handheld drift, no reframing, no cuts.',
+  'Lighting stays exactly as in the reference — soft key from the front left, his face, jaw and chin evenly lit, the green backdrop clean, flat and evenly lit with no shadows falling on it.',
+  'His head and shoulders stay in the same place in the frame; only his face performs.',
+  'Skin is photoreal and unretouched, with visible pores, stubble and natural texture. Hair keeps its individual strands. No beauty filter, no smoothing, no waxy or plastic CGI look, no cartoon exaggeration.',
+  'He does not speak, does not mouth words, and his hands never enter the frame.',
 ].join(' ');
 
 const NEGATIVE = [
@@ -79,43 +88,43 @@ const PRESETS = {
     label: 'Neutral B',
     reactionType: 'neutral',
     duration: 4,
-    performance: 'He watches something off-screen with a calm, attentive, neutral expression. Across the clip he breathes, blinks once, lets his eyes drift a few degrees and back, and settles his head and shoulders very slightly. Nothing more happens and there is no emotional reaction.',
+    performance: 'A quiet idle beat, three seconds of a man simply watching. He breathes. He blinks once, unhurried. His eyes drift a few degrees along whatever he is watching and come back. His head and shoulders settle by a couple of millimetres, the way a person shifts without noticing. His expression stays calm, attentive and completely neutral from the first frame to the last — no amusement, no surprise, no reaction of any kind. The stillness is the performance.',
   },
   smirk_a: {
     label: 'Smirk A',
     reactionType: 'smirk',
     duration: 3,
-    performance: 'A three-beat performance. He watches neutrally, then something amuses him and one corner of his mouth pulls up into a clear, unmistakable one-sided smirk, held long enough to read, while his eyes narrow slightly and his cheek lifts with it. Then it fades and he returns to neutral. Amused and knowing, closed-mouth, no broad grin, no teeth.',
+    performance: 'He watches, neutral. Then something in what he is watching quietly amuses him, and it surfaces on his face: one corner of his mouth draws up and back into a clear, lopsided smirk, the cheek on that side lifting with it, the eyes narrowing slightly and creasing at the outer corner the way a real smile reaches the eyes. He holds it, enjoying it privately. It is the look of someone thinking "of course that happened" — knowing, a little smug, entirely closed-mouthed. No wide grin, no teeth, no laugh. Then it eases off and his face relaxes.',
   },
   cringe_a: {
     label: 'Cringe A',
     reactionType: 'cringe',
     duration: 3,
-    performance: 'A three-beat performance. He watches neutrally, then something awkward makes him visibly wince with second-hand embarrassment: the mouth pulls tight and to one side, the nose wrinkles, one eye squints, the brow tenses and the head draws back a little. The wince clearly reads, holds a moment, then relaxes back to neutral. Uncomfortable, not disgusted or scared.',
+    performance: 'He watches, neutral. Then something lands awkwardly and he winces with second-hand embarrassment: the mouth pulls tight and sideways, the nose wrinkles, one eye squints half shut, the brow tightens, the chin tucks slightly and his head draws back an inch as if to get away from it. His shoulders lift a fraction. It is the face of someone watching another person embarrass themselves — pained and sympathetic, not disgusted, not frightened, not comic. He holds the wince a moment, then lets it drain away.',
   },
   disbelief_a: {
     label: 'Disbelief A',
     reactionType: 'disbelief',
     duration: 3,
-    performance: 'A three-beat performance. He watches neutrally, then reacts with clear disbelief, as if thinking "seriously?": the eyes narrow, one eyebrow lifts while the brow tenses, the lips press together, and he gives one slow, small but definite shake of the head. It reads plainly, then fades back to neutral.',
+    performance: 'He watches, neutral. Then something he cannot accept happens, and disbelief settles over his face: the eyes narrow, one eyebrow climbs while the other stays down, the lips press together and push slightly to one side, the jaw sets. He gives a single slow shake of the head, small but unmistakable, the way someone says "no way" without speaking. He keeps watching throughout. Then his face loosens again.',
   },
   surprise_a: {
     label: 'Surprise A',
     reactionType: 'surprise',
     duration: 3,
-    performance: 'A three-beat performance. He watches neutrally, then something unexpected lands: his eyes widen clearly, his eyebrows lift, his lips part slightly and his head pulls back a little. Genuine readable surprise rather than shock or exaggerated reaction acting, settling back to neutral.',
+    performance: 'He watches, neutral. Then something genuinely unexpected happens: his eyes widen, his eyebrows jump up, his lips part slightly and his head pulls back and up a little as the moment registers. The whole face opens for a beat. It is real, human surprise — the flinch of not seeing something coming — not shock, not fear, not exaggerated reaction acting. Then it settles and his expression closes again.',
   },
   suspicious_a: {
     label: 'Suspicious A',
     reactionType: 'suspicious',
     duration: 3,
-    performance: 'A three-beat performance. He watches neutrally, then grows visibly suspicious: both eyes narrow into a clear sceptical squint, one eyebrow lowers, one side of the mouth tightens and his head tilts and leans in very slightly as if looking closer. It holds a moment, then relaxes back to neutral.',
+    performance: 'He watches, neutral. Then doubt creeps in: both eyes narrow into a sceptical squint, one eyebrow lowers, one side of his mouth tightens, and his head tilts a few degrees and leans in slightly, as if trying to see what he is missing. He studies it. It is the look of someone who does not buy what he is being shown. He holds the scrutiny, then eases back.',
   },
   laugh_a: {
     label: 'Laugh A',
     reactionType: 'laugh',
     duration: 3,
-    performance: 'A three-beat performance. He watches neutrally, then something genuinely funny makes him laugh quietly with his mouth closed: cheeks lift, eyes crease and narrow almost shut, shoulders and chest shake two or three times and the head dips. Clearly visible but silent and closed-mouthed, then he settles back to neutral.',
+    performance: 'He watches, neutral. Then something genuinely funny gets him and he laughs, but silently and with his mouth closed: the cheeks push up, the eyes crease and narrow almost shut, the nostrils flare slightly, and his shoulders and chest shake two or three times with the laugh while his head dips forward. It is warm, involuntary and clearly visible, the laugh of someone trying not to make noise. Then he recovers and his face settles.',
   },
 };
 
@@ -230,7 +239,7 @@ async function main() {
     if (!refResponse.ok) fail(`Could not download the reference still: HTTP ${refResponse.status}`);
     await fs.writeFile(refFile, Buffer.from(await refResponse.arrayBuffer()));
 
-    const probe = run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate', '-show_entries', 'format=duration', '-of', 'json', local]);
+    const probe = run('ffprobe', [ '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate', '-show_entries', 'format=duration', '-of', 'json', local]);
     const info = JSON.parse(probe);
     const stream = info.streams[0];
     const clipDuration = Number(info.format.duration);
