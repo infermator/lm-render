@@ -26,7 +26,7 @@ jobs:
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python - <<'PY'
-          import json, os, shutil, time, urllib.parse, urllib.request
+          import json, os, urllib.parse, urllib.request
           from pathlib import Path
           from gradio_client import Client, handle_file
 
@@ -62,7 +62,7 @@ jobs:
             storage='results/debug/latentsync-real-probe.mp4'
             data=Path(path).read_bytes()
             upload=urllib.request.Request(
-              f'{base}/storage/v1/object/{storage}',data=data,method='POST',
+              f'{base}/storage/v1/object/reaction-media/{storage}',data=data,method='POST',
               headers={'apikey':key,'Authorization':f'Bearer {key}','Content-Type':'video/mp4','x-upsert':'true'})
             with urllib.request.urlopen(upload,timeout=120) as r: r.read()
             payload.update({'ok':True,'bytes':size,'result_url':f'{base}/storage/v1/object/public/reaction-media/{storage}'})
