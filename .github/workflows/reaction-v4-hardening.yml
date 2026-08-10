@@ -1,0 +1,48 @@
+name: Reaction Renderer V4 Hardening
+
+on:
+  push:
+    paths:
+      - '.github/v4-hardening-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Make result URLs immutable
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/reaction/render-v4.mjs')
+          s=p.read_text()
+          old="""async function uploadResult(jobId, file) {
+  const storagePath = `results/${jobId}.mp4`;
+  const bytes = await fs.readFile(file);
+"""
+          new="""async function uploadResult(jobId, file) {
+  const renderId = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const storagePath = `results/${jobId}/${renderId}.mp4`;
+  const bytes = await fs.readFile(file);
+"""
+          if old not in s: raise SystemExit('uploadResult target missing')
+          s=s.replace(old,new,1)
+          s=s.replace("'x-upsert': 'true',","'x-upsert': 'false',",1)
+          p.write_text(s)
+          PY
+          node --check scripts/reaction/render-v4.mjs
+          git diff --check
+      - name: Commit
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add scripts/reaction/render-v4.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m 'Use immutable versioned Reaction Lab result URLs'
+          git pull --rebase origin main
+          git push origin HEAD:main
