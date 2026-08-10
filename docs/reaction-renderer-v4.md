@@ -325,19 +325,41 @@ A real smoke render showed that a valid MuseTalk MP4 could still have effectivel
 
 Therefore future spoken completion needs quality validation beyond file existence.
 
-### Preferred next implementation
+### Mouth-only patch-back — implemented
 
-Use the new Speech A/B assets and test a face-ROI path:
+MuseTalk returns a whole frame containing a regenerated rectangular face block.
+Two things go wrong if that frame is used directly, and both were observed:
 
-1. detect face in carrier frames
-2. derive stable padded face ROI
-3. crop/upscale ROI for lip-sync inference
-4. run provider on the larger face
-5. align output back to original frame coordinates
-6. feather/composite modified face into the untouched body carrier
-7. continue chroma workflow
+1. the block's edge is visible over the face for exactly the duration of the line
+2. where the block overlaps the green plate it shifts those pixels enough that
+   the chroma key stops removing them, so the block appears as a dark rectangle
 
-This should be compared against full-frame inference and alternative providers such as LatentSync-class models.
+Only the mouth is kept. The provider's output contributes a feathered ellipse
+composited back into the untouched carrier; hair, shoulders and every plate pixel
+come from the carrier, so a speech segment keys exactly like every other segment.
+
+The mouth is located from the provider's own output rather than by face
+detection. The static part of the block differs from the carrier by a roughly
+constant amount, while the mouth differs by an amount that changes every frame,
+so grid cells are ranked by the **temporal deviation** of the difference.
+
+Sizing matters as much as locating. A first attempt used the bounding box of the
+moving cells and produced a 440x322 patch — nearly the size of the block itself,
+which put the block's edge back inside the patch. A bounding box is set by its
+outliers and the provider regenerates the whole block every frame. The patch is
+now sized from the deviation-weighted spread and capped at roughly 21% x 26% of
+the avatar frame, which keeps it mouth-sized.
+
+This doubles as a quality gate: a provider that returns a valid MP4 whose mouth
+never moves fails the render instead of shipping it.
+
+Measured on the first clean render, using a closed-mouth carrier so that any
+motion must come from the provider:
+
+| window | mean frame-to-frame delta in the mouth region |
+| --- | ---: |
+| during the line | 0.54 |
+| quiet | 0.03 |
 
 ### Provider rule
 
