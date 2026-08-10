@@ -179,33 +179,28 @@ That behavior was written for the earlier longer-carrier design. With the new sh
 
 Do not simply loop one 4-second clip for a long source and call that continuous performance.
 
-## Current avatar-segment normalization — IMPORTANT BLOCKER
+## Avatar-segment normalization — native 16:9
 
-The base `renderSegment()` currently uses legacy portrait preparation roughly equivalent to:
+`renderSegment()` keeps the asset's own 16:9 geometry:
 
-`fps=30 → scale/crop to 720×1280`
+`fps=30 → scale to 1102×620 (decrease) → pad to 1102×620 with the plate colour → setsar=1 → trim → -t`
 
-This is now the largest renderer mismatch.
+The legacy `scale/crop 720×1280` portrait path is gone. It cropped from the
+centre, and the canonical reference frames the subject on the **right**, so the
+crop removed most of him.
 
-### Why it is wrong now
+The avatar frame is scaled as a whole and pinned flush to the bottom-right of the
+1080×1920 canvas (`overlay=W-w:H-h`). The reference deliberately runs the
+subject's body off its own right and bottom edges, so those straight cuts sit
+under the canvas edges instead of showing as a sticker outline. The empty green
+left half of the frame keys away to nothing and costs only transparent pixels.
 
-The new canonical avatar source library is **16:9 green-screen**. Cropping it into a 9:16 intermediate destroys the intended framing and makes the new asset-generation strategy pointless.
+`-t` is passed on every segment render. `-stream_loop -1` feeds an infinite
+input and `trim` alone does not reliably let ffmpeg finish.
 
-### Required refactor
-
-Before the next serious visual test, replace portrait normalization with a 16:9-preserving path.
-
-Recommended shape:
-
-1. accept the 16:9 green-screen asset
-2. normalize FPS to 30
-3. normalize to a consistent 16:9 working resolution such as 1280×720 without portrait crop
-4. trim/loop/tpad as needed while preserving geometry
-5. crossfade compatible green-screen segments
-6. chroma-key the resulting avatar track
-7. scale/position the transparent cutout inside the final 1080×1920 composition
-
-Exact working resolution and avatar scale should remain configurable after visual testing.
+Intermediates are H.264 **yuv444p**, so the key is computed from full-resolution
+chroma rather than half-resolution 4:2:0 edges. The final delivery encode is
+still yuv420p.
 
 ## Final composition
 
@@ -221,16 +216,44 @@ The final product output is still 1080×1920 9:16 even though reusable avatar **
 
 Do not confuse source-asset aspect ratio with final-video aspect ratio.
 
-## Chroma expectations
+## Chroma key — measured, not assumed
 
-Target:
+This was the single most damaging assumption in the old renderer.
 
-- no visible raw green rectangle
-- acceptable edge softness around hair/earbud wires
-- minimal green spill on skin/clothes
-- stable avatar bounds between short clips
+`chromakey` matches on **chroma only and ignores luma**. A real studio green
+plate is far less saturated than `0x00FF00`, which places it close to neutral in
+UV — and so is a black hoodie. Measured on a representative plate
+(`0x3f9a3f`, black hoodie, skin patch, mild vignette):
 
-The current ffmpeg chromakey settings are a starting point, not sacred constants. The new HQ asset pack should be used to tune similarity/blend/despill rather than tuning against legacy room assets.
+| similarity | hoodie alpha | skin alpha | plate |
+| ---: | ---: | ---: | --- |
+| 0.20 | 0 | 0 | keyed |
+| 0.16 | 0 | 35 | keyed |
+| 0.13 | 60 | 162 | keyed |
+| 0.09 | 230 | 255 | keyed |
+| **0.07** | **255** | **255** | **keyed** |
+| 0.05 | 255 | 255 | plate survives |
+
+The old hard-coded `chromakey=0x00FF00:0.20:0.08` sat well inside the range that
+removes the subject entirely. The usable window is narrow and it moves with the
+plate, so both halves are now derived per render:
+
+1. **Key colour** — the median RGB of every greenish cell in a 64×36 grid of the
+   reference asset's first frame. A corner sample reads the vignette and yields a
+   colour the rest of the frame does not match.
+2. **Similarity** — a descending candidate ladder from 0.24 to 0.04. Cells are
+   classified as subject or plate from the unkeyed frame, then each candidate is
+   scored on mean subject alpha and mean plate alpha. The first candidate with
+   subject ≥ 250 and plate ≤ 4 wins.
+
+`despill=type=green:mix=0.5:expand=0` is appended when the local ffmpeg exposes
+it. At `mix=0.5` it is a no-op on uncontaminated pixels.
+
+Both values land in `render_meta.chroma_*` for QC, and
+`node scripts/reaction/render-v4.mjs --calibrate <file|url>` reports them for any
+asset without needing job credentials. It exits non-zero when no clean threshold
+exists, which means the plate is too uneven or too desaturated to key without
+eating the subject — fix the plate, do not widen the threshold.
 
 ## Speech-ready carrier rule
 
@@ -367,37 +390,30 @@ This behavior should be moved directly into `render-v4.mjs` during the next refa
 
 ## Current known technical debt
 
-1. **16:9 asset mismatch** — portrait normalization still exists in base renderer.
-2. **Runtime source patching** — hardening belongs directly in canonical source.
-3. **HF MuseTalk quality** — plumbing works; mouth quality not approved.
-4. **No robust automatic speech visual QC** — human review still required.
-5. **Neutral loop strategy** — needs adaptation for 4-second short neutrals.
-6. **Transitions are simple xfade** — no real pose-aware morph/interpolation yet.
-7. **Only one voice comment in smoke mode** — intentional current limit, not final product design.
-8. **Hardcoded avatar placement/chroma parameters** — should become presets after new-library visual tuning.
-9. **Legacy experimental workflows/files** — Kaggle probes and QC experiments should eventually be archived/removed once the new pipeline is stable.
+1. **HF MuseTalk quality** — plumbing works; mouth quality not approved.
+2. **No robust automatic speech visual QC** — human review still required.
+3. **Only one voice comment in smoke mode** — intentional current limit, not final product design.
+4. **Avatar placement is a constant** — `AVATAR_H = 620`, flush bottom-right. Should become a per-persona preset after visual review.
+5. **Neutral variety comes only from alternating assets** — chunks are cut on whole asset loops so every cut lands on the shared anchor frame. Start offsets would break that, so more variety needs more neutral clips, not offsets.
+6. **Legacy experimental workflows/files** — Kaggle probes and QC experiments should eventually be archived once the new pipeline is stable.
 
 ## Next code-change order
 
-### 1. Fold hardening into `render-v4.mjs`
+### 1. Reaction-only render on the new asset pack
 
-Move:
+Voice disabled. Isolate motion continuity, anchor cuts and chroma quality.
 
-- speech-ready selection
-- speech trace fields
-- immutable result upload
+### 2. Speech carrier lip-sync A/B
 
-into canonical renderer source.
+Speech A (talking) against Speech C (closed mouth), same line, one carrier
+enabled at a time.
 
-Then simplify `run-v4-hardened.mjs` to a thin launcher or remove it.
+### 3. Face-ROI lip-sync experiment
 
-### 2. Implement native 16:9 avatar normalization
-
-This must land before evaluating the new Kling asset pack.
-
-### 3. Tune chroma/placement against new HQ assets
-
-Do not tune against old room-background clips.
+Crop and upscale a stable face ROI for inference, then feather it back into the
+untouched body clip. This also keeps the speech segment's chroma edges identical
+to every other segment, because the plate pixels are never re-encoded by the
+provider.
 
 ### 4. Implement short-library neutral/reaction strategy
 
