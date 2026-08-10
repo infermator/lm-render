@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
+const DRY_RUN = process.env.REACTION_V4_HARDEN_DRY_RUN === '1';
+
 function replaceOnce(source, needle, replacement, label) {
   if (!source.includes(needle)) throw new Error(`v4 hardening target missing: ${label}`);
   return source.replace(needle, replacement);
@@ -79,6 +81,18 @@ async function main() {
   await fs.writeFile(runtimePath, source);
   console.log(`[reaction-v4-hardening] runtime=${runtimePath}`);
   console.log('[reaction-v4-hardening] speech-ready selection=ON; immutable outputs=ON; Kaggle path=ABSENT');
+
+  if (DRY_RUN) {
+    const check = spawn(process.execPath, ['--check', runtimePath], { stdio: 'inherit', env: process.env });
+    const code = await new Promise((resolve, reject) => {
+      check.on('error', reject);
+      check.on('close', resolve);
+    });
+    await fs.rm(runtimePath, { force: true }).catch(() => {});
+    if (code !== 0) throw new Error(`Hardened v4 runtime syntax check failed with ${code}`);
+    console.log('[reaction-v4-hardening] DRY RUN OK');
+    return;
+  }
 
   const child = spawn(process.execPath, [runtimePath], { stdio: 'inherit', env: process.env });
   const code = await new Promise((resolve, reject) => {
