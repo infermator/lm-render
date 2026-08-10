@@ -1,0 +1,47 @@
+{
+  "job_id": "185df8b1-b394-4e3c-84bf-2e1e9a178fd9",
+  "result_url": "https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/results/185df8b1-b394-4e3c-84bf-2e1e9a178fd9.mp4",
+  "windows": [
+    {
+      "start": 8,
+      "duration": 4,
+      "source_mean_db": -12.5,
+      "final_mean_db": -11.3,
+      "delta_db": 1.1999999999999993,
+      "final_audible": true
+    },
+    {
+      "start": 15,
+      "duration": 5,
+      "source_mean_db": -12.2,
+      "final_mean_db": -11.4,
+      "delta_db": 0.7999999999999989,
+      "final_audible": true
+    },
+    {
+      "start": 25,
+      "duration": 5,
+      "source_mean_db": -10.7,
+      "final_mean_db": -9.9,
+      "delta_db": 0.7999999999999989,
+      "final_audible": true
+    },
+    {
+      "start": 40,
+      "duration": 5,
+      "source_mean_db": -12.3,
+      "final_mean_db": -11.5,
+      "delta_db": 0.8000000000000007,
+      "final_audible": true
+    },
+    {
+      "start": 48,
+      "duration": 4,
+      "source_mean_db": -12.1,
+      "final_mean_db": -11.1,
+      "delta_db": 1.0,
+      "final_audible": true
+    }
+  ],
+  "all_post_tts_windows_audible": true
+}
