@@ -1,63 +1,63 @@
 {
-  "id": "185df8b1-b394-4e3c-84bf-2e1e9a178fd9",
+  "id": "13c910a2-fff8-489c-a269-97d61ff86902",
   "status": "completed",
   "current_stage": "render_complete",
   "error": null,
-  "result_url": "https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/results/185df8b1-b394-4e3c-84bf-2e1e9a178fd9.mp4",
-  "result_path": "results/185df8b1-b394-4e3c-84bf-2e1e9a178fd9.mp4",
-  "completed_at": "2026-08-10T05:10:38.36+00:00",
-  "updated_at": "2026-08-10T05:10:38.36+00:00",
-  "attempts": 10,
+  "result_url": "https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/results/13c910a2-fff8-489c-a269-97d61ff86902.mp4",
+  "result_path": "results/13c910a2-fff8-489c-a269-97d61ff86902.mp4",
+  "completed_at": "2026-08-10T05:13:57.472+00:00",
+  "updated_at": "2026-08-10T05:13:57.472+00:00",
+  "attempts": 2,
   "render_meta": {
     "comments": [
       {
-        "text": "6:42 AM? That's quite early.",
-        "start": 4.65,
-        "duration": 2.638367,
+        "text": "That's not the Lidl I know!",
+        "start": 3.2,
+        "duration": 1.619592,
         "lipsync_duration": 12.033333,
         "lipsync_provider": "huggingface_public_musetalk"
       }
     ],
     "renderer": "lm-render/github-actions-v4",
     "audio_mix": "full_duration_padded_sidechain_v1",
-    "duration_s": 53.568,
+    "duration_s": 19.017,
     "avatar_mode": "chroma",
     "event_count": 2,
     "frame_count": 14,
     "adapted_plan": {
-      "tone": "amused, slightly cringed",
+      "tone": "amused",
       "events": [
         {
           "gaze": "content",
-          "time": 4.65,
+          "time": 3.2,
           "type": "smirk",
-          "reason": "The speaker mentions the guest arrived at 6:42 AM, which is unusually early for a guest, prompting a slight smirk.",
-          "comment": "6:42 AM? That's quite early.",
+          "reason": "The first 'Lidl Super Market' sign appears with a ladybug logo, which is not typical for the actual Lidl brand, creating a humorous, slightly off-brand visual.",
+          "comment": "That's not the Lidl I know!",
           "duration": 1.5,
-          "intensity": 0.3
+          "intensity": 0.4
         },
         {
           "gaze": "content",
-          "time": 43,
-          "type": "cringe",
-          "reason": "The speaker reveals the guest sat right outside the front door for hours despite being told to leave and come back later, which is a socially awkward and cringe",
+          "time": 7.35,
+          "type": "smirk",
+          "reason": "A second 'Lidl Super Market' sign, also with a ladybug logo, comes into view, doubling the humorous, off-brand effect.",
           "duration": 2,
-          "intensity": 0.4
+          "intensity": 0.5
         }
       ],
-      "summary": "The reactor is amused and slightly cringed by the guest's lack of social awareness and disregard for instructions."
+      "summary": "The video shows a street scene at night with two 'Lidl Super Market' signs, one of which has a ladybug logo, while accordion music plays."
     },
     "failed_stage": "render",
     "analysis_only": false,
     "comment_count": 1,
-    "segment_count": 8,
+    "segment_count": 5,
     "analysis_model": "google/gemini-2.5-flash",
     "render_request": {
       "avatar_mode": "pip",
-      "requested_at": "2026-08-09T20:39:08.308Z",
+      "requested_at": "2026-08-09T21:03:02.049Z",
       "voice_lipsync": true,
       "reuse_analysis": true,
-      "kaggle_username": "1",
+      "kaggle_username": "Nilinu",
       "lipsync_provider": "musetalk_kaggle",
       "max_voice_comments": 1,
       "available_asset_types": [
@@ -71,13 +71,13 @@
     "final_validation": {
       "width": 1080,
       "height": 1920,
-      "duration_s": 53.586867,
+      "duration_s": 19.033333,
       "audio_codec": "aac",
       "video_codec": "h264",
-      "audio_duration_s": 53.568
+      "audio_duration_s": 19.017
     },
     "lipsync_provider": "huggingface_public_musetalk",
-    "transition_count": 7,
+    "transition_count": 4,
     "source_media_used": true,
     "director_vocabulary": [
       "cringe",
@@ -85,32 +85,31 @@
       "smirk"
     ],
     "source_analysis_mode": "source_video_audio_plus_frame_anchors",
-    "lipsync_skipped_count": 0,
     "used_real_asset_vocabulary": true
   },
   "reaction_plan": {
-    "tone": "amused, slightly cringed",
+    "tone": "amused",
     "events": [
       {
         "gaze": "content",
-        "time": 4.65,
+        "time": 3.2,
         "type": "smirk",
-        "reason": "The speaker mentions the guest arrived at 6:42 AM, which is unusually early for a guest, prompting a slight smirk.",
-        "comment": "6:42 AM? That's quite early.",
+        "reason": "The first 'Lidl Super Market' sign appears with a ladybug logo, which is not typical for the actual Lidl brand, creating a humorous, slightly off-brand visual.",
+        "comment": "That's not the Lidl I know!",
         "duration": 1.5,
-        "intensity": 0.3
+        "intensity": 0.4
       },
       {
         "gaze": "content",
-        "time": 43,
-        "type": "cringe",
-        "reason": "The speaker reveals the guest sat right outside the front door for hours despite being told to leave and come back later, which is a socially awkward and cringe",
-        "comment": "She just sat there? Awkward.",
+        "time": 7.35,
+        "type": "smirk",
+        "reason": "A second 'Lidl Super Market' sign, also with a ladybug logo, comes into view, doubling the humorous, off-brand effect.",
+        "comment": "Two of them?",
         "duration": 2,
-        "intensity": 0.4
+        "intensity": 0.5
       }
     ],
-    "summary": "The reactor is amused and slightly cringed by the guest's lack of social awareness and disregard for instructions."
+    "summary": "The video shows a street scene at night with two 'Lidl Super Market' signs, one of which has a ladybug logo, while accordion music plays."
   },
-  "captured_at": "2026-08-10T05:10:39.480438+00:00"
+  "captured_at": "2026-08-10T05:13:58.029486+00:00"
 }
