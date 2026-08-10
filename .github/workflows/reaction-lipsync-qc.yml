@@ -1,0 +1,126 @@
+name: Reaction LipSync QC
+
+on:
+  push:
+    paths:
+      - '.github/lipsync-qc-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  qc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install QC tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'opencv-python-headless>=4.10' 'mediapipe>=0.10.20' numpy
+      - name: Measure mouth movement
+        run: |
+          python - <<'PY'
+          import json, math, urllib.request
+          from pathlib import Path
+          import cv2, numpy as np
+          import mediapipe as mp
+
+          jobs = [
+            {
+              'id':'185df8b1-b394-4e3c-84bf-2e1e9a178fd9',
+              'url':'https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/results/185df8b1-b394-4e3c-84bf-2e1e9a178fd9.mp4',
+              'speech_start':4.65,
+              'speech_end':7.29,
+            },
+            {
+              'id':'13c910a2-fff8-489c-a269-97d61ff86902',
+              'url':'https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/results/13c910a2-fff8-489c-a269-97d61ff86902.mp4',
+              'speech_start':3.2,
+              'speech_end':4.82,
+            },
+          ]
+
+          out=[]
+          face_mesh = mp.solutions.face_mesh.FaceMesh(static_image_mode=False,max_num_faces=3,refine_landmarks=True,min_detection_confidence=0.35,min_tracking_confidence=0.35)
+
+          def dist(a,b):
+            return math.hypot(a.x-b.x,a.y-b.y)
+
+          for job in jobs:
+            local=f"/tmp/{job['id']}.mp4"
+            urllib.request.urlretrieve(job['url']+'?qc=1', local)
+            cap=cv2.VideoCapture(local)
+            fps=cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames=int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+            def sample(start,end,step=0.10):
+              values=[]; rows=[]; t=start
+              while t <= end+1e-6:
+                cap.set(cv2.CAP_PROP_POS_MSEC,t*1000)
+                ok,frame=cap.read()
+                if not ok: t+=step; continue
+                # v4 avatar is deterministic bottom-right. Restrict detection there so the source speaker isn't chosen.
+                x0=max(0,width-650); y0=max(0,height-1130)
+                crop=frame[y0:height, x0:width]
+                rgb=cv2.cvtColor(crop,cv2.COLOR_BGR2RGB)
+                result=face_mesh.process(rgb)
+                best=None
+                if result.multi_face_landmarks:
+                  # choose face closest to right/bottom avatar region center by size (largest in this crop)
+                  for face in result.multi_face_landmarks:
+                    xs=[p.x for p in face.landmark]; ys=[p.y for p in face.landmark]
+                    area=(max(xs)-min(xs))*(max(ys)-min(ys))
+                    if best is None or area>best[0]: best=(area,face)
+                if best:
+                  lm=best[1].landmark
+                  eye=max(dist(lm[33],lm[263]),1e-5)
+                  inner=dist(lm[13],lm[14])/eye
+                  outer=dist(lm[0],lm[17])/eye
+                  values.append(inner)
+                  rows.append({'t':round(t,3),'inner':round(inner,6),'outer':round(outer,6),'face_area':round(best[0],5)})
+                t+=step
+              return values,rows
+
+            # Baseline is immediately before the Director event; speech samples cover the TTS interval.
+            baseline_start=max(0.2,job['speech_start']-1.0)
+            baseline_end=max(baseline_start+0.1,job['speech_start']-0.18)
+            before,before_rows=sample(baseline_start,baseline_end)
+            speaking,speaking_rows=sample(job['speech_start']+0.08,job['speech_end']-0.05)
+
+            def stats(vals):
+              if not vals: return {'n':0,'mean':None,'std':None,'range':None}
+              a=np.asarray(vals,float)
+              return {'n':len(vals),'mean':float(a.mean()),'std':float(a.std()),'range':float(a.max()-a.min()),'min':float(a.min()),'max':float(a.max())}
+
+            bs=stats(before); ss=stats(speaking)
+            # Practical signal only: range/std must be non-trivial and face detection must cover enough samples.
+            detected_enough = ss['n'] >= 8
+            motion_signal = detected_enough and (ss['range'] or 0) >= 0.012 and (ss['std'] or 0) >= 0.0035
+            baseline_ratio = None
+            if bs['std'] not in (None,0): baseline_ratio=(ss['std'] or 0)/bs['std']
+            out.append({
+              'id':job['id'],'fps':fps,'frames':total_frames,'size':[width,height],
+              'baseline':bs,'speaking':ss,'speaking_to_baseline_std_ratio':baseline_ratio,
+              'mouth_motion_signal':bool(motion_signal),
+              'baseline_samples':before_rows,'speaking_samples':speaking_rows,
+            })
+            cap.release()
+
+          face_mesh.close()
+          Path('.github/qc').mkdir(parents=True,exist_ok=True)
+          Path('.github/qc/lipsync-landmark-qc.json').write_text(json.dumps(out,indent=2))
+          print(json.dumps(out,indent=2))
+          PY
+      - name: Commit QC
+        if: always()
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/qc/lipsync-landmark-qc.json || true
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record Reaction Lab lip-sync landmark QC'
+          git pull --rebase origin main
+          git push origin HEAD:main
