@@ -30,6 +30,13 @@ const AVATAR_W = Math.round((AVATAR_H * 16) / 9 / 2) * 2;
 // into and out of a speech carrier invisible, and it doubles as a breath-in.
 const SPEECH_PAD_S = 0.3;
 
+// Supabase enforces the smaller of the bucket limit and the project plan's
+// global upload limit. The bucket allows 250 MB but the project caps uploads at
+// 50 MB, which a 145s 1080x1920 render blows straight past at CRF 20. The
+// delivery encode is therefore given a size budget instead of a fixed quality.
+const MAX_RESULT_BYTES = Math.round(Number(process.env.REACTION_MAX_RESULT_MB || 46) * 1024 * 1024);
+const AUDIO_KBPS = 160;
+
 // `node render-v4.mjs --calibrate <file|url>` reports the chroma key it would
 // use for an asset and exits. Useful for QC on a new persona plate, and it needs
 // none of the job credentials.
@@ -587,6 +594,22 @@ async function assembleAvatarTrack(rendered, totalDuration) {
   return out;
 }
 
+function deliveryVideoKbps(durationSeconds) {
+  const budgetBits = MAX_RESULT_BYTES * 8 * 0.94;
+  const kbps = Math.floor(budgetBits / Math.max(1, durationSeconds) / 1000) - AUDIO_KBPS;
+  return Math.round(clamp(kbps, 1500, 12000));
+}
+
+// A CRF encode constrained by VBV keeps short renders at full quality and only
+// bites on long ones, where the plan limit would otherwise reject the upload.
+async function shrinkResult(file, durationSeconds, kbps) {
+  const out = path.join(workDir, 'final-shrunk.mp4');
+  await run('ffmpeg', ['-y', '-i', file,
+    '-c:v', 'libx264', '-preset', 'medium', '-b:v', `${kbps}k`, '-maxrate', `${kbps}k`, '-bufsize', `${kbps * 2}k`,
+    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', `${AUDIO_KBPS}k`, '-ar', '48000', '-movflags', '+faststart', out]);
+  return out;
+}
+
 async function composeFinal(source, avatarTrack, comments, totalDuration, sourceHasAudio, despillAvailable) {
   const out = path.join(workDir, 'final.mp4');
   const args = ['-y', '-i', source, '-i', avatarTrack];
@@ -636,8 +659,10 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
   args.push('-filter_complex', filters.join(';'), '-map', '[vout]');
   if (audioMap) args.push('-map', audioMap);
   else if (sourceHasAudio) args.push('-map', '0:a:0');
-  args.push('-t', totalDuration.toFixed(3), '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p');
-  if (audioMap || sourceHasAudio) args.push('-c:a', 'aac', '-b:a', '160k', '-ar', '48000');
+  const kbps = deliveryVideoKbps(totalDuration);
+  args.push('-t', totalDuration.toFixed(3), '-c:v', 'libx264', '-preset', 'medium', '-crf', '21',
+    '-maxrate', `${kbps}k`, '-bufsize', `${kbps * 2}k`, '-pix_fmt', 'yuv420p');
+  if (audioMap || sourceHasAudio) args.push('-c:a', 'aac', '-b:a', `${AUDIO_KBPS}k`, '-ar', '48000');
   args.push('-movflags', '+faststart', out);
   await run('ffmpeg', args);
   return out;
@@ -756,7 +781,17 @@ try {
     avatar_mode: 'chroma',
     source_audio_preserved: sourceHasAudio,
   });
-  const final = await composeFinal(source, avatarTrack, comments, duration, sourceHasAudio, despillAvailable);
+  let final = await composeFinal(source, avatarTrack, comments, duration, sourceHasAudio, despillAvailable);
+  let finalBytes = (await fs.stat(final)).size;
+  if (finalBytes > MAX_RESULT_BYTES) {
+    const retryKbps = Math.round(deliveryVideoKbps(duration) * 0.82);
+    log(`Result is ${(finalBytes / 1048576).toFixed(1)} MB, over the ${(MAX_RESULT_BYTES / 1048576).toFixed(0)} MB upload limit; re-encoding at ${retryKbps}k`);
+    final = await shrinkResult(final, duration, retryKbps);
+    finalBytes = (await fs.stat(final)).size;
+  }
+  if (finalBytes > MAX_RESULT_BYTES) {
+    throw new Error(`Result is ${(finalBytes / 1048576).toFixed(1)} MB and still exceeds the ${(MAX_RESULT_BYTES / 1048576).toFixed(0)} MB upload limit`);
+  }
   const validation = await validateFinal(final, duration, sourceHasAudio || comments.length > 0);
 
   await progress(claimedJob.id, 'result_uploading', { final_validation: validation });
@@ -783,6 +818,8 @@ try {
     timeline_clock: 'absolute_preserved_hardcut_v2',
     audio_mix: 'full_duration_padded_sidechain_v1',
     final_validation: validation,
+    result_bytes: finalBytes,
+    delivery_video_kbps: deliveryVideoKbps(duration),
     comments: comments.map(comment => ({
       start: comment.start,
       text: comment.text,
