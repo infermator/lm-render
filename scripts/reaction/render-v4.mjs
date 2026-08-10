@@ -30,6 +30,11 @@ const AVATAR_W = Math.round((AVATAR_H * 16) / 9 / 2) * 2;
 // into and out of a speech carrier invisible, and it doubles as a breath-in.
 const SPEECH_PAD_S = 0.3;
 
+// The voice stem is normalised to this, then the source is ducked under it and
+// the sum is limited. Without this the mix clipped at +2.9 dBFS and still went
+// quiet under the line.
+const VOICE_TARGET_LUFS = -13;
+
 // Supabase enforces the smaller of the bucket limit and the project plan's
 // global upload limit. The bucket allows 250 MB but the project caps uploads at
 // 50 MB, which a 145s 1080x1920 render blows straight past at CRF 20. The
@@ -162,6 +167,17 @@ async function probeDuration(file) {
 async function hasAudio(file) {
   const { stdout } = await run('ffprobe', ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=index', '-of', 'csv=p=0', file]);
   return !!stdout.trim();
+}
+
+// ElevenLabs output level is not constant, and a fixed volume made the mix
+// 4.6 LUFS QUIETER while he spoke than while he did not. The voice is measured
+// and gained to a known level instead.
+async function measureLoudness(file) {
+  const { stderr } = await run('ffmpeg', ['-hide_banner', '-nostats', '-i', file, '-af', 'ebur128=peak=true', '-f', 'null', '-']);
+  const match = stderr.match(/I:\s*(-?[\d.]+)\s*LUFS/g);
+  if (!match?.length) return null;
+  const value = Number(String(match[match.length - 1]).match(/(-?[\d.]+)/)?.[1]);
+  return Number.isFinite(value) ? value : null;
 }
 
 async function probeJson(file) {
@@ -368,7 +384,15 @@ async function createTts(text, index) {
     '-af', `adelay=${Math.round(SPEECH_PAD_S * 1000)}:all=1,apad=pad_dur=${SPEECH_PAD_S.toFixed(3)}`,
     '-c:a', 'libmp3lame', '-q:a', '2', padded,
   ]);
-  return { rawUrl: audioUrl, local: padded, duration: await probeDuration(padded) };
+  const measured = await measureLoudness(padded);
+  const gainDb = measured == null ? 0 : clamp(VOICE_TARGET_LUFS - measured, -6, 18);
+  return {
+    rawUrl: audioUrl,
+    local: padded,
+    duration: await probeDuration(padded),
+    loudness_lufs: measured,
+    gain_db: Number(gainDb.toFixed(2)),
+  };
 }
 
 // Speech carriers all open and close on the same anchor frame, so they can be
@@ -476,41 +500,81 @@ async function locateLipSyncPatch(bedFile, syncedFile) {
     throw new Error(`Lip-sync output has no moving region: peak temporal deviation ${maxDeviation.toFixed(2)}`);
   }
 
-  const threshold = Math.max(1.2, maxDeviation * 0.35);
+  // The provider's block spans the whole face, and its noisiest region is the
+  // eyes, not the mouth — ranking cells by deviation alone put the patch over
+  // his eyes and left the mouth untouched, which is exactly what "the mouth
+  // still does not move" looks like. The mouth is always in the lower part of a
+  // face, so the search is restricted there.
+  let meanDiff = new Array(cells).fill(0);
+  for (let cell = 0; cell < cells; cell++) {
+    let sum = 0;
+    for (let frame = 0; frame < frameCount; frame++) sum += bytes[frame * cells + cell];
+    meanDiff[cell] = sum / frameCount;
+  }
+  const blockThreshold = Math.max(3, Math.max(...meanDiff) * 0.25);
+  let bMinX = GRID_W; let bMaxX = -1; let bMinY = GRID_H; let bMaxY = -1;
+  for (let cell = 0; cell < cells; cell++) {
+    if (meanDiff[cell] < blockThreshold) continue;
+    const x = cell % GRID_W;
+    const y = Math.floor(cell / GRID_W);
+    bMinX = Math.min(bMinX, x); bMaxX = Math.max(bMaxX, x);
+    bMinY = Math.min(bMinY, y); bMaxY = Math.max(bMaxY, y);
+  }
+  if (bMaxX < 0) throw new Error('Lip-sync output does not differ from its carrier');
+  const blockW = bMaxX - bMinX + 1;
+  const blockH = bMaxY - bMinY + 1;
+  const mouthTop = bMinY + blockH * 0.5;
+
+  const threshold = Math.max(1.2, maxDeviation * 0.30);
   let weight = 0; let cxSum = 0; let cySum = 0; let moving = 0;
   for (let cell = 0; cell < cells; cell++) {
+    const x = cell % GRID_W;
+    const y = Math.floor(cell / GRID_W);
+    if (x < bMinX || x > bMaxX || y < mouthTop || y > bMaxY) continue;
     if (deviation[cell] < threshold) continue;
     moving += 1;
-    cxSum += (cell % GRID_W) * deviation[cell];
-    cySum += Math.floor(cell / GRID_W) * deviation[cell];
+    cxSum += x * deviation[cell];
+    cySum += y * deviation[cell];
     weight += deviation[cell];
   }
-  if (!moving) throw new Error('Lip-sync output has no coherent moving region');
-
-  // A bounding box is set by its outliers, and the provider regenerates the
-  // whole face block every frame, so a handful of scattered cells stretched the
-  // patch to the size of the block itself — which put the block's own edge back
-  // inside the patch. The weighted spread is not moved by those outliers.
-  const meanX = cxSum / weight;
-  const meanY = cySum / weight;
-  let varX = 0; let varY = 0;
-  for (let cell = 0; cell < cells; cell++) {
-    if (deviation[cell] < threshold) continue;
-    varX += deviation[cell] * ((cell % GRID_W) - meanX) ** 2;
-    varY += deviation[cell] * (Math.floor(cell / GRID_W) - meanY) ** 2;
-  }
-  const spreadX = Math.sqrt(varX / weight);
-  const spreadY = Math.sqrt(varY / weight);
 
   const scaleX = AVATAR_W / GRID_W;
   const scaleY = AVATAR_H / GRID_H;
-  const centreX = (meanX + 0.5) * scaleX;
-  const centreY = (meanY + 0.5) * scaleY;
-  // Mouth-sized, never face-sized. The ceiling matters more than the floor: the
-  // patch must stay comfortably smaller than the provider's block so the block's
-  // edge is never copied.
-  const halfW = clamp(spreadX * 1.9 * scaleX, AVATAR_W * 0.045, AVATAR_W * 0.105);
-  const halfH = clamp(spreadY * 1.9 * scaleY, AVATAR_H * 0.055, AVATAR_H * 0.130);
+  let centreX;
+  let centreY;
+  let spreadX;
+  let spreadY;
+  let located;
+
+  if (moving >= 3) {
+    const meanX = cxSum / weight;
+    const meanY = cySum / weight;
+    let varX = 0; let varY = 0;
+    for (let cell = 0; cell < cells; cell++) {
+      const x = cell % GRID_W;
+      const y = Math.floor(cell / GRID_W);
+      if (x < bMinX || x > bMaxX || y < mouthTop || y > bMaxY) continue;
+      if (deviation[cell] < threshold) continue;
+      varX += deviation[cell] * (x - meanX) ** 2;
+      varY += deviation[cell] * (y - meanY) ** 2;
+    }
+    centreX = (meanX + 0.5) * scaleX;
+    centreY = (meanY + 0.5) * scaleY;
+    spreadX = Math.sqrt(varX / weight) * scaleX;
+    spreadY = Math.sqrt(varY / weight) * scaleY;
+    located = 'motion_in_lower_face';
+  } else {
+    // Nothing moved measurably in the lower face. Fall back to where a mouth
+    // sits in a detected face block rather than patching the wrong feature.
+    centreX = (bMinX + blockW * 0.47 + 0.5) * scaleX;
+    centreY = (bMinY + blockH * 0.76 + 0.5) * scaleY;
+    spreadX = blockW * 0.13 * scaleX;
+    spreadY = blockH * 0.10 * scaleY;
+    located = 'face_block_geometry';
+  }
+
+  const halfW = clamp(Math.max(spreadX * 1.9, blockW * scaleX * 0.20), AVATAR_W * 0.045, AVATAR_W * 0.105);
+  const halfH = clamp(Math.max(spreadY * 1.9, blockH * scaleY * 0.14), AVATAR_H * 0.055, AVATAR_H * 0.130);
 
   const even = value => Math.max(2, Math.round(value / 2) * 2);
   let width = even(halfW * 2);
@@ -525,6 +589,11 @@ async function locateLipSyncPatch(bedFile, syncedFile) {
     peak_deviation: Number(maxDeviation.toFixed(2)),
     moving_cells: moving,
     centre: [Math.round(centreX), Math.round(centreY)],
+    located_by: located,
+    face_block: [
+      Math.round(bMinX * scaleX), Math.round(bMinY * scaleY),
+      Math.round(blockW * scaleX), Math.round(blockH * scaleY),
+    ],
   };
 }
 
@@ -612,6 +681,8 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
       lipsyncMeta = { ...synced, carrier_ids: bed.carrierIds, patch: blended.patch };
       comments.push({
         start,
+        gain_db: tts.gain_db,
+        loudness_lufs: tts.loudness_lufs,
         text: event.comment.trim(),
         audioUrl: audioUpload.url,
         local: tts.local,
@@ -759,7 +830,7 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
       const inputIndex = 2 + index;
       const delay = Math.max(0, Math.round(comment.start * 1000));
       const label = `c${index}`;
-      filters.push(`[${inputIndex}:a]aresample=48000,volume=1.08,adelay=delays=${delay}:all=1,apad=whole_dur=${totalDuration.toFixed(3)},atrim=duration=${totalDuration.toFixed(3)}[${label}]`);
+      filters.push(`[${inputIndex}:a]aresample=48000,volume=${Number(comment.gain_db ?? 0).toFixed(2)}dB,adelay=delays=${delay}:all=1,apad=whole_dur=${totalDuration.toFixed(3)},atrim=duration=${totalDuration.toFixed(3)}[${label}]`);
       labels.push(`[${label}]`);
     });
     if (labels.length === 1) filters.push(`${labels[0]}anull[voice]`);
@@ -768,11 +839,12 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
     if (sourceHasAudio) {
       filters.push(`[0:a]aresample=48000,apad=whole_dur=${totalDuration.toFixed(3)},atrim=duration=${totalDuration.toFixed(3)}[srca]`);
       filters.push('[voice]asplit=2[voice_sc][voice_mix]');
-      filters.push('[srca][voice_sc]sidechaincompress=threshold=0.02:ratio=6:attack=12:release=300[ducked]');
-      filters.push('[ducked][voice_mix]amix=inputs=2:duration=first:normalize=0[aout]');
+      filters.push('[srca][voice_sc]sidechaincompress=threshold=0.03:ratio=12:attack=5:release=280[ducked]');
+      filters.push('[ducked][voice_mix]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.89:attack=5:release=60[aout]');
       audioMap = '[aout]';
     } else {
-      audioMap = '[voice]';
+      filters.push('[voice]alimiter=limit=0.89:attack=5:release=60[voiceout]');
+      audioMap = '[voiceout]';
     }
   }
 
@@ -936,7 +1008,8 @@ try {
     lipsync_provider: comments.length ? 'huggingface_public_musetalk' : null,
     speech_pad_s: SPEECH_PAD_S,
     timeline_clock: 'absolute_preserved_hardcut_v2',
-    audio_mix: 'full_duration_padded_sidechain_v1',
+    audio_mix: 'measured_voice_ducked_limited_v2',
+    voice_target_lufs: VOICE_TARGET_LUFS,
     final_validation: validation,
     result_bytes: finalBytes,
     delivery_video_kbps: deliveryVideoKbps(duration),
@@ -949,6 +1022,8 @@ try {
       lipsync_duration: comment.lipsync_duration,
       speech_carrier_ids: comment.speech_carrier_ids,
       lipsync_patch: comment.lipsync_patch,
+      voice_loudness_lufs: comment.loudness_lufs,
+      voice_gain_db: comment.gain_db,
     })),
     adapted_plan: plan,
   };
