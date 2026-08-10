@@ -1,0 +1,34 @@
+name: Reaction Tiny QC
+
+on:
+  push:
+    paths:
+      - '.github/tiny-qc-kick'
+
+permissions:
+  contents: write
+
+jobs:
+  qc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Make tiny speaking samples
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
+          mkdir -p .github/qc/tiny
+          # Contact sheet is 5x2 of 360x640 frames. Frame 4=5.30s, frame 5=5.70s.
+          # Crop the deterministic bottom-right avatar placement from those full frames.
+          ffmpeg -hide_banner -loglevel error -y -i .github/qc/185df8b1-contact-sheet.jpg -vf 'crop=207:367:147:273,scale=120:213' -frames:v 1 -q:v 15 .github/qc/tiny/speech-530.jpg
+          ffmpeg -hide_banner -loglevel error -y -i .github/qc/185df8b1-contact-sheet.jpg -vf 'crop=207:367:507:273,scale=120:213' -frames:v 1 -q:v 15 .github/qc/tiny/speech-570.jpg
+      - name: Commit samples
+        run: |
+          git config user.name reaction-lab-bot
+          git config user.email actions@users.noreply.github.com
+          git add .github/qc/tiny
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record tiny Reaction Lab visual samples'
+          git pull --rebase origin main
+          git push origin HEAD:main
