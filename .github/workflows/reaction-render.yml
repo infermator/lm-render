@@ -45,6 +45,7 @@ jobs:
           ffmpeg -version | head -1
           ffprobe -version | head -1
           node --check scripts/reaction/render-v4.mjs
+          node --check scripts/reaction/run-v4-hardened.mjs
 
       - name: Resolve render target
         env:
@@ -75,7 +76,7 @@ jobs:
           HF_MUSETALK_WORKER: ${{ github.workspace }}/scripts/reaction/hf_musetalk_lipsync.py
         run: |
           set -euo pipefail
-          node scripts/reaction/render-v4.mjs
+          node scripts/reaction/run-v4-hardened.mjs
 
       - name: Persist diagnostic replay result
         if: always() && github.event_name == 'push'
