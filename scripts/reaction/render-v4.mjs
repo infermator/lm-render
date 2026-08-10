@@ -10,6 +10,7 @@ const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_KEY = String(process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
 const REQUESTED_JOB_ID = String(process.env.JOB_ID || '').trim();
 const HF_MUSETALK_WORKER = String(process.env.HF_MUSETALK_WORKER || '').trim();
+const FAL_KEY = String(process.env.FAL_KEY || '').trim();
 const FORCE_REQUEUE = process.env.FORCE_REQUEUE === '1';
 const BUCKET = 'reaction-media';
 
@@ -35,6 +36,15 @@ const SPEECH_PAD_S = 0.3;
 // quiet under the line.
 const VOICE_TARGET_LUFS = -13;
 
+// Lip-sync runs against a video built from the persona's HQ still rather than a
+// generated carrier. Inside the 1102x620 avatar frame the face measures ~207px;
+// at this size it is roughly 540px, which is what these models actually need.
+// fal's Kling lip-sync also requires both axes between 720 and 1920.
+const STILL_W = 1920;
+const STILL_H = 1080;
+const FAL_LIPSYNC_MODEL = 'fal-ai/kling-video/lipsync/audio-to-video';
+const FAL_MAX_CLIP_S = 10;
+
 // Supabase enforces the smaller of the bucket limit and the project plan's
 // global upload limit. The bucket allows 250 MB but the project caps uploads at
 // 50 MB, which a 145s 1080x1920 render blows straight past at CRF 20. The
@@ -50,7 +60,7 @@ const CALIBRATE_TARGET = process.argv[2] === '--calibrate' ? String(process.argv
 if (!CALIBRATE_TARGET) {
   if (!SECRET) throw new Error('BUFFER_PUSH_SECRET missing');
   if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error('SUPABASE_URL / MAM_SUPABASE_SERVICE_ROLE_KEY missing');
-  if (!HF_MUSETALK_WORKER) throw new Error('HF_MUSETALK_WORKER missing');
+  if (!HF_MUSETALK_WORKER && !FAL_KEY) throw new Error('No lip-sync provider configured: set FAL_KEY or HF_MUSETALK_WORKER');
 }
 
 const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reaction-v4-'));
@@ -289,8 +299,15 @@ async function calibrateChromaKey(file, keyHex, keyRgb) {
   };
 }
 
+const REFERENCE_TYPE = 'reference';
+
+// The persona still is an input to lip-sync, not something the timeline can play.
 function enabledAssets(assets) {
-  return assets.filter(asset => asset.enabled !== false);
+  return assets.filter(asset => asset.enabled !== false && asset.reaction_type !== REFERENCE_TYPE);
+}
+
+function referenceStill(assets) {
+  return assets.find(asset => asset.enabled !== false && asset.reaction_type === REFERENCE_TYPE) || null;
 }
 
 function speechCarriers(assets) {
@@ -431,6 +448,82 @@ async function buildSpeechBed(carriers, needSeconds, index, state) {
     throw new Error(`Speech bed is shorter than its line: ${bedDuration.toFixed(2)}s < ${needSeconds.toFixed(2)}s`);
   }
   return { file: bed, duration: bedDuration, carrierIds: parts.map(p => p.carrier.id) };
+}
+
+// A still held for the length of the line. The provider only repaints the mouth,
+// so everything else in the frame is identical to the reference by construction —
+// which makes the cut into and out of a spoken segment exact.
+// A still with a repainted mouth reads as a frozen photograph next to a neutral
+// clip that breathes. A slow sub-percent wander is not breathing, but it removes
+// the freeze. It is applied after the mouth is patched, because a patch anchored
+// to fixed coordinates would slide off a head that had already started moving.
+async function addMicroDrift(file, index) {
+  const out = path.join(workDir, `drift-${index}.mp4`);
+  const duration = await probeDuration(file);
+  await run('ffmpeg', ['-y', '-i', file, '-an', '-vf', [
+    "crop=w=iw*0.986:h=ih*0.986:x='(iw-ow)/2+9*sin(2*PI*t/9)':y='(ih-oh)/2+6*sin(2*PI*t/7+1.1)'",
+    `scale=${STILL_W}:${STILL_H}`,
+    'setsar=1',
+  ].join(','), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-pix_fmt', 'yuv420p',
+    '-t', duration.toFixed(3), out]);
+  return out;
+}
+
+async function buildStillVideo(imageFile, durationSeconds, index) {
+  const out = path.join(workDir, `still-${index}.mp4`);
+  await run('ffmpeg', ['-y', '-loop', '1', '-i', imageFile,
+    '-vf', `scale=${STILL_W}:${STILL_H}:force_original_aspect_ratio=decrease,pad=${STILL_W}:${STILL_H}:(ow-iw)/2:(oh-ih)/2,fps=${FPS},setsar=1`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-pix_fmt', 'yuv420p',
+    '-t', durationSeconds.toFixed(3), out]);
+  return out;
+}
+
+async function falRequest(pathname, options = {}) {
+  const response = await fetch(pathname, {
+    ...options,
+    headers: { Authorization: `Key ${FAL_KEY}`, 'Content-Type': 'application/json', ...(options.headers || {}) },
+  });
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  if (!response.ok) throw new Error(`fal ${pathname} -> ${response.status}: ${JSON.stringify(data).slice(0, 600)}`);
+  return data;
+}
+
+async function falKlingLipSync({ index, videoUrl, audioUrl, expectedDuration }) {
+  if (expectedDuration > FAL_MAX_CLIP_S) {
+    throw new Error(`Spoken line is ${expectedDuration.toFixed(1)}s; the lip-sync endpoint accepts at most ${FAL_MAX_CLIP_S}s`);
+  }
+  const queued = await falRequest(`https://queue.fal.run/${FAL_LIPSYNC_MODEL}`, {
+    method: 'POST',
+    body: JSON.stringify({ video_url: videoUrl, audio_url: audioUrl }),
+  });
+  const statusUrl = String(queued.status_url || '');
+  const responseUrl = String(queued.response_url || '');
+  if (!statusUrl || !responseUrl) throw new Error(`fal did not queue the request: ${JSON.stringify(queued).slice(0, 400)}`);
+
+  const deadline = Date.now() + 10 * 60 * 1000;
+  let status = String(queued.status || 'IN_QUEUE');
+  while (status !== 'COMPLETED') {
+    if (Date.now() > deadline) throw new Error('fal lip-sync timed out after 10 minutes');
+    await new Promise(resolve => setTimeout(resolve, 4000));
+    const poll = await falRequest(statusUrl);
+    status = String(poll.status || '');
+    if (status === 'FAILED' || status === 'ERROR') {
+      throw new Error(`fal lip-sync failed: ${JSON.stringify(poll).slice(0, 600)}`);
+    }
+  }
+
+  const result = await falRequest(responseUrl);
+  const url = String(result?.video?.url || '');
+  if (!url) throw new Error(`fal returned no video: ${JSON.stringify(result).slice(0, 400)}`);
+  const local = path.join(workDir, `lipsync-fal-${index}.mp4`);
+  await download(url, local);
+  const duration = await probeDuration(local);
+  if (duration + 0.25 < expectedDuration) {
+    throw new Error(`Lip-sync output does not cover the line: ${duration.toFixed(2)}s < ${expectedDuration.toFixed(2)}s`);
+  }
+  return { local, provider: 'fal_kling_lipsync', model: FAL_LIPSYNC_MODEL, duration };
 }
 
 async function hfMuseTalkLipSync({ index, videoUrl, audioUrl, expectedDuration }) {
@@ -632,6 +725,11 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
 
   const carriers = speechCarriers(assets);
   const carrierState = { index: 0 };
+  const reference = referenceStill(assets);
+  const referenceFile = reference
+    ? await cachedDownload(reference.video_url, path.extname(new URL(reference.video_url).pathname) || '.jpg')
+    : null;
+  if (referenceFile) log(`Persona reference still: ${reference.label || reference.id}`);
   const segments = [];
   const comments = [];
   let cursor = 0;
@@ -649,36 +747,62 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
     let lipsyncMeta = null;
 
     if (hasComment) {
-      if (!carriers.length) {
+      const useStill = Boolean(referenceFile && FAL_KEY);
+      if (!useStill && !carriers.length) {
         throw new Error('Voice render requires one enabled speech-ready reusable avatar asset; refusing to fake lip-sync on an unvalidated reaction clip.');
       }
       await progress(jobId, 'tts_generating', { active_comment: event.comment.trim(), absolute_start_s: start });
       const tts = await createTts(event.comment.trim(), comments.length);
-
-      await progress(jobId, 'speech_bed_building', { padded_tts_duration_s: Number(tts.duration.toFixed(3)) });
-      const bed = await buildSpeechBed(carriers, tts.duration, comments.length, carrierState);
-      const bedUpload = await uploadToBucket(bed.file, `tmp/lipsync/${jobId}-${comments.length}-bed.mp4`, 'video/mp4');
       const audioUpload = await uploadToBucket(tts.local, `tmp/lipsync/${jobId}-${comments.length}-voice.mp3`, 'audio/mpeg');
 
-      await progress(jobId, 'lipsync_hf_running', {
-        lipsync_provider: 'huggingface_public_musetalk',
-        lipsync_space: 'trymonolith/MuseTalk',
-        absolute_start_s: start,
-      });
-      const synced = await hfMuseTalkLipSync({
-        index: comments.length,
-        videoUrl: bedUpload.url,
-        audioUrl: audioUpload.url,
-        expectedDuration: tts.duration,
-      });
+      let baseFile;
+      let carrierIds = [];
+      let synced;
 
-      // The segment runs exactly as long as the padded line, so it opens and
-      // closes on the carrier's closed-mouth anchor.
-      const blended = await blendLipSyncPatch(bed.file, synced.local, comments.length);
+      if (useStill) {
+        await progress(jobId, 'speech_still_building', {
+          padded_tts_duration_s: Number(tts.duration.toFixed(3)),
+          lipsync_source: 'persona_reference_still',
+        });
+        baseFile = await buildStillVideo(referenceFile, tts.duration, comments.length);
+        const baseUpload = await uploadToBucket(baseFile, `tmp/lipsync/${jobId}-${comments.length}-still.mp4`, 'video/mp4');
+        await progress(jobId, 'lipsync_fal_running', {
+          lipsync_provider: 'fal_kling_lipsync',
+          lipsync_model: FAL_LIPSYNC_MODEL,
+          absolute_start_s: start,
+        });
+        synced = await falKlingLipSync({
+          index: comments.length,
+          videoUrl: baseUpload.url,
+          audioUrl: audioUpload.url,
+          expectedDuration: tts.duration,
+        });
+      } else {
+        await progress(jobId, 'speech_bed_building', { padded_tts_duration_s: Number(tts.duration.toFixed(3)) });
+        const bed = await buildSpeechBed(carriers, tts.duration, comments.length, carrierState);
+        baseFile = bed.file;
+        carrierIds = bed.carrierIds;
+        const bedUpload = await uploadToBucket(bed.file, `tmp/lipsync/${jobId}-${comments.length}-bed.mp4`, 'video/mp4');
+        await progress(jobId, 'lipsync_hf_running', {
+          lipsync_provider: 'huggingface_public_musetalk',
+          lipsync_space: 'trymonolith/MuseTalk',
+          absolute_start_s: start,
+        });
+        synced = await hfMuseTalkLipSync({
+          index: comments.length,
+          videoUrl: bedUpload.url,
+          audioUrl: audioUpload.url,
+          expectedDuration: tts.duration,
+        });
+      }
+
+      const blended = await blendLipSyncPatch(baseFile, synced.local, comments.length);
+      const finalSpeech = useStill ? await addMicroDrift(blended.file, comments.length) : blended.file;
+
       duration = tts.duration;
-      asset = carriers[0];
-      localOverride = blended.file;
-      lipsyncMeta = { ...synced, carrier_ids: bed.carrierIds, patch: blended.patch };
+      asset = carriers[0] || neutralAssets[0];
+      localOverride = finalSpeech;
+      lipsyncMeta = { ...synced, carrier_ids: carrierIds, patch: blended.patch, source: useStill ? 'reference_still' : 'speech_bed' };
       comments.push({
         start,
         gain_db: tts.gain_db,
@@ -690,7 +814,8 @@ async function buildTimeline({ plan, assets, totalDuration, request, jobId }) {
         lead_in_s: SPEECH_PAD_S,
         lipsync_provider: synced.provider,
         lipsync_duration: synced.duration,
-        speech_carrier_ids: bed.carrierIds,
+        lipsync_source: useStill ? 'reference_still' : 'speech_bed',
+        speech_carrier_ids: carrierIds,
         lipsync_patch: blended.patch,
       });
     } else {
@@ -925,8 +1050,8 @@ try {
   if (!claimedJob.reaction_plan || typeof claimedJob.reaction_plan !== 'object') throw new Error('Queued render job has no saved reaction_plan');
   const neutralPool = enabledAssets(assets).filter(asset => asset.reaction_type === 'neutral' && asset.speech_ready !== true);
   if (!neutralPool.length) throw new Error('No enabled neutral avatar asset');
-  if (request.voice_lipsync === true && !speechCarriers(assets).length) {
-    throw new Error('Voice render requires one enabled speech-ready reusable avatar asset');
+  if (request.voice_lipsync === true && !speechCarriers(assets).length && !(referenceStill(assets) && FAL_KEY)) {
+    throw new Error('Voice render requires either a persona reference still with FAL_KEY, or one enabled speech-ready avatar asset');
   }
 
   await progress(claimedJob.id, 'render_preparing', {
@@ -1005,7 +1130,8 @@ try {
     segment_count: segments.length,
     transition_mode: 'anchor_hard_cut',
     comment_count: comments.length,
-    lipsync_provider: comments.length ? 'huggingface_public_musetalk' : null,
+    lipsync_provider: comments[0]?.lipsync_provider || null,
+    lipsync_source: comments[0]?.lipsync_source || null,
     speech_pad_s: SPEECH_PAD_S,
     timeline_clock: 'absolute_preserved_hardcut_v2',
     audio_mix: 'measured_voice_ducked_limited_v2',
@@ -1022,6 +1148,7 @@ try {
       lipsync_duration: comment.lipsync_duration,
       speech_carrier_ids: comment.speech_carrier_ids,
       lipsync_patch: comment.lipsync_patch,
+      lipsync_source: comment.lipsync_source,
       voice_loudness_lufs: comment.loudness_lufs,
       voice_gain_db: comment.gain_db,
     })),
