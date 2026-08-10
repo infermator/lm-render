@@ -5,8 +5,112 @@
   "error": null,
   "result_url": "https://ohpmhtcebavqeuxhjkze.supabase.co/storage/v1/object/public/reaction-media/results/185df8b1-b394-4e3c-84bf-2e1e9a178fd9.mp4",
   "result_path": "results/185df8b1-b394-4e3c-84bf-2e1e9a178fd9.mp4",
-  "completed_at": "2026-08-09T22:00:05.752+00:00",
-  "updated_at": "2026-08-09T22:00:05.752+00:00",
-  "attempts": 9,
-  "captured_at": "2026-08-09T22:00:06.480287+00:00"
+  "completed_at": "2026-08-10T05:10:38.36+00:00",
+  "updated_at": "2026-08-10T05:10:38.36+00:00",
+  "attempts": 10,
+  "render_meta": {
+    "comments": [
+      {
+        "text": "6:42 AM? That's quite early.",
+        "start": 4.65,
+        "duration": 2.638367,
+        "lipsync_duration": 12.033333,
+        "lipsync_provider": "huggingface_public_musetalk"
+      }
+    ],
+    "renderer": "lm-render/github-actions-v4",
+    "audio_mix": "full_duration_padded_sidechain_v1",
+    "duration_s": 53.568,
+    "avatar_mode": "chroma",
+    "event_count": 2,
+    "frame_count": 14,
+    "adapted_plan": {
+      "tone": "amused, slightly cringed",
+      "events": [
+        {
+          "gaze": "content",
+          "time": 4.65,
+          "type": "smirk",
+          "reason": "The speaker mentions the guest arrived at 6:42 AM, which is unusually early for a guest, prompting a slight smirk.",
+          "comment": "6:42 AM? That's quite early.",
+          "duration": 1.5,
+          "intensity": 0.3
+        },
+        {
+          "gaze": "content",
+          "time": 43,
+          "type": "cringe",
+          "reason": "The speaker reveals the guest sat right outside the front door for hours despite being told to leave and come back later, which is a socially awkward and cringe",
+          "duration": 2,
+          "intensity": 0.4
+        }
+      ],
+      "summary": "The reactor is amused and slightly cringed by the guest's lack of social awareness and disregard for instructions."
+    },
+    "failed_stage": "render",
+    "analysis_only": false,
+    "comment_count": 1,
+    "segment_count": 8,
+    "analysis_model": "google/gemini-2.5-flash",
+    "render_request": {
+      "avatar_mode": "pip",
+      "requested_at": "2026-08-09T20:39:08.308Z",
+      "voice_lipsync": true,
+      "reuse_analysis": true,
+      "kaggle_username": "1",
+      "lipsync_provider": "musetalk_kaggle",
+      "max_voice_comments": 1,
+      "available_asset_types": [
+        "cringe",
+        "neutral",
+        "smirk"
+      ]
+    },
+    "timeline_clock": "absolute_preserved_xfade_v1",
+    "visual_sampling": "browser_scene_aware_v1",
+    "final_validation": {
+      "width": 1080,
+      "height": 1920,
+      "duration_s": 53.586867,
+      "audio_codec": "aac",
+      "video_codec": "h264",
+      "audio_duration_s": 53.568
+    },
+    "lipsync_provider": "huggingface_public_musetalk",
+    "transition_count": 7,
+    "source_media_used": true,
+    "director_vocabulary": [
+      "cringe",
+      "neutral",
+      "smirk"
+    ],
+    "source_analysis_mode": "source_video_audio_plus_frame_anchors",
+    "lipsync_skipped_count": 0,
+    "used_real_asset_vocabulary": true
+  },
+  "reaction_plan": {
+    "tone": "amused, slightly cringed",
+    "events": [
+      {
+        "gaze": "content",
+        "time": 4.65,
+        "type": "smirk",
+        "reason": "The speaker mentions the guest arrived at 6:42 AM, which is unusually early for a guest, prompting a slight smirk.",
+        "comment": "6:42 AM? That's quite early.",
+        "duration": 1.5,
+        "intensity": 0.3
+      },
+      {
+        "gaze": "content",
+        "time": 43,
+        "type": "cringe",
+        "reason": "The speaker reveals the guest sat right outside the front door for hours despite being told to leave and come back later, which is a socially awkward and cringe",
+        "comment": "She just sat there? Awkward.",
+        "duration": 2,
+        "intensity": 0.4
+      }
+    ],
+    "summary": "The reactor is amused and slightly cringed by the guest's lack of social awareness and disregard for instructions."
+  },
+  "captured_at": "2026-08-10T05:10:39.480438+00:00"
 }
