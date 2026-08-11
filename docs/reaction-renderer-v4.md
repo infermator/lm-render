@@ -453,3 +453,8 @@ A future renderer change must not reintroduce:
 - shared or cacheable result URL overwrite
 - generic stale job requeue
 - manual GitHub Actions as normal operator UX
+
+## Related documentation
+
+- `21media-mam/docs/reaction-layout-and-captions.md` — the layout shapes and caption pipeline this renderer implements
+- `21media-mam/docs/reaction-video-lab.md` — product and architecture
