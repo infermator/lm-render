@@ -59,7 +59,11 @@ const PRICE_PER_S = Number(process.env.FAL_VIDEO_PRICE_PER_S || SPEC.pricePerS);
 // So the clip is generated free and anchored afterwards, by morphing its tail
 // back to the reference still. That restores the anchor (7.27 -> 0.72) while
 // leaving the expression untouched (9.47 -> 9.45).
-const USE_END_FRAME = process.env.FAL_END_FRAME === '1';
+// Pinning the reference as both first and last frame flattens a performance, so
+// reactions never do it. A neutral has no performance to flatten — stillness is
+// the whole point — which makes it the one case where that flattening is exactly
+// what is wanted. It loops natively, with nothing mirrored and nothing reversed.
+const USE_END_FRAME_ENV = process.env.FAL_END_FRAME === '1';
 const ANCHOR_FADE_S = Number(process.env.FAL_ANCHOR_FADE_S || 0.45);
 const ANCHOR_MODE = String(process.env.FAL_ANCHOR_MODE || 'pingpong').trim(); // pingpong | trim | morph | none
 
@@ -70,6 +74,14 @@ const ANCHOR_MODE = String(process.env.FAL_ANCHOR_MODE || 'pingpong').trim(); //
 // baseline these models are actually tuned for.
 const MINIMAL = process.env.FAL_PROMPT_MODE === 'minimal';
 const MINIMAL_COMMON = 'Static locked-off camera, plain green screen background, photoreal, same person and framing as the image.';
+
+// Ping-pong mirrors every blink around the turn point, and the second copy plays
+// backwards. A blink is not time-symmetric — the lid closes fast and opens slow —
+// so a reversed one is simply a wrong movement, and it reads as the clip
+// stuttering. Measured on the library: every blink present sat symmetrically
+// about peak_s, and the composite ran at 41 blinks per minute against a human
+// 15-20. Reaction clips therefore ask for none.
+const NO_BLINK = ' He does not blink at all.';
 
 const RELEASE_DIRECTION = ' Finally the expression drains away completely and he returns to the same calm, neutral, attentive watching face he had at the very start, settling back into exactly the posture and gaze he began with, and holds it there.';
 const BUCKET = 'reaction-media';
@@ -104,17 +116,19 @@ const NEGATIVE = [
 
 const PRESETS = {
   neutral_a: {
+    pinEnds: true,
     minimal: 'He watches something off-screen, calm and attentive. He breathes and blinks once. Nothing else changes.',
     label: 'Neutral A',
     reactionType: 'neutral',
-    duration: 5,
+    duration: 10,
     performance: 'A still idle beat: breathing, one blink, no expression change.',
   },
   neutral_b: {
+    pinEnds: true,
     minimal: 'He watches something off-screen, calm and still. He blinks once and breathes. No expression change.',
     label: 'Neutral B',
     reactionType: 'neutral',
-    duration: 5,
+    duration: 10,
     performance: 'A quiet idle beat, three seconds of a man simply watching. He breathes. He blinks once, unhurried. His eyes drift a few degrees along whatever he is watching and come back. His head and shoulders settle by a couple of millimetres, the way a person shifts without noticing. His expression stays calm, attentive and completely neutral from the first frame to the last — no amusement, no surprise, no reaction of any kind. The stillness is the performance.',
   },
   smirk_a: {
@@ -278,6 +292,8 @@ async function main() {
   }
   const preset = PRESETS[key];
   if (!preset) fail(`Unknown preset "${key}". Run with --list.`);
+  const USE_END_FRAME = USE_END_FRAME_ENV || preset.pinEnds === true;
+  const anchorMode = preset.pinEnds ? 'none' : ANCHOR_MODE;
   if (BACKEND === 'fal' && !FAL_KEY) fail('FAL_KEY missing');
   if (BACKEND === 'openrouter' && !OPENROUTER_KEY) fail('OPENROUTER_API_KEY missing');
   if (!SUPABASE_URL || !SUPABASE_KEY) fail('SUPABASE_URL / MAM_SUPABASE_SERVICE_ROLE_KEY missing');
@@ -295,7 +311,7 @@ async function main() {
   console.log(`[generate-asset] reference: ${reference.video_url}`);
 
   const prompt = MINIMAL
-    ? `${preset.minimal || preset.performance} ${MINIMAL_COMMON}`
+    ? `${preset.minimal || preset.performance}${preset.pinEnds ? '' : NO_BLINK} ${MINIMAL_COMMON}`
     : `${preset.performance}${process.env.FAL_RELEASE === '1' ? RELEASE_DIRECTION : ''} ${COMMON}`;
   let duration = preset.duration;
   if (SPEC.durations && !SPEC.durations.includes(duration)) {
@@ -369,7 +385,7 @@ async function main() {
   // Trimming to the closest frame was not enough: the model never returns to its
   // own opening frame. The hair alone keeps drifting, and a difference pass shows
   // clear outlines around the head and the earbud cable at the best match found.
-  if (!USE_END_FRAME && ANCHOR_MODE === 'pingpong') {
+  if (!USE_END_FRAME && anchorMode === 'pingpong') {
     const grid = path.join(workDir, 'scan.raw');
     const W = 48; const H = 44;
     run('ffmpeg', ['-y', '-i', local, '-vf', `scale=${W}:${H}`, '-pix_fmt', 'gray', '-f', 'rawvideo', grid]);
@@ -417,7 +433,7 @@ async function main() {
     console.log(`[generate-asset] ping-pong loop: forward to the peak at ${seconds.toFixed(2)}s, then reversed`);
   }
 
-  if (!USE_END_FRAME && ANCHOR_MODE === 'trim') {
+  if (!USE_END_FRAME && anchorMode === 'trim') {
     const grid = path.join(workDir, 'scan.raw');
     const W = 48; const H = 44;
     run('ffmpeg', ['-y', '-i', local, '-vf', `scale=${W}:${H}`, '-pix_fmt', 'gray', '-f', 'rawvideo', grid]);
@@ -463,7 +479,7 @@ async function main() {
     run('ffmpeg', ['-y', '-i', local, '-an', '-t', seconds.toFixed(3), '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-pix_fmt', 'yuv420p', upload]);
   }
 
-  if (!USE_END_FRAME && ANCHOR_MODE === 'morph') {
+  if (!USE_END_FRAME && anchorMode === 'morph') {
     const refFile = path.join(workDir, 'reference' + (path.extname(new URL(reference.video_url).pathname) || '.png'));
     const refResponse = await fetch(reference.video_url);
     if (!refResponse.ok) fail(`Could not download the reference still: HTTP ${refResponse.status}`);
@@ -524,7 +540,7 @@ async function main() {
       metadata: {
         preset: key,
         generated_by: BACKEND === 'openrouter' ? OPENROUTER_MODEL : MODEL,
-        anchored: USE_END_FRAME ? 'first_and_last_frame_are_the_reference_still' : `first_frame_only_${ANCHOR_MODE}`,
+        anchored: USE_END_FRAME ? 'first_and_last_frame_are_the_reference_still' : `first_frame_only_${anchorMode}`,
         loop: loopReport,
         prompt_mode: MINIMAL ? 'minimal' : 'detailed',
         generated_at: new Date().toISOString(),
