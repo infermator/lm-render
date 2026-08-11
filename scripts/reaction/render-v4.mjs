@@ -1321,6 +1321,8 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
   // top nothing hides it, which is why this is not optional there.
   const bandHeight = OUT_H - AVATAR_H;
   const srcY = banded ? (shift === 'down' ? `${AVATAR_H}` : '0') : '(H-h)/2';
+  // The strip the plate gets is the one the source does not take.
+  const plateBandHeight = AVATAR_H;
 
   // Banded: fill the band edge to edge, trimming the source vertically rather
   // than letterboxing it into a strip. Unbanded: the whole canvas, untouched.
@@ -1333,7 +1335,15 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
     // The uploaded plate replaces the blurred source as the canvas fill, which
     // is the point of having one: a top corner sits on filler, and filler made
     // of the blurred source is exactly what it should not look like.
-    filters.push(`[${plateIndex}:v]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},setsar=1[bg]`);
+    // Fit the plate to the strip it will actually occupy. Fitting a 16:9 room
+    // shot to the whole 9:16 canvas crops it to a narrow central column, which
+    // is how a photographed room ends up looking like a flat dark rectangle.
+    const plateH = banded ? plateBandHeight : OUT_H;
+    const plateY = banded && shift === 'up' ? OUT_H - plateBandHeight : 0;
+    const plateFit = `scale=${OUT_W}:${plateH}:force_original_aspect_ratio=increase,crop=${OUT_W}:${plateH},setsar=1`;
+    filters.push(banded
+      ? `[${plateIndex}:v]${plateFit},pad=${OUT_W}:${OUT_H}:0:${plateY}:black[bg]`
+      : `[${plateIndex}:v]${plateFit}[bg]`);
     filters.push(`[0:v]${sourceFit}[fg]`);
   } else {
     filters.push('[0:v]split=2[srcbg][srcfg]');
