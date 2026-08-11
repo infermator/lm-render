@@ -336,7 +336,16 @@ function backgroundPlate(assets) {
   return assets.find(asset => asset.enabled !== false && asset.reaction_type === BACKGROUND_TYPE) || null;
 }
 
-const AVATAR_CORNERS = ['bottom_right', 'bottom_left', 'top_right', 'top_left'];
+// Full-width band: the whole 16:9 avatar frame across the canvas, which is the
+// classic reaction layout. At 1080 wide the frame's own ratio gives 608 tall,
+// just under a third of the canvas, and the source keeps the rest.
+const BAND_H = Math.round((OUT_W * AVATAR_H) / AVATAR_W / 2) * 2;
+
+const AVATAR_CORNERS = ['bottom_right', 'bottom_left', 'top_right', 'top_left', 'top_band', 'bottom_band'];
+
+function isBandPlacement(placement) {
+  return placement === 'top_band' || placement === 'bottom_band';
+}
 
 // The Director picks a layout from what the source shows; the operator can
 // overrule it from Reaction Lab. The override wins outright, including the
@@ -352,15 +361,60 @@ function resolveLayout(directorLayout, override) {
 
   const avatar = corner || base.avatar;
   const atTop = avatar.startsWith('top_');
-  // A top corner covers whatever the source put up there, so the source band
-  // drops unless the Director already had an opinion about it.
-  const shift = atTop && base.source_shift === 'none' ? 'down' : base.source_shift;
+  // A top placement covers whatever the source put up there, so the source
+  // drops unless the Director already had an opinion about it. A band decides
+  // its own geometry, so the shift is implied rather than requested.
+  const shift = isBandPlacement(avatar)
+    ? (atTop ? 'down' : 'up')
+    : (atTop && base.source_shift === 'none' ? 'down' : base.source_shift);
   const wantsPlate = background === 'on' ? true : background === 'off' ? false : atTop;
 
   return {
     layout: { ...base, avatar, source_shift: shift, needs_background: wantsPlate },
     wantsPlate,
     forced: true,
+  };
+}
+
+// Everything the composite needs to know about where the two pictures go.
+//
+// Two shapes, not one. A band is the whole 16:9 avatar frame across the full
+// width — the classic reaction layout, where the source keeps the rest of the
+// canvas. A corner is a cut-out of him alone, sitting on top of the source.
+function layoutGeometry(placement, shift, cut) {
+  if (isBandPlacement(placement)) {
+    const atTop = placement === 'top_band';
+    return {
+      banded: true,
+      // The whole frame, plate and all — not cropped to him. The green keys
+      // out and whatever is behind the band shows through it.
+      avatarFilter: `scale=${OUT_W}:${BAND_H}`,
+      avatarX: '0',
+      avatarY: atTop ? '0' : `${OUT_H - BAND_H}`,
+      sourceHeight: OUT_H - BAND_H,
+      sourceY: atTop ? `${BAND_H}` : '0',
+      plateHeight: BAND_H,
+      plateY: atTop ? 0 : OUT_H - BAND_H,
+      avatarHeight: BAND_H,
+    };
+  }
+
+  // A shifted source does not slide, it gives up a strip the height of the
+  // cut-out, so his straight bottom cut lands on the source's edge instead of
+  // hanging in mid-air. A bottom corner hides that cut under the canvas edge;
+  // a top corner hides nothing, which is why this is not optional there.
+  const banded = shift === 'down' || shift === 'up';
+  const position = avatarPosition(placement, cut.width);
+  return {
+    banded,
+    avatarFilter: `crop=${cut.width}:${AVATAR_H}:${cut.x}:0`,
+    avatarX: position.x,
+    avatarY: position.y,
+    sourceHeight: OUT_H - AVATAR_H,
+    sourceY: banded ? (shift === 'down' ? `${AVATAR_H}` : '0') : '(H-h)/2',
+    plateHeight: AVATAR_H,
+    plateY: shift === 'up' ? OUT_H - AVATAR_H : 0,
+    avatarHeight: AVATAR_H,
   };
 }
 
@@ -1261,12 +1315,14 @@ async function buildSubtitles(transcript, layout) {
   // the avatar frame spans the full width of the canvas, so a caption at the
   // bottom would sit across it whenever he is in a bottom corner.
   const atTop = layout.captions === 'top';
-  const avatarAtTop = String(layout.avatar || '').startsWith('top_');
+  const placement = String(layout.avatar || '');
+  const avatarAtTop = placement.startsWith('top_');
   const alignment = atTop ? 8 : 2;
   // MarginV is measured from the edge the text is aligned to, so clearing the
-  // cut-out costs its HEIGHT, not the y of its top edge.
+  // avatar costs its HEIGHT, not the y of its top edge — and a band is a
+  // different height from a corner cut-out.
   const collides = atTop === avatarAtTop;
-  const marginV = collides ? AVATAR_H + 40 : 120;
+  const marginV = collides ? (isBandPlacement(placement) ? BAND_H : AVATAR_H) + 40 : 120;
 
   const header = [
     '[Script Info]',
@@ -1309,25 +1365,18 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
     despillAvailable ? 'despill=type=green:mix=0.5:expand=0' : null,
   ].filter(Boolean).join(',');
 
-  const corner = String(layout?.avatar || 'bottom_right');
+  const placement = String(layout?.avatar || 'bottom_right');
   const cut = subject || { x: 0, width: AVATAR_W };
-  const pos = avatarPosition(corner, cut.width);
   const shift = String(layout?.source_shift || 'none');
-  const banded = shift === 'down' || shift === 'up';
-  // A shifted source does not slide, it gives up a band. The band is exactly
-  // the height of the cut-out, so his straight bottom cut lands on the
-  // source's edge and reads as a split screen instead of a sticker hanging in
-  // mid-air. In a bottom corner that cut is hidden by the canvas edge; at the
-  // top nothing hides it, which is why this is not optional there.
-  const bandHeight = OUT_H - AVATAR_H;
-  const srcY = banded ? (shift === 'down' ? `${AVATAR_H}` : '0') : '(H-h)/2';
-  // The strip the plate gets is the one the source does not take.
-  const plateBandHeight = AVATAR_H;
+  const geometry = layoutGeometry(placement, shift, cut);
+  const banded = geometry.banded;
+  const srcY = geometry.sourceY;
+  const pos = { x: geometry.avatarX, y: geometry.avatarY };
 
-  // Banded: fill the band edge to edge, trimming the source vertically rather
-  // than letterboxing it into a strip. Unbanded: the whole canvas, untouched.
+  // Banded: fill the strip edge to edge, trimming the source vertically rather
+  // than letterboxing it into a thin band. Unbanded: the whole canvas.
   const sourceFit = banded
-    ? `scale=${OUT_W}:${bandHeight}:force_original_aspect_ratio=increase,crop=${OUT_W}:${bandHeight}`
+    ? `scale=${OUT_W}:${geometry.sourceHeight}:force_original_aspect_ratio=increase,crop=${OUT_W}:${geometry.sourceHeight}`
     : `scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease`;
 
   const filters = [];
@@ -1338,8 +1387,8 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
     // Fit the plate to the strip it will actually occupy. Fitting a 16:9 room
     // shot to the whole 9:16 canvas crops it to a narrow central column, which
     // is how a photographed room ends up looking like a flat dark rectangle.
-    const plateH = banded ? plateBandHeight : OUT_H;
-    const plateY = banded && shift === 'up' ? OUT_H - plateBandHeight : 0;
+    const plateH = banded ? geometry.plateHeight : OUT_H;
+    const plateY = banded ? geometry.plateY : 0;
     const plateFit = `scale=${OUT_W}:${plateH}:force_original_aspect_ratio=increase,crop=${OUT_W}:${plateH},setsar=1`;
     filters.push(banded
       ? `[${plateIndex}:v]${plateFit},pad=${OUT_W}:${OUT_H}:0:${plateY}:black[bg]`
@@ -1351,7 +1400,7 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
     filters.push(`[srcfg]${sourceFit}[fg]`);
   }
   filters.push(`[bg][fg]overlay=(W-w)/2:${srcY}[base]`);
-  filters.push(`[1:v]${key},crop=${cut.width}:${AVATAR_H}:${cut.x}:0[avatar]`);
+  filters.push(`[1:v]${key},${geometry.avatarFilter}[avatar]`);
   // Flush to the corner: the reference frame already cuts his body at the
   // right and bottom edges, so any margin would expose those straight cuts.
   if (subtitleFile) {
