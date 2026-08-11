@@ -246,6 +246,17 @@ The avatar frame is 1102 px wide and the subject occupies its right ~56 %. Align
 
 He is never mirrored to reach a corner.
 
+### A top corner bands the source
+
+`resolveLayout()` merges the Director's layout with `render_meta.render_request.layout_override`. The override wins, including a top corner with no plate; only a Director-chosen top corner falls back to `bottom_right` when no plate is enabled.
+
+When the avatar takes a top corner the source gives up a band exactly `AVATAR_H` tall instead of sliding. His straight bottom cut then meets the source's top edge and reads as a split screen — at the top nothing hides that cut the way the canvas edge does in a bottom corner.
+
+- source: `scale=1080:1300:increase,crop=1080:1300` placed at `y=620` (or `y=0` for `shift: up`)
+- plate: fitted to the 620px band and padded to the canvas, not fitted to the canvas
+
+The offsets this replaced were inert on the common case: a 1080×1920 source fills the canvas, so `(H-h)-40` resolved to −40 and the plate stayed completely covered.
+
 ## Captions
 
 `transcribe_local.py` runs `faster-whisper` on the extracted audio and returns word-level timings; `groupWords()` cuts them into lines of at most five words or 2.4 s, breaking on any gap over 0.7 s; `buildSubtitles()` writes ASS with white fill, a 5 px black outline and a soft shadow.
