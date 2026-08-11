@@ -337,13 +337,38 @@ function backgroundPlate(assets) {
 
 // Where the cut-out sits. A bottom corner has the source behind it already; a
 // top corner is over filler, which is why it needs a plate.
-function avatarPosition(corner) {
+//
+// `width` is the cut-out after cropping away the empty plate, not the full
+// avatar frame. Placing the whole frame in a left corner would leave the
+// subject near the middle, because he sits on the right of his own frame.
+function avatarPosition(corner, width) {
+  const right = `${OUT_W - width}`;
+  const bottom = `${OUT_H - AVATAR_H}`;
   switch (corner) {
-    case 'bottom_left': return { x: '0', y: `${OUT_H - AVATAR_H}` };
-    case 'top_right': return { x: `${OUT_W - AVATAR_W}`, y: '0' };
+    case 'bottom_left': return { x: '0', y: bottom };
+    case 'top_right': return { x: right, y: '0' };
     case 'top_left': return { x: '0', y: '0' };
-    default: return { x: `${OUT_W - AVATAR_W}`, y: `${OUT_H - AVATAR_H}` };
+    default: return { x: right, y: bottom };
   }
+}
+
+// The subject's horizontal extent inside his own frame, measured from the keyed
+// reference rather than assumed, so a differently framed persona still works.
+async function subjectBounds(file, keyHex, similarity) {
+  const grid = await alphaGrid(file, `format=rgba,chromakey=0x${keyHex}:${similarity}:0.06`);
+  let minCol = GRID_W;
+  let maxCol = -1;
+  for (let x = 0; x < GRID_W; x++) {
+    let solid = 0;
+    for (let y = 0; y < GRID_H; y++) if (grid[(y * GRID_W + x) * 4 + 3] > 140) solid += 1;
+    if (solid >= 2) { minCol = Math.min(minCol, x); maxCol = Math.max(maxCol, x); }
+  }
+  if (maxCol < 0) return { x: 0, width: AVATAR_W };
+  // A little padding so the key's soft edge is not clipped.
+  const x = Math.max(0, Math.floor(((minCol - 0.5) / GRID_W) * AVATAR_W / 2) * 2);
+  const right = Math.min(AVATAR_W, Math.ceil((((maxCol + 1.5) / GRID_W) * AVATAR_W) / 2) * 2);
+  const width = Math.max(2, right - x);
+  return { x, width };
 }
 
 function speechCarriers(assets) {
@@ -1239,7 +1264,7 @@ async function buildSubtitles(words, layout) {
   return file;
 }
 
-async function composeFinal(source, avatarTrack, comments, totalDuration, sourceHasAudio, despillAvailable, layout, plateFile, subtitleFile) {
+async function composeFinal(source, avatarTrack, comments, totalDuration, sourceHasAudio, despillAvailable, layout, plateFile, subtitleFile, subject) {
   const out = path.join(workDir, 'final.mp4');
   const args = ['-y', '-i', source, '-i', avatarTrack];
   const plateIndex = plateFile ? 2 + comments.length : -1;
@@ -1257,7 +1282,8 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
   ].filter(Boolean).join(',');
 
   const corner = String(layout?.avatar || 'bottom_right');
-  const pos = avatarPosition(corner);
+  const cut = subject || { x: 0, width: AVATAR_W };
+  const pos = avatarPosition(corner, cut.width);
   const shift = String(layout?.source_shift || 'none');
   // Push the source band clear of the corner the cut-out is taking.
   const srcY = shift === 'down' ? '(H-h)-40' : shift === 'up' ? '40' : '(H-h)/2';
@@ -1275,7 +1301,7 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
     filters.push(`[srcfg]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease[fg]`);
   }
   filters.push(`[bg][fg]overlay=(W-w)/2:${srcY}[base]`);
-  filters.push(`[1:v]${key}[avatar]`);
+  filters.push(`[1:v]${key},crop=${cut.width}:${AVATAR_H}:${cut.x}:0[avatar]`);
   // Flush to the corner: the reference frame already cuts his body at the
   // right and bottom edges, so any margin would expose those straight cuts.
   if (subtitleFile) {
@@ -1470,7 +1496,10 @@ try {
     }
   }
 
-  let final = await composeFinal(source, avatarTrack, comments, duration, sourceHasAudio, despillAvailable, effectiveLayout, plateFile, subtitleFile);
+  const subject = await subjectBounds(referenceLocal, background.hex, chroma.similarity);
+  log(`Subject occupies ${subject.width}px of the ${AVATAR_W}px avatar frame, from x=${subject.x}`);
+
+  let final = await composeFinal(source, avatarTrack, comments, duration, sourceHasAudio, despillAvailable, effectiveLayout, plateFile, subtitleFile, subject);
   let finalBytes = (await fs.stat(final)).size;
   if (finalBytes > MAX_RESULT_BYTES) {
     const retryKbps = Math.round(deliveryVideoKbps(duration) * 0.82);
@@ -1494,6 +1523,7 @@ try {
     avatar_source_format: '16:9_native',
     avatar_frame: `${AVATAR_W}x${AVATAR_H}`,
     layout: effectiveLayout,
+    subject_crop: subject,
     captions: captionMeta,
     chroma_key_hex: background.hex,
     chroma_similarity: chroma.similarity,
