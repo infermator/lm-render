@@ -1208,11 +1208,12 @@ async function buildSubtitles(words, layout) {
   // the avatar frame spans the full width of the canvas, so a caption at the
   // bottom would sit across it whenever he is in a bottom corner.
   const atTop = layout.captions === 'top';
-  const avatarAtBottom = !String(layout.avatar || '').startsWith('top_');
+  const avatarAtTop = String(layout.avatar || '').startsWith('top_');
   const alignment = atTop ? 8 : 2;
-  const marginV = atTop
-    ? (avatarAtBottom ? 120 : OUT_H - AVATAR_H + 40)
-    : (avatarAtBottom ? OUT_H - AVATAR_H + 40 : 120);
+  // MarginV is measured from the edge the text is aligned to, so clearing the
+  // cut-out costs its HEIGHT, not the y of its top edge.
+  const collides = atTop === avatarAtTop;
+  const marginV = collides ? AVATAR_H + 40 : 120;
 
   const header = [
     '[Script Info]',
