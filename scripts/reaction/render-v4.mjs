@@ -4,6 +4,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 
+const ALLOW_COARSE_CAPTIONS = process.env.ALLOW_COARSE_CAPTIONS || '0';
 const MAM_BASE = (process.env.MAM_BASE || 'https://21media-mam.vercel.app').replace(/\/$/, '');
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || '');
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
@@ -1192,7 +1193,7 @@ async function transcribeSource(sourceFile) {
     .filter(w => w.type !== 'audio_event')
     .map(w => ({ text: String(w.text).trim(), start: Number(w.start), end: Number(w.end ?? w.start) }))
     .filter(w => w.text);
-  if (words.length) return { provider: data?.provider || 'elevenlabs', words, lines: null };
+  if (words.length) return { provider: data?.provider || 'elevenlabs', coarse: false, words, lines: null };
 
   // The fallback transcriber returns phrases, not words. They are already
   // grouped the way the caption grouper would group them, so they are used
@@ -1200,7 +1201,12 @@ async function transcribeSource(sourceFile) {
   const lines = (Array.isArray(data?.segments) ? data.segments : [])
     .map(seg => ({ text: String(seg?.text ?? '').trim(), start: Number(seg?.start), end: Number(seg?.end) }))
     .filter(seg => seg.text && Number.isFinite(seg.start) && Number.isFinite(seg.end) && seg.end > seg.start);
-  return { provider: data?.provider || 'unknown', words: [], lines: lines.length ? lines : null };
+  return {
+    provider: data?.provider || 'unknown',
+    coarse: data?.timing_confidence === 'coarse',
+    words: [],
+    lines: lines.length ? lines : null,
+  };
 }
 
 function assTime(seconds) {
@@ -1495,11 +1501,18 @@ try {
       // at the very last filter, after every expensive stage has already run.
       if (!(await ffmpegHasFilter('subtitles'))) throw new Error('this ffmpeg has no subtitles filter (libass missing)');
       const transcript = await transcribeSource(source);
+      // A caption on the wrong line is worse than no caption: the viewer reads
+      // it against the wrong moment and stops trusting the rest. Only a
+      // transcript with real timings is burned in.
+      if (transcript.coarse && ALLOW_COARSE_CAPTIONS !== '1') {
+        throw new Error(`transcript from ${transcript.provider} has coarse timings; set ALLOW_COARSE_CAPTIONS=1 to burn it in anyway`);
+      }
       subtitleFile = await buildSubtitles(transcript, effectiveLayout);
       captionMeta = {
         requested: effectiveLayout.captions,
         applied: Boolean(subtitleFile),
         provider: transcript.provider,
+        timing_confidence: transcript.coarse ? 'coarse' : 'word',
         word_count: transcript.words.length,
         line_count: transcript.lines ? transcript.lines.length : null,
       };
