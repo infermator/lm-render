@@ -336,6 +336,34 @@ function backgroundPlate(assets) {
   return assets.find(asset => asset.enabled !== false && asset.reaction_type === BACKGROUND_TYPE) || null;
 }
 
+const AVATAR_CORNERS = ['bottom_right', 'bottom_left', 'top_right', 'top_left'];
+
+// The Director picks a layout from what the source shows; the operator can
+// overrule it from Reaction Lab. The override wins outright, including the
+// decision to sit at the top without a background plate.
+function resolveLayout(directorLayout, override) {
+  const base = directorLayout || { avatar: 'bottom_right', captions: 'none', source_shift: 'none', needs_background: false };
+  const corner = AVATAR_CORNERS.includes(String(override?.avatar)) ? String(override.avatar) : null;
+  const background = String(override?.background || 'auto');
+
+  if (!corner && background === 'auto') {
+    return { layout: base, wantsPlate: base.needs_background === true, forced: false };
+  }
+
+  const avatar = corner || base.avatar;
+  const atTop = avatar.startsWith('top_');
+  // A top corner covers whatever the source put up there, so the source band
+  // drops unless the Director already had an opinion about it.
+  const shift = atTop && base.source_shift === 'none' ? 'down' : base.source_shift;
+  const wantsPlate = background === 'on' ? true : background === 'off' ? false : atTop;
+
+  return {
+    layout: { ...base, avatar, source_shift: shift, needs_background: wantsPlate },
+    wantsPlate,
+    forced: true,
+  };
+}
+
 // Where the cut-out sits. A bottom corner has the source behind it already; a
 // top corner is over filler, which is why it needs a plate.
 //
@@ -1464,18 +1492,30 @@ try {
     avatar_mode: 'chroma',
     source_audio_preserved: sourceHasAudio,
   });
-  const layout = claimedJob.reaction_plan?.layout || null;
-  const plateAsset = layout?.needs_background ? backgroundPlate(assets) : null;
+  const directorLayout = claimedJob.reaction_plan?.layout || null;
+  const override = claimedJob.render_meta?.render_request?.layout_override || null;
+  const requested = resolveLayout(directorLayout, override);
+
+  const plateAsset = requested.wantsPlate ? backgroundPlate(assets) : null;
   const plateFile = plateAsset
     ? await cachedDownload(plateAsset.video_url, path.extname(new URL(plateAsset.video_url).pathname) || '.jpg')
     : null;
-  if (layout?.needs_background && !plateFile) {
-    log('Layout asked for a top corner but no background plate is enabled; falling back to bottom-right');
+
+  // An operator who asks for a top corner gets one whether or not a plate
+  // exists — without it he sits on the blurred source fill. Only the
+  // Director's own choice retreats to the bottom, because it made that choice
+  // believing a plate would be there.
+  let effectiveLayout = requested.layout;
+  if (requested.wantsPlate && !plateFile) {
+    if (requested.forced) {
+      log('Top corner was requested manually and no background plate is enabled; placing him over the blurred fill instead');
+      effectiveLayout = { ...effectiveLayout, needs_background: false };
+    } else {
+      log('Director asked for a top corner but no background plate is enabled; falling back to bottom-right');
+      effectiveLayout = { avatar: 'bottom_right', captions: effectiveLayout.captions, source_shift: 'none', needs_background: false };
+    }
   }
-  const effectiveLayout = layout && (!layout.needs_background || plateFile)
-    ? layout
-    : { avatar: 'bottom_right', captions: layout?.captions || 'none', source_shift: 'none', needs_background: false };
-  log(`Layout: avatar=${effectiveLayout.avatar} shift=${effectiveLayout.source_shift} plate=${plateFile ? 'yes' : 'no'} captions=${effectiveLayout.captions}`);
+  log(`Layout: avatar=${effectiveLayout.avatar} shift=${effectiveLayout.source_shift} plate=${plateFile ? 'yes' : 'no'} captions=${effectiveLayout.captions}${requested.forced ? ' (manual override)' : ''}`);
 
   // Captions only when the source has speech and does not already carry its own.
   let subtitleFile = null;
@@ -1529,6 +1569,7 @@ try {
     avatar_source_format: '16:9_native',
     avatar_frame: `${AVATAR_W}x${AVATAR_H}`,
     layout: effectiveLayout,
+    layout_source: requested.forced ? 'operator_override' : 'director',
     subject_crop: subject,
     captions: captionMeta,
     chroma_key_hex: background.hex,
