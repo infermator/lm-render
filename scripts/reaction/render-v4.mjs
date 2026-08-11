@@ -1238,8 +1238,10 @@ let claimedJob = null;
 try {
   const claim = await api('/api/reaction/claim', { method: 'POST', body: REQUESTED_JOB_ID ? { job_id: REQUESTED_JOB_ID } : {} });
   if (!claim?.job) {
+    // Distinct code so a draining loop knows the queue is empty and stops,
+    // rather than paying for another pass.
     log('No queued reaction job; exiting cleanly.');
-    process.exit(0);
+    process.exit(3);
   }
 
   claimedJob = claim.job;

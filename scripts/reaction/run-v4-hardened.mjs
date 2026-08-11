@@ -77,6 +77,7 @@ async function main() {
     child.on('error', reject);
     child.on('close', resolve);
   });
+  // 3 means the queue was empty; it is not a failure and callers rely on it.
   if (code !== 0) process.exitCode = Number(code || 1);
 }
 

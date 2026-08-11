@@ -76,8 +76,26 @@ jobs:
           HF_MUSETALK_WORKER: ${{ github.workspace }}/scripts/reaction/hf_musetalk_lipsync.py
           FAL_KEY: ${{ secrets.FAL_KEY }}
         run: |
-          set -euo pipefail
-          node scripts/reaction/run-v4-hardened.mjs
+          set -uo pipefail
+          # Scheduled firings are throttled hard: the cron asks for every five
+          # minutes and the measured median gap is 52. Draining the queue in one
+          # run means a backlog clears together instead of costing an hour each.
+          if [ -n "${JOB_ID:-}" ]; then
+            node scripts/reaction/run-v4-hardened.mjs
+            exit $?
+          fi
+          for pass in $(seq 1 8); do
+            echo "[reaction-worker-v4] queue pass $pass"
+            node scripts/reaction/run-v4-hardened.mjs
+            CODE=$?
+            if [ "$CODE" = "3" ]; then
+              echo "[reaction-worker-v4] queue empty"
+              exit 0
+            fi
+            if [ "$CODE" != "0" ]; then
+              exit $CODE
+            fi
+          done
 
       - name: Persist diagnostic replay result
         if: always() && github.event_name == 'push'
