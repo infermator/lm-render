@@ -255,117 +255,35 @@ asset without needing job credentials. It exits non-zero when no clean threshold
 exists, which means the plate is too uneven or too desaturated to key without
 eating the subject — fix the plate, do not widen the threshold.
 
-## Speech-ready carrier rule
+## No speech
 
-A spoken event must not use the currently active smirk/cringe clip solely because that reaction is active.
+The persona is silent. There is no TTS call, no lip-sync provider and no
+speech carrier in the render path, and `voice_lipsync` is forced false before
+a job is queued.
 
-Active hardened logic:
+What remains from that era and is still used: the audio mix measures and gains
+its input, ducks the source under it and limits the sum. If narration is ever
+added as a voiceover — over the source, with no talking cutout — that mixing is
+already built.
 
-1. collect enabled `speech_ready=true` assets
-2. prefer a speech-ready asset matching the semantic type if available
-3. otherwise use the first speech-ready carrier
-4. if none exists, fail explicitly
+## Reaction placement
 
-Current planned library uses:
+A generated reaction clip is a whole performance: it opens neutral, peaks, and
+settles back. The Director's timestamp marks the moment the reaction should
+**land**, so the renderer plays the clip whole and slides it until its peak sits
+on that timestamp. The offset comes from `metadata.loop.peak_s` on the asset;
+without one the midpoint is used.
 
-- Speech A — `comment`, speech-ready
-- Speech B — `comment`, speech-ready
+Two things went wrong here and both are worth remembering.
 
-These are persona infrastructure generated once, then reused across sources.
+Cutting the clip to the Director's event duration — about 2.4s — played only the
+neutral opening beat, so the reaction was never visible in the render at all.
 
-## TTS
-
-Worker requests generated comment audio from MAM:
-
-`POST /api/reaction/tts`
-
-The returned MP3 is then padded locally with **300 ms of silence at each end**
-(`adelay` + `apad`) before anything else touches it.
-
-This is what makes a spoken segment cut cleanly. The lip-sync model produces a
-closed mouth wherever the audio is silent, so the segment opens and closes on the
-same closed-mouth anchor pose as every other clip. It also reads as a natural
-breath before the line.
-
-The padded duration — not the raw TTS duration — is the contract for the speech
-bed, the lip-sync output check and the segment length. The voice is delayed to
-the event's absolute time, so the words land 300 ms later, which is intended.
-
-## Lip-sync
-
-### Speech bed
-
-Lip-sync no longer runs against a single raw asset.
-
-Every speech carrier opens and closes on the same reference frame, so carriers
-are chained with hard cuts into a **bed at least as long as the padded line**,
-then normalized and uploaded to `reaction-media/tmp/lipsync/`. The Hugging Face
-Space takes URLs, so both the bed and the padded voice are uploaded before the
-call. The bed is encoded yuv420p for decoder compatibility, not in the 4:4:4
-intermediate format used inside the renderer.
-
-This closes a real failure mode. A production render recorded
-`lipsync_duration: 12.03s` for a 1.62s line: the provider's output length tracks
-the **input video**, not the audio. With a 5s carrier and a longer line the mouth
-froze while the voice kept playing, and the only guard accepted anything over
-0.75s. The renderer now rejects a lip-sync clip that does not cover the padded
-line.
-
-### Current smoke implementation
-
-The base v4 worker invokes public HF Space:
-
-`trymonolith/MuseTalk`
-
-via `hf_musetalk_lipsync.py`.
-
-### Why that is not enough
-
-A real smoke render showed that a valid MuseTalk MP4 could still have effectively static lips on the old angled reaction carrier.
-
-Therefore future spoken completion needs quality validation beyond file existence.
-
-### Mouth-only patch-back — implemented
-
-MuseTalk returns a whole frame containing a regenerated rectangular face block.
-Two things go wrong if that frame is used directly, and both were observed:
-
-1. the block's edge is visible over the face for exactly the duration of the line
-2. where the block overlaps the green plate it shifts those pixels enough that
-   the chroma key stops removing them, so the block appears as a dark rectangle
-
-Only the mouth is kept. The provider's output contributes a feathered ellipse
-composited back into the untouched carrier; hair, shoulders and every plate pixel
-come from the carrier, so a speech segment keys exactly like every other segment.
-
-The mouth is located from the provider's own output rather than by face
-detection. The static part of the block differs from the carrier by a roughly
-constant amount, while the mouth differs by an amount that changes every frame,
-so grid cells are ranked by the **temporal deviation** of the difference.
-
-Sizing matters as much as locating. A first attempt used the bounding box of the
-moving cells and produced a 440x322 patch — nearly the size of the block itself,
-which put the block's edge back inside the patch. A bounding box is set by its
-outliers and the provider regenerates the whole block every frame. The patch is
-now sized from the deviation-weighted spread and capped at roughly 21% x 26% of
-the avatar frame, which keeps it mouth-sized.
-
-This doubles as a quality gate: a provider that returns a valid MP4 whose mouth
-never moves fails the render instead of shipping it.
-
-Measured on the first clean render, using a closed-mouth carrier so that any
-motion must come from the provider:
-
-| window | mean frame-to-frame delta in the mouth region |
-| --- | ---: |
-| during the line | 0.54 |
-| quiet | 0.03 |
-
-### Provider rule
-
-Keep provider selection abstract. Do not bake public MuseTalk or any paid provider into product architecture permanently.
-
-Kaggle GPU Batch is specifically excluded from the active path based on repeated CPU-only execution during API probes.
+Then, with placement fixed, reactions still landed late: the neutral gap was
+filled up to the event time *before* the asset was chosen, and only then was the
+start shifted back. Since the avatar track is concatenated in order, the earlier
+fill had already fixed the reaction's real position. A surprise scheduled at 4.5s
+peaked at 9.4s. The asset must be resolved before the gap is filled.
 
 ## Audio mixing
 
@@ -436,65 +354,40 @@ This behavior should be moved directly into `render-v4.mjs` during the next refa
 
 ## Current known technical debt
 
-1. **HF MuseTalk quality** — plumbing works; mouth quality not approved.
-2. **No robust automatic speech visual QC** — human review still required.
-3. **Only one voice comment in smoke mode** — intentional current limit, not final product design.
-4. **Avatar placement is a constant** — `AVATAR_H = 620`, flush bottom-right. Should become a per-persona preset after visual review.
-5. **Neutral variety comes only from alternating assets** — chunks are cut on whole asset loops so every cut lands on the shared anchor frame. Start offsets would break that, so more variety needs more neutral clips, not offsets.
-6. **Legacy experimental workflows/files** — Kaggle probes and QC experiments should eventually be archived once the new pipeline is stable.
+1. **`hf_musetalk_lipsync.py` and the fal lip-sync helpers are dead code** — speech was cut from the product; they should be removed once nothing references them.
+2. **Avatar placement is a constant** — `AVATAR_H = 620`, flush bottom-right. Should become a per-persona preset.
+3. **Neutral variety comes only from alternating assets** — chunks are cut on whole asset loops so every cut lands on the shared anchor frame. Start offsets would break that, so more variety needs more neutral clips.
+4. **Short-lead reactions clamp to the start** — an event earlier than a clip's peak offset cannot be placed on time.
+5. **Legacy experimental workflows** — Kaggle and lip-sync probes should be archived.
 
 ## Next code-change order
 
-### 1. Reaction-only render on the new asset pack
+### 1. Generate the missing reactions
 
-Voice disabled. Isolate motion continuity, anchor cuts and chroma quality.
+`suspicious` and `laugh` fall back to other types until they exist.
 
-### 2. Speech carrier lip-sync A/B
+### 2. Regenerate Neutral A on the current recipe
 
-Speech A (talking) against Speech C (closed mouth), same line, one carrier
-enabled at a time.
+It predates ping-pong and is 4s against Neutral B's 20s, so it repeats far more often.
 
-### 3. Face-ROI lip-sync experiment
+### 3. Decide reaction density
 
-Crop and upscale a stable face ROI for inference, then feather it back into the
-untouched body clip. This also keeps the speech segment's chroma edges identical
-to every other segment, because the plate pixels are never re-encoded by the
-provider.
+`targetEvents = (duration / 10) x reaction_density`, clamped 0.08-0.7, yields two events for a 53s source. If denser reactions are wanted the formula has to change, not just the setting.
 
-### 4. Implement short-library neutral/reaction strategy
-
-Support 3s reactions / 4s neutrals without obvious repeated loops.
-
-### 5. Validate reaction-only render
-
-No TTS/lip-sync. Isolate motion continuity and chroma quality first.
-
-### 6. Implement/test speech-ready carriers
-
-Use Speech A/B and real ElevenLabs TTS.
-
-### 7. Add face-ROI lip-sync experiment
-
-A/B against full-frame and provider alternatives.
-
-### 8. Add meaningful QC gates
-
-Do not mark visually static speech as product success.
-
-### 9. Only then optimize latency/provider SLA
-
-Correctness and visual quality come before worker speed.
+### 4. Remove the dead speech code
 
 ## Non-regression checklist
 
 A future renderer change must not reintroduce:
 
+- speech or lip-sync in any form
 - raw green rectangle PiP
-- portrait cropping of the new 16:9 source library
-- arbitrary reaction clip used as speech carrier
-- source audio ending after TTS
-- event timestamp drift from crossfades
-- shared/cacheable result URL overwrite
-- Kaggle in the active critical path without new evidence it works
+- portrait cropping of the 16:9 source library
+- a hard-coded chroma key colour or similarity
+- cutting a reaction to the Director's event duration — the timestamp is the peak
+- filling the neutral gap before the reaction's asset has been chosen
+- cross-dissolves between clips that already share an anchor frame
+- source audio ending early
+- shared or cacheable result URL overwrite
 - generic stale job requeue
 - manual GitHub Actions as normal operator UX
