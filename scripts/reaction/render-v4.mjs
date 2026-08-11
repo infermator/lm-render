@@ -370,7 +370,16 @@ function resolveLayout(directorLayout, override) {
   const wantsPlate = background === 'on' ? true : background === 'off' ? false : atTop;
 
   return {
-    layout: { ...base, avatar, source_shift: shift, needs_background: wantsPlate },
+    // The Director's reason described the corner it picked, not this one.
+    // Leaving it in place makes render_meta read as though the model chose
+    // the override.
+    layout: {
+      ...base,
+      avatar,
+      source_shift: shift,
+      needs_background: wantsPlate,
+      reason: `Operator override: ${avatar}${background === 'auto' ? '' : `, background ${background}`}`,
+    },
     wantsPlate,
     forced: true,
   };
