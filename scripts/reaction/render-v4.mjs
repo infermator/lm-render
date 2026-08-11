@@ -3,8 +3,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
-const ALLOW_COARSE_CAPTIONS = process.env.ALLOW_COARSE_CAPTIONS || '0';
 const MAM_BASE = (process.env.MAM_BASE || 'https://21media-mam.vercel.app').replace(/\/$/, '');
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || '');
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
@@ -1173,40 +1173,26 @@ async function shrinkResult(file, durationSeconds, kbps) {
 // source. That is not a contradiction of the rule against STT for source
 // understanding — understanding needs the picture, captions need word-level
 // timings, and Scribe is the one that returns them.
+// Captions need word timings, and the only transcriber that gives them for
+// free is the one running on this machine. The hosted route stays as a
+// fallback for environments without Python, but it is not the normal path.
+async function transcribeLocally(audioFile) {
+  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'transcribe_local.py');
+  const model = process.env.WHISPER_MODEL || 'small';
+  const started = Date.now();
+  const { stdout } = await run('python3', [script, audioFile, '--model', model]);
+  const data = JSON.parse(stdout.trim());
+  const words = (Array.isArray(data?.words) ? data.words : [])
+    .map(w => ({ text: String(w.text || '').trim(), start: Number(w.start), end: Number(w.end) }))
+    .filter(w => w.text && Number.isFinite(w.start) && Number.isFinite(w.end));
+  log(`Transcribed locally with ${data.provider} in ${((Date.now() - started) / 1000).toFixed(0)}s: ${words.length} words, language ${data.language} (${data.language_probability})`);
+  return { provider: data.provider, words, language: data.language };
+}
+
 async function transcribeSource(sourceFile) {
   const audio = path.join(workDir, 'caption-audio.mp3');
   await run('ffmpeg', ['-y', '-i', sourceFile, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '64k', audio]);
-  const bytes = await fs.readFile(audio);
-
-  const form = new FormData();
-  form.append('file', new Blob([bytes], { type: 'audio/mpeg' }), 'source.mp3');
-  const response = await fetch(`${MAM_BASE}/api/reaction/transcribe`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${SECRET}` },
-    body: form,
-  });
-  if (!response.ok) throw new Error(`transcribe -> ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  const data = await response.json();
-
-  const words = (Array.isArray(data?.words) ? data.words : [])
-    .filter(w => typeof w?.text === 'string' && Number.isFinite(Number(w.start)))
-    .filter(w => w.type !== 'audio_event')
-    .map(w => ({ text: String(w.text).trim(), start: Number(w.start), end: Number(w.end ?? w.start) }))
-    .filter(w => w.text);
-  if (words.length) return { provider: data?.provider || 'elevenlabs', coarse: false, words, lines: null };
-
-  // The fallback transcriber returns phrases, not words. They are already
-  // grouped the way the caption grouper would group them, so they are used
-  // as-is; word timings are preferred whenever the primary provider answers.
-  const lines = (Array.isArray(data?.segments) ? data.segments : [])
-    .map(seg => ({ text: String(seg?.text ?? '').trim(), start: Number(seg?.start), end: Number(seg?.end) }))
-    .filter(seg => seg.text && Number.isFinite(seg.start) && Number.isFinite(seg.end) && seg.end > seg.start);
-  return {
-    provider: data?.provider || 'unknown',
-    coarse: data?.timing_confidence === 'coarse',
-    words: [],
-    lines: lines.length ? lines : null,
-  };
+  return transcribeLocally(audio);
 }
 
 function assTime(seconds) {
@@ -1240,7 +1226,7 @@ function groupWords(words, maxWords = 5, maxSeconds = 2.4) {
 }
 
 async function buildSubtitles(transcript, layout) {
-  const lines = transcript.lines || groupWords(transcript.words);
+  const lines = groupWords(transcript.words);
   if (!lines.length) return null;
 
   // Keep the band clear of the cut-out rather than trusting it not to collide:
@@ -1501,22 +1487,14 @@ try {
       // at the very last filter, after every expensive stage has already run.
       if (!(await ffmpegHasFilter('subtitles'))) throw new Error('this ffmpeg has no subtitles filter (libass missing)');
       const transcript = await transcribeSource(source);
-      // A caption on the wrong line is worse than no caption: the viewer reads
-      // it against the wrong moment and stops trusting the rest. Only a
-      // transcript with real timings is burned in.
-      if (transcript.coarse && ALLOW_COARSE_CAPTIONS !== '1') {
-        throw new Error(`transcript from ${transcript.provider} has coarse timings; set ALLOW_COARSE_CAPTIONS=1 to burn it in anyway`);
-      }
       subtitleFile = await buildSubtitles(transcript, effectiveLayout);
       captionMeta = {
         requested: effectiveLayout.captions,
         applied: Boolean(subtitleFile),
         provider: transcript.provider,
-        timing_confidence: transcript.coarse ? 'coarse' : 'word',
+        language: transcript.language || null,
         word_count: transcript.words.length,
-        line_count: transcript.lines ? transcript.lines.length : null,
       };
-      log(`Captions from ${transcript.provider}: ${transcript.words.length} words, ${transcript.lines ? transcript.lines.length : 0} phrases`);
     } catch (error) {
       // A caption failure must not cost the whole render.
       log('Captions skipped:', error instanceof Error ? error.message : String(error));

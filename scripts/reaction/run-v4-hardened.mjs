@@ -44,6 +44,11 @@ const GUARANTEES = [
     needle: 'transition_mode: \'anchor_hard_cut\'',
     why: 'dissolving between anchor-identical clips double-exposes the face',
   },
+  {
+    label: 'word-level caption timings',
+    needle: 'transcribeLocally',
+    why: 'model-guessed segment timings put captions seconds away from the words they transcribe',
+  },
 ];
 
 async function main() {

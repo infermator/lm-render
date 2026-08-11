@@ -26,6 +26,8 @@ jobs:
   reaction:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      WHISPER_MODEL: ${{ vars.WHISPER_MODEL || 'small' }}
     steps:
       - name: Checkout renderer
         uses: actions/checkout@v4
@@ -36,15 +38,24 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install media and lip-sync tooling
+      # Whisper weights are ~250 MB and identical between runs. Downloading
+      # them every render would cost more wall clock than the transcription.
+      - name: Cache Whisper weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-${{ env.WHISPER_MODEL }}-v1
+
+      - name: Install media and transcription tooling
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
           python -m pip install --upgrade pip
-          python -m pip install 'gradio_client>=1.13.0'
+          python -m pip install 'gradio_client>=1.13.0' 'faster-whisper>=1.0.3'
           ffmpeg -version | head -1
           ffmpeg -hide_banner -filters | grep -q ' subtitles ' && echo 'libass: yes' || echo 'libass: MISSING — captions will be skipped'
           ffprobe -version | head -1
+          python3 -c 'import faster_whisper; print("faster-whisper:", faster_whisper.__version__)'
           node --check scripts/reaction/render-v4.mjs
           node --check scripts/reaction/run-v4-hardened.mjs
 
