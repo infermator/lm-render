@@ -246,6 +246,16 @@ The avatar frame is 1102 px wide and the subject occupies its right ~56 %. Align
 
 He is never mirrored to reach a corner.
 
+### Two shapes: band and corner
+
+`layoutGeometry()` returns everything the composite needs, and there are two answers.
+
+**Band** (`top_band`, `bottom_band`) — his whole 16:9 frame across the full width, uncropped, with the source taking the rest of the canvas. Neither covers the other. At 1080 wide the frame's own ratio gives `BAND_H = 608` px, just under a third of the canvas; the source keeps 1312. The plate is fitted to the band, so it shows through wherever the green keys out.
+
+**Corner** (`bottom_right`, `bottom_left`, `top_right`, `top_left`) — a cut-out of him alone, cropped to his measured extent, sitting on top of the source. The source keeps the whole frame and loses whatever is under him.
+
+Caption clearance reads the shape, not a constant: a band and a corner cut-out are different heights.
+
 ### A top corner bands the source
 
 `resolveLayout()` merges the Director's layout with `render_meta.render_request.layout_override`. The override wins, including a top corner with no plate; only a Director-chosen top corner falls back to `bottom_right` when no plate is enabled.
