@@ -1143,7 +1143,102 @@ async function shrinkResult(file, durationSeconds, kbps) {
   return out;
 }
 
-async function composeFinal(source, avatarTrack, comments, totalDuration, sourceHasAudio, despillAvailable, layout, plateFile) {
+// Captions use ElevenLabs Scribe rather than the multimodal model that reads the
+// source. That is not a contradiction of the rule against STT for source
+// understanding — understanding needs the picture, captions need word-level
+// timings, and Scribe is the one that returns them.
+async function transcribeSource(sourceFile) {
+  const audio = path.join(workDir, 'caption-audio.mp3');
+  await run('ffmpeg', ['-y', '-i', sourceFile, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '64k', audio]);
+  const bytes = await fs.readFile(audio);
+
+  const form = new FormData();
+  form.append('file', new Blob([bytes], { type: 'audio/mpeg' }), 'source.mp3');
+  const response = await fetch(`${MAM_BASE}/api/reaction/transcribe`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${SECRET}` },
+    body: form,
+  });
+  if (!response.ok) throw new Error(`transcribe -> ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  const data = await response.json();
+
+  const words = (Array.isArray(data?.words) ? data.words : [])
+    .filter(w => typeof w?.text === 'string' && Number.isFinite(Number(w.start)))
+    .filter(w => w.type !== 'audio_event')
+    .map(w => ({ text: String(w.text).trim(), start: Number(w.start), end: Number(w.end ?? w.start) }))
+    .filter(w => w.text);
+  return words;
+}
+
+function assTime(seconds) {
+  const t = Math.max(0, seconds);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  return `${h}:${String(m).padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}`;
+}
+
+// Short lines, held briefly. Long paragraphs are unreadable on a phone and
+// cover more of the frame than they earn.
+function groupWords(words, maxWords = 5, maxSeconds = 2.4) {
+  const lines = [];
+  let current = [];
+  for (const word of words) {
+    if (!current.length) { current = [word]; continue; }
+    const span = word.end - current[0].start;
+    const gap = word.start - current[current.length - 1].end;
+    if (current.length >= maxWords || span > maxSeconds || gap > 0.7) {
+      lines.push(current);
+      current = [word];
+    } else current.push(word);
+  }
+  if (current.length) lines.push(current);
+  return lines.map(group => ({
+    start: group[0].start,
+    end: Math.max(group[group.length - 1].end, group[0].start + 0.5),
+    text: group.map(w => w.text).join(' '),
+  }));
+}
+
+async function buildSubtitles(words, layout) {
+  const lines = groupWords(words);
+  if (!lines.length) return null;
+
+  // Keep the band clear of the cut-out rather than trusting it not to collide:
+  // the avatar frame spans the full width of the canvas, so a caption at the
+  // bottom would sit across it whenever he is in a bottom corner.
+  const atTop = layout.captions === 'top';
+  const avatarAtBottom = !String(layout.avatar || '').startsWith('top_');
+  const alignment = atTop ? 8 : 2;
+  const marginV = atTop
+    ? (avatarAtBottom ? 120 : OUT_H - AVATAR_H + 40)
+    : (avatarAtBottom ? OUT_H - AVATAR_H + 40 : 120);
+
+  const header = [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    `PlayResX: ${OUT_W}`,
+    `PlayResY: ${OUT_H}`,
+    'WrapStyle: 2',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    // White fill, hard black outline and a soft shadow — readable over anything.
+    `Style: Caption,DejaVu Sans,64,&H00FFFFFF,&H00000000,&H00000000,1,0,1,5,2,${alignment},90,90,${marginV},1`,
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+  ];
+  const body = lines.map(line =>
+    `Dialogue: 0,${assTime(line.start)},${assTime(line.end)},Caption,,0,0,0,,${line.text.replace(/\n/g, ' ')}`);
+
+  const file = path.join(workDir, 'captions.ass');
+  await fs.writeFile(file, `${header.join('\n')}\n${body.join('\n')}\n`);
+  log(`Captions: ${lines.length} lines, ${atTop ? 'top' : 'bottom'} band, margin ${marginV}px`);
+  return file;
+}
+
+async function composeFinal(source, avatarTrack, comments, totalDuration, sourceHasAudio, despillAvailable, layout, plateFile, subtitleFile) {
   const out = path.join(workDir, 'final.mp4');
   const args = ['-y', '-i', source, '-i', avatarTrack];
   const plateIndex = plateFile ? 2 + comments.length : -1;
@@ -1182,7 +1277,12 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
   filters.push(`[1:v]${key}[avatar]`);
   // Flush to the corner: the reference frame already cuts his body at the
   // right and bottom edges, so any margin would expose those straight cuts.
-  filters.push(`[base][avatar]overlay=${pos.x}:${pos.y}:format=auto[vout]`);
+  if (subtitleFile) {
+    filters.push(`[base][avatar]overlay=${pos.x}:${pos.y}:format=auto[composited]`);
+    filters.push(`[composited]subtitles='${subtitleFile.replace(/'/g, "\\'")}'[vout]`);
+  } else {
+    filters.push(`[base][avatar]overlay=${pos.x}:${pos.y}:format=auto[vout]`);
+  }
 
   let audioMap = null;
   if (comments.length) {
@@ -1348,9 +1448,28 @@ try {
   const effectiveLayout = layout && (!layout.needs_background || plateFile)
     ? layout
     : { avatar: 'bottom_right', captions: layout?.captions || 'none', source_shift: 'none', needs_background: false };
-  log(`Layout: avatar=${effectiveLayout.avatar} shift=${effectiveLayout.source_shift} plate=${plateFile ? 'yes' : 'no'}`);
+  log(`Layout: avatar=${effectiveLayout.avatar} shift=${effectiveLayout.source_shift} plate=${plateFile ? 'yes' : 'no'} captions=${effectiveLayout.captions}`);
 
-  let final = await composeFinal(source, avatarTrack, comments, duration, sourceHasAudio, despillAvailable, effectiveLayout, plateFile);
+  // Captions only when the source has speech and does not already carry its own.
+  let subtitleFile = null;
+  let captionMeta = { requested: effectiveLayout.captions, applied: false };
+  if (effectiveLayout.captions !== 'none' && claimedJob.reaction_plan?.has_speech !== false && sourceHasAudio) {
+    await progress(claimedJob.id, 'captions_transcribing', { caption_zone: effectiveLayout.captions });
+    try {
+      // libass is not universally compiled in; without it the burn would fail
+      // at the very last filter, after every expensive stage has already run.
+      if (!(await ffmpegHasFilter('subtitles'))) throw new Error('this ffmpeg has no subtitles filter (libass missing)');
+      const words = await transcribeSource(source);
+      subtitleFile = await buildSubtitles(words, effectiveLayout);
+      captionMeta = { requested: effectiveLayout.captions, applied: Boolean(subtitleFile), word_count: words.length };
+    } catch (error) {
+      // A caption failure must not cost the whole render.
+      log('Captions skipped:', error instanceof Error ? error.message : String(error));
+      captionMeta = { requested: effectiveLayout.captions, applied: false, error: String(error).slice(0, 200) };
+    }
+  }
+
+  let final = await composeFinal(source, avatarTrack, comments, duration, sourceHasAudio, despillAvailable, effectiveLayout, plateFile, subtitleFile);
   let finalBytes = (await fs.stat(final)).size;
   if (finalBytes > MAX_RESULT_BYTES) {
     const retryKbps = Math.round(deliveryVideoKbps(duration) * 0.82);
@@ -1374,6 +1493,7 @@ try {
     avatar_source_format: '16:9_native',
     avatar_frame: `${AVATAR_W}x${AVATAR_H}`,
     layout: effectiveLayout,
+    captions: captionMeta,
     chroma_key_hex: background.hex,
     chroma_similarity: chroma.similarity,
     chroma_calibration: chroma,

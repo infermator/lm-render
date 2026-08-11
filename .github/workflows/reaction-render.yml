@@ -39,10 +39,11 @@ jobs:
       - name: Install media and lip-sync tooling
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
           python -m pip install --upgrade pip
           python -m pip install 'gradio_client>=1.13.0'
           ffmpeg -version | head -1
+          ffmpeg -hide_banner -filters | grep -q ' subtitles ' && echo 'libass: yes' || echo 'libass: MISSING — captions will be skipped'
           ffprobe -version | head -1
           node --check scripts/reaction/render-v4.mjs
           node --check scripts/reaction/run-v4-hardened.mjs
