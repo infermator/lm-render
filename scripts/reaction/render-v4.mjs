@@ -1313,8 +1313,20 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
   const cut = subject || { x: 0, width: AVATAR_W };
   const pos = avatarPosition(corner, cut.width);
   const shift = String(layout?.source_shift || 'none');
-  // Push the source band clear of the corner the cut-out is taking.
-  const srcY = shift === 'down' ? '(H-h)-40' : shift === 'up' ? '40' : '(H-h)/2';
+  const banded = shift === 'down' || shift === 'up';
+  // A shifted source does not slide, it gives up a band. The band is exactly
+  // the height of the cut-out, so his straight bottom cut lands on the
+  // source's edge and reads as a split screen instead of a sticker hanging in
+  // mid-air. In a bottom corner that cut is hidden by the canvas edge; at the
+  // top nothing hides it, which is why this is not optional there.
+  const bandHeight = OUT_H - AVATAR_H;
+  const srcY = banded ? (shift === 'down' ? `${AVATAR_H}` : '0') : '(H-h)/2';
+
+  // Banded: fill the band edge to edge, trimming the source vertically rather
+  // than letterboxing it into a strip. Unbanded: the whole canvas, untouched.
+  const sourceFit = banded
+    ? `scale=${OUT_W}:${bandHeight}:force_original_aspect_ratio=increase,crop=${OUT_W}:${bandHeight}`
+    : `scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease`;
 
   const filters = [];
   if (plateFile) {
@@ -1322,11 +1334,11 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
     // is the point of having one: a top corner sits on filler, and filler made
     // of the blurred source is exactly what it should not look like.
     filters.push(`[${plateIndex}:v]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},setsar=1[bg]`);
-    filters.push(`[0:v]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease[fg]`);
+    filters.push(`[0:v]${sourceFit}[fg]`);
   } else {
     filters.push('[0:v]split=2[srcbg][srcfg]');
     filters.push(`[srcbg]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},gblur=sigma=28,eq=brightness=-0.13[bg]`);
-    filters.push(`[srcfg]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease[fg]`);
+    filters.push(`[srcfg]${sourceFit}[fg]`);
   }
   filters.push(`[bg][fg]overlay=(W-w)/2:${srcY}[base]`);
   filters.push(`[1:v]${key},crop=${cut.width}:${AVATAR_H}:${cut.x}:0[avatar]`);
