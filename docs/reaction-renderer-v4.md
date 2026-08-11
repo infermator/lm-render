@@ -103,7 +103,11 @@ Reaction workflow requires:
 
 `https://21media-mam.vercel.app`
 
-Current reaction workflow does **not** require Kaggle credentials or a private-repo clone PAT.
+Optional: `WHISPER_MODEL` (default `small`) selects the caption transcription model.
+
+Toolchain installed by the workflow: `ffmpeg` with libass, `fonts-dejavu-core`, and `faster-whisper`. Whisper weights are cached across runs — they are ~250 MB, and re-downloading them every render would cost more wall clock than the transcription itself.
+
+Current reaction workflow does **not** require Kaggle credentials, a private-repo clone PAT, or any transcription API key.
 
 ## Job lifecycle
 
@@ -226,12 +230,31 @@ Current v4 source composition:
 - creates a blurred vertical fill from the source
 - fits the useful source foreground into 1080×1920
 - chroma-keys the avatar track
-- scales avatar
-- overlays avatar near the lower-right area
+- crops the keyed frame to the subject's measured extent
+- overlays that cutout in the corner the Director chose
+- burns in captions when the plan asks for them
 
 The final product output is still 1080×1920 9:16 even though reusable avatar **source** assets are moving to 16:9.
 
 Do not confuse source-asset aspect ratio with final-video aspect ratio.
+
+### Cropping to the subject is what makes a corner a corner
+
+The avatar frame is 1102 px wide and the subject occupies its right ~56 %. Aligning the whole frame to `x=0` therefore places him near the middle of the canvas: the empty plate to his left keys away to nothing, but it still consumes the placement.
+
+`subjectBounds()` measures his horizontal extent from the keyed reference — 620 px of 1102 on the current persona — and the overlay crops to it before positioning. A right corner is unaffected; a left corner becomes genuinely left. Measuring rather than hard-coding is what lets a differently framed persona work without a code change.
+
+He is never mirrored to reach a corner.
+
+## Captions
+
+`transcribe_local.py` runs `faster-whisper` on the extracted audio and returns word-level timings; `groupWords()` cuts them into lines of at most five words or 2.4 s, breaking on any gap over 0.7 s; `buildSubtitles()` writes ASS with white fill, a 5 px black outline and a soft shadow.
+
+`MarginV` is measured from the edge the text aligns to, so keeping the band clear of the cutout costs the avatar's full **height**, not the y of its top edge — 660 px, not 1340.
+
+VAD filtering is on. Without it the model transcribes ambient noise into invented speech, and ambient noise is the normal case for this pipeline.
+
+**Transcription is local on purpose.** The first implementation called ElevenLabs Scribe, whose key had no `speech_to_text` permission; the second fell back to Gemini, which returned the right words at the wrong times — it captioned "Keep that. Stephen," over audio that says "goddamn minute", and displayed a caption over a window with no speech in it. Language models transcribe well and keep time badly. Do not put caption timing behind a hosted LLM, and do not treat a whole-video audio-energy correlation as evidence of alignment — on a noisy source it returns the same answer at every offset.
 
 ## Chroma key — measured, not assumed
 
