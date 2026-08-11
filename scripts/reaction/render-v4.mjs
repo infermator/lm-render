@@ -317,14 +317,33 @@ async function calibrateChromaKey(file, keyHex, keyRgb) {
 }
 
 const REFERENCE_TYPE = 'reference';
+const BACKGROUND_TYPE = 'background';
 
-// The persona still is an input to lip-sync, not something the timeline can play.
+// The reference still and the background plate are persona inputs, not
+// something the timeline can play.
 function enabledAssets(assets) {
-  return assets.filter(asset => asset.enabled !== false && asset.reaction_type !== REFERENCE_TYPE);
+  return assets.filter(asset => asset.enabled !== false
+    && asset.reaction_type !== REFERENCE_TYPE
+    && asset.reaction_type !== BACKGROUND_TYPE);
 }
 
 function referenceStill(assets) {
   return assets.find(asset => asset.enabled !== false && asset.reaction_type === REFERENCE_TYPE) || null;
+}
+
+function backgroundPlate(assets) {
+  return assets.find(asset => asset.enabled !== false && asset.reaction_type === BACKGROUND_TYPE) || null;
+}
+
+// Where the cut-out sits. A bottom corner has the source behind it already; a
+// top corner is over filler, which is why it needs a plate.
+function avatarPosition(corner) {
+  switch (corner) {
+    case 'bottom_left': return { x: '0', y: `${OUT_H - AVATAR_H}` };
+    case 'top_right': return { x: `${OUT_W - AVATAR_W}`, y: '0' };
+    case 'top_left': return { x: '0', y: '0' };
+    default: return { x: `${OUT_W - AVATAR_W}`, y: `${OUT_H - AVATAR_H}` };
+  }
 }
 
 function speechCarriers(assets) {
@@ -1124,10 +1143,16 @@ async function shrinkResult(file, durationSeconds, kbps) {
   return out;
 }
 
-async function composeFinal(source, avatarTrack, comments, totalDuration, sourceHasAudio, despillAvailable) {
+async function composeFinal(source, avatarTrack, comments, totalDuration, sourceHasAudio, despillAvailable, layout, plateFile) {
   const out = path.join(workDir, 'final.mp4');
   const args = ['-y', '-i', source, '-i', avatarTrack];
+  const plateIndex = plateFile ? 2 + comments.length : -1;
   for (const comment of comments) args.push('-i', comment.local);
+  if (plateFile) {
+    // A still plate has to be looped to cover the timeline; a clip does not.
+    if (/\.(png|jpe?g|webp|avif)$/i.test(plateFile)) args.push('-loop', '1', '-i', plateFile);
+    else args.push('-stream_loop', '-1', '-i', plateFile);
+  }
 
   const key = [
     'format=rgba',
@@ -1135,16 +1160,29 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
     despillAvailable ? 'despill=type=green:mix=0.5:expand=0' : null,
   ].filter(Boolean).join(',');
 
-  const filters = [
-    '[0:v]split=2[srcbg][srcfg]',
-    `[srcbg]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},gblur=sigma=28,eq=brightness=-0.13[bg]`,
-    `[srcfg]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease[fg]`,
-    '[bg][fg]overlay=(W-w)/2:(H-h)/2[base]',
-    `[1:v]${key}[avatar]`,
-    // Flush to the corner: the reference frame already cuts his body at the
-    // right and bottom edges, so any margin would expose those straight cuts.
-    '[base][avatar]overlay=W-w:H-h:format=auto[vout]',
-  ];
+  const corner = String(layout?.avatar || 'bottom_right');
+  const pos = avatarPosition(corner);
+  const shift = String(layout?.source_shift || 'none');
+  // Push the source band clear of the corner the cut-out is taking.
+  const srcY = shift === 'down' ? '(H-h)-40' : shift === 'up' ? '40' : '(H-h)/2';
+
+  const filters = [];
+  if (plateFile) {
+    // The uploaded plate replaces the blurred source as the canvas fill, which
+    // is the point of having one: a top corner sits on filler, and filler made
+    // of the blurred source is exactly what it should not look like.
+    filters.push(`[${plateIndex}:v]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},setsar=1[bg]`);
+    filters.push(`[0:v]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease[fg]`);
+  } else {
+    filters.push('[0:v]split=2[srcbg][srcfg]');
+    filters.push(`[srcbg]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},gblur=sigma=28,eq=brightness=-0.13[bg]`);
+    filters.push(`[srcfg]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease[fg]`);
+  }
+  filters.push(`[bg][fg]overlay=(W-w)/2:${srcY}[base]`);
+  filters.push(`[1:v]${key}[avatar]`);
+  // Flush to the corner: the reference frame already cuts his body at the
+  // right and bottom edges, so any margin would expose those straight cuts.
+  filters.push(`[base][avatar]overlay=${pos.x}:${pos.y}:format=auto[vout]`);
 
   let audioMap = null;
   if (comments.length) {
@@ -1299,7 +1337,20 @@ try {
     avatar_mode: 'chroma',
     source_audio_preserved: sourceHasAudio,
   });
-  let final = await composeFinal(source, avatarTrack, comments, duration, sourceHasAudio, despillAvailable);
+  const layout = claimedJob.reaction_plan?.layout || null;
+  const plateAsset = layout?.needs_background ? backgroundPlate(assets) : null;
+  const plateFile = plateAsset
+    ? await cachedDownload(plateAsset.video_url, path.extname(new URL(plateAsset.video_url).pathname) || '.jpg')
+    : null;
+  if (layout?.needs_background && !plateFile) {
+    log('Layout asked for a top corner but no background plate is enabled; falling back to bottom-right');
+  }
+  const effectiveLayout = layout && (!layout.needs_background || plateFile)
+    ? layout
+    : { avatar: 'bottom_right', captions: layout?.captions || 'none', source_shift: 'none', needs_background: false };
+  log(`Layout: avatar=${effectiveLayout.avatar} shift=${effectiveLayout.source_shift} plate=${plateFile ? 'yes' : 'no'}`);
+
+  let final = await composeFinal(source, avatarTrack, comments, duration, sourceHasAudio, despillAvailable, effectiveLayout, plateFile);
   let finalBytes = (await fs.stat(final)).size;
   if (finalBytes > MAX_RESULT_BYTES) {
     const retryKbps = Math.round(deliveryVideoKbps(duration) * 0.82);
@@ -1322,6 +1373,7 @@ try {
     avatar_mode: 'chroma',
     avatar_source_format: '16:9_native',
     avatar_frame: `${AVATAR_W}x${AVATAR_H}`,
+    layout: effectiveLayout,
     chroma_key_hex: background.hex,
     chroma_similarity: chroma.similarity,
     chroma_calibration: chroma,
