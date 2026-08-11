@@ -1192,7 +1192,15 @@ async function transcribeSource(sourceFile) {
     .filter(w => w.type !== 'audio_event')
     .map(w => ({ text: String(w.text).trim(), start: Number(w.start), end: Number(w.end ?? w.start) }))
     .filter(w => w.text);
-  return words;
+  if (words.length) return { provider: data?.provider || 'elevenlabs', words, lines: null };
+
+  // The fallback transcriber returns phrases, not words. They are already
+  // grouped the way the caption grouper would group them, so they are used
+  // as-is; word timings are preferred whenever the primary provider answers.
+  const lines = (Array.isArray(data?.segments) ? data.segments : [])
+    .map(seg => ({ text: String(seg?.text ?? '').trim(), start: Number(seg?.start), end: Number(seg?.end) }))
+    .filter(seg => seg.text && Number.isFinite(seg.start) && Number.isFinite(seg.end) && seg.end > seg.start);
+  return { provider: data?.provider || 'unknown', words: [], lines: lines.length ? lines : null };
 }
 
 function assTime(seconds) {
@@ -1225,8 +1233,8 @@ function groupWords(words, maxWords = 5, maxSeconds = 2.4) {
   }));
 }
 
-async function buildSubtitles(words, layout) {
-  const lines = groupWords(words);
+async function buildSubtitles(transcript, layout) {
+  const lines = transcript.lines || groupWords(transcript.words);
   if (!lines.length) return null;
 
   // Keep the band clear of the cut-out rather than trusting it not to collide:
@@ -1486,9 +1494,16 @@ try {
       // libass is not universally compiled in; without it the burn would fail
       // at the very last filter, after every expensive stage has already run.
       if (!(await ffmpegHasFilter('subtitles'))) throw new Error('this ffmpeg has no subtitles filter (libass missing)');
-      const words = await transcribeSource(source);
-      subtitleFile = await buildSubtitles(words, effectiveLayout);
-      captionMeta = { requested: effectiveLayout.captions, applied: Boolean(subtitleFile), word_count: words.length };
+      const transcript = await transcribeSource(source);
+      subtitleFile = await buildSubtitles(transcript, effectiveLayout);
+      captionMeta = {
+        requested: effectiveLayout.captions,
+        applied: Boolean(subtitleFile),
+        provider: transcript.provider,
+        word_count: transcript.words.length,
+        line_count: transcript.lines ? transcript.lines.length : null,
+      };
+      log(`Captions from ${transcript.provider}: ${transcript.words.length} words, ${transcript.lines ? transcript.lines.length : 0} phrases`);
     } catch (error) {
       // A caption failure must not cost the whole render.
       log('Captions skipped:', error instanceof Error ? error.message : String(error));
