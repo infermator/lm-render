@@ -74,6 +74,23 @@ Current smoke-provider adapter for public Hugging Face MuseTalk.
 
 The provider is useful for plumbing tests but has **not passed visual mouth-quality acceptance** on the old angled reaction carrier. Do not treat it as a production-quality dependency simply because it returns MP4 successfully.
 
+## Triggering and the queue
+
+`render-preview` in MAM dispatches this workflow immediately using the `GH_PAT`
+token in its Vercel environment. That token is fine-grained with **Actions: Read
+and write** on this repository; the older token used to clone private repos is
+scoped Actions: Read and returns 403 on dispatch.
+
+The `schedule` trigger remains as a safety net, but it is not a substitute.
+Measured across fourteen scheduled firings the median gap is **52 minutes**,
+ranging 29 to 123, against a cron asking for five — GitHub throttles scheduled
+workflows heavily.
+
+A scheduled run therefore drains the queue rather than rendering one job: it
+loops until the renderer reports an empty queue, up to eight jobs. The renderer
+exits **3** when it has nothing to claim, which is what stops the loop; a
+dispatch carrying an explicit `job_id` runs exactly once.
+
 ## Runtime environment
 
 Reaction workflow requires:
@@ -354,11 +371,12 @@ This behavior should be moved directly into `render-v4.mjs` during the next refa
 
 ## Current known technical debt
 
-1. **`hf_musetalk_lipsync.py` and the fal lip-sync helpers are dead code** — speech was cut from the product; they should be removed once nothing references them.
-2. **Avatar placement is a constant** — `AVATAR_H = 620`, flush bottom-right. Should become a per-persona preset.
-3. **Neutral variety comes only from alternating assets** — chunks are cut on whole asset loops so every cut lands on the shared anchor frame. Start offsets would break that, so more variety needs more neutral clips.
-4. **Short-lead reactions clamp to the start** — an event earlier than a clip's peak offset cannot be placed on time.
-5. **Legacy experimental workflows** — Kaggle and lip-sync probes should be archived.
+1. **Clip generation lives here too.** `scripts/reaction/generate-asset.mjs` produces library clips against fal or OpenRouter. It is documented in the MAM repository's `docs/reaction-avatar-asset-spec.md`, which is the odd split to be aware of.
+2. **`hf_musetalk_lipsync.py` and the fal lip-sync helpers are dead code** — speech was cut from the product; they should be removed once nothing references them.
+3. **Avatar placement is a constant** — `AVATAR_H = 620`, flush bottom-right. Should become a per-persona preset.
+4. **Neutral variety comes only from alternating assets** — chunks are cut on whole asset loops so every cut lands on the shared anchor frame. Start offsets would break that, so more variety needs more neutral clips.
+5. **Short-lead reactions clamp to the start** — mitigated by keeping one very short clip per fast-onset type; Surprise A is 2.2s for this reason — an event earlier than a clip's peak offset cannot be placed on time.
+6. **Legacy experimental workflows** — Kaggle and lip-sync probes should be archived.
 
 ## Next code-change order
 
