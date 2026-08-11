@@ -23,7 +23,15 @@ function run(bin, args) {
   return execFileSync(bin, ['-hide_banner', '-loglevel', 'error', ...args], { encoding: 'utf8' });
 }
 
+const BACKEND = String(process.env.VIDEO_BACKEND || 'fal').trim(); // fal | openrouter
 const FAL_KEY = String(process.env.FAL_KEY || '').trim();
+const OPENROUTER_KEY = String(process.env.OPENROUTER_API_KEY || '').trim();
+
+// OpenRouter serves video on its own endpoint, not through /api/v1/models —
+// which is why a check against that list wrongly concluded it had no video
+// models at all. Kling v3 standard is $0.126/s here against $0.084/s on fal.
+const OPENROUTER_MODEL = String(process.env.OPENROUTER_VIDEO_MODEL || 'kwaivgi/kling-v3.0-std').trim();
+const OPENROUTER_PRICE_PER_S = Number(process.env.OPENROUTER_VIDEO_PRICE_PER_S || 0.126);
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_KEY = String(process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
 const PERSONA = String(process.env.REACTION_PERSONA || 'default').trim();
@@ -134,7 +142,7 @@ const PRESETS = {
     minimal: 'He watches something off-screen, then narrows his eyes suspiciously and leans in slightly, then his face relaxes back to neutral.',
     label: 'Suspicious A',
     reactionType: 'suspicious',
-    duration: 3,
+    duration: 10,
     performance: 'He watches, neutral. Then doubt creeps in: both eyes narrow into a sceptical squint, one eyebrow lowers, one side of his mouth tightens, and his head tilts a few degrees and leans in slightly, as if trying to see what he is missing. He studies it. It is the look of someone who does not buy what he is being shown. He holds the scrutiny, then eases back.',
   },
   laugh_a: {
@@ -163,6 +171,54 @@ async function fal(url, options = {}) {
   return data;
 }
 
+async function openrouter(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { Authorization: `Bearer ${OPENROUTER_KEY}`, 'Content-Type': 'application/json', ...(options.headers || {}) },
+  });
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  if (!response.ok) throw new Error(`openrouter ${response.status}: ${JSON.stringify(data).slice(0, 800)}`);
+  return data;
+}
+
+// Returns a URL for the finished clip.
+async function generateOnOpenRouter({ prompt, imageUrl, duration, useEndFrame }) {
+  const frames = [{ type: 'image_url', image_url: { url: imageUrl }, frame_type: 'first_frame' }];
+  if (useEndFrame) frames.push({ type: 'image_url', image_url: { url: imageUrl }, frame_type: 'last_frame' });
+
+  const queued = await openrouter('https://openrouter.ai/api/v1/videos', {
+    method: 'POST',
+    body: JSON.stringify({
+      model: OPENROUTER_MODEL,
+      prompt,
+      duration,
+      aspect_ratio: '16:9',
+      generate_audio: false,
+      frame_images: frames,
+    }),
+  });
+  const id = String(queued.id || '');
+  const pollUrl = String(queued.polling_url || (id ? `https://openrouter.ai/api/v1/videos/${id}` : ''));
+  if (!pollUrl) fail(`OpenRouter did not queue the job: ${JSON.stringify(queued).slice(0, 400)}`);
+
+  const deadline = Date.now() + 20 * 60 * 1000;
+  let status = String(queued.status || 'queued');
+  let last = queued;
+  while (!['completed', 'failed', 'cancelled', 'expired'].includes(status)) {
+    if (Date.now() > deadline) fail('OpenRouter video job timed out after 20 minutes');
+    await new Promise(resolve => setTimeout(resolve, 6000));
+    last = await openrouter(pollUrl);
+    if (String(last.status || '') !== status) console.log(`[generate-asset] ${last.status}`);
+    status = String(last.status || '');
+  }
+  if (status !== 'completed') fail(`OpenRouter video job ${status}: ${JSON.stringify(last).slice(0, 600)}`);
+
+  const direct = Array.isArray(last.unsigned_urls) ? String(last.unsigned_urls[0] || '') : '';
+  return direct || `https://openrouter.ai/api/v1/videos/${id}/content?index=0`;
+}
+
 async function supabase(pathname, options = {}) {
   const response = await fetch(`${SUPABASE_URL}${pathname}`, {
     ...options,
@@ -187,7 +243,8 @@ async function main() {
   }
   const preset = PRESETS[key];
   if (!preset) fail(`Unknown preset "${key}". Run with --list.`);
-  if (!FAL_KEY) fail('FAL_KEY missing');
+  if (BACKEND === 'fal' && !FAL_KEY) fail('FAL_KEY missing');
+  if (BACKEND === 'openrouter' && !OPENROUTER_KEY) fail('OPENROUTER_API_KEY missing');
   if (!SUPABASE_URL || !SUPABASE_KEY) fail('SUPABASE_URL / MAM_SUPABASE_SERVICE_ROLE_KEY missing');
 
   const query = new URLSearchParams({
@@ -221,7 +278,14 @@ async function main() {
   if (USE_END_FRAME) payload[SPEC.end] = reference.video_url;
   else console.log('[generate-asset] end frame OFF — the clip will not return to the anchor on its own');
 
-  console.log(`[generate-asset] ${preset.label} — ${duration}s via ${MODEL} (~$${(duration * PRICE_PER_S).toFixed(2)})`);
+  const backendModel = BACKEND === 'openrouter' ? OPENROUTER_MODEL : MODEL;
+  const pricePerS = BACKEND === 'openrouter' ? OPENROUTER_PRICE_PER_S : PRICE_PER_S;
+  console.log(`[generate-asset] ${preset.label} — ${duration}s via ${backendModel} (~$${(duration * pricePerS).toFixed(2)})`);
+
+  let videoUrl;
+  if (BACKEND === 'openrouter') {
+    videoUrl = await generateOnOpenRouter({ prompt, imageUrl: reference.video_url, duration, useEndFrame: USE_END_FRAME });
+  } else {
   const queued = await fal(`https://queue.fal.run/${MODEL}`, { method: 'POST', body: JSON.stringify(payload) });
   const statusUrl = String(queued.status_url || '');
   const responseUrl = String(queued.response_url || '');
@@ -239,14 +303,17 @@ async function main() {
   }
 
   const result = await fal(responseUrl);
-  const videoUrl = String(result?.video?.url || '');
+  videoUrl = String(result?.video?.url || '');
   if (!videoUrl) fail(`fal returned no video: ${JSON.stringify(result).slice(0, 400)}`);
+  }
 
   // fal's own URLs are temporary, so the clip is stored in our bucket before it
   // is registered — the library has to survive without them.
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reaction-gen-'));
   const local = path.join(workDir, `${key}.mp4`);
-  const download = await fetch(videoUrl);
+  const download = await fetch(videoUrl, BACKEND === 'openrouter' && videoUrl.includes('openrouter.ai')
+    ? { headers: { Authorization: `Bearer ${OPENROUTER_KEY}` } }
+    : undefined);
   if (!download.ok) fail(`Could not download the generated clip: HTTP ${download.status}`);
   const bytes = Buffer.from(await download.arrayBuffer());
   await fs.writeFile(local, bytes);
@@ -421,13 +488,14 @@ async function main() {
       enabled: false,
       metadata: {
         preset: key,
-        generated_by: MODEL,
+        generated_by: BACKEND === 'openrouter' ? OPENROUTER_MODEL : MODEL,
         anchored: USE_END_FRAME ? 'first_and_last_frame_are_the_reference_still' : `first_frame_only_${ANCHOR_MODE}`,
         loop: loopReport,
         prompt_mode: MINIMAL ? 'minimal' : 'detailed',
         generated_at: new Date().toISOString(),
         requested_duration_s: duration,
-        cost_estimate_usd: Number((duration * PRICE_PER_S).toFixed(3)),
+        backend: BACKEND,
+        cost_estimate_usd: Number((duration * (BACKEND === 'openrouter' ? OPENROUTER_PRICE_PER_S : PRICE_PER_S)).toFixed(3)),
       },
     }),
   });
