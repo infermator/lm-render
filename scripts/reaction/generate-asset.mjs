@@ -34,6 +34,11 @@ const OPENROUTER_MODEL = String(process.env.OPENROUTER_VIDEO_MODEL || 'kwaivgi/k
 const OPENROUTER_PRICE_PER_S = Number(process.env.OPENROUTER_VIDEO_PRICE_PER_S || 0.126);
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_KEY = String(process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
+// reaction_* TABLES stayed in mam-prod; the reaction-media BUCKET moved to
+// Shotlee. Table calls therefore need their own target. Falls back to the
+// old vars so this is safe before the secrets exist.
+const DB_URL = String(process.env.REACTION_DB_URL || process.env.SUPABASE_URL || '').replace(/\/$/, '');
+const DB_KEY = String(process.env.REACTION_DB_KEY || process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
 const PERSONA = String(process.env.REACTION_PERSONA || 'default').trim();
 const MODEL = String(process.env.FAL_VIDEO_MODEL || 'fal-ai/kling-video/v3/standard/image-to-video').trim();
 
