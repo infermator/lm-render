@@ -5,16 +5,21 @@ import { spawn } from 'node:child_process';
 
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_KEY = String(process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
+// reaction_* TABLES stayed in mam-prod; the reaction-media BUCKET moved to
+// Shotlee. Table calls therefore need their own target. Falls back to the
+// old vars so this is safe before the secrets exist.
+const DB_URL = String(process.env.REACTION_DB_URL || process.env.SUPABASE_URL || '').replace(/\/$/, '');
+const DB_KEY = String(process.env.REACTION_DB_KEY || process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
 const JOB_ID = String(process.env.JOB_ID || '').trim();
 const FORCE_REQUEUE = process.env.FORCE_REQUEUE === '1';
 
 async function forceRequeue(jobId) {
   if (!jobId || !SUPABASE_URL || !SUPABASE_KEY) throw new Error('FORCE_REQUEUE requires JOB_ID + Supabase service credentials');
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/reaction_jobs?id=eq.${encodeURIComponent(jobId)}`, {
+  const response = await fetch(`${DB_URL}/rest/v1/reaction_jobs?id=eq.${encodeURIComponent(jobId)}`, {
     method: 'PATCH',
     headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
+      apikey: DB_KEY,
+      Authorization: `Bearer ${DB_KEY}`,
       'Content-Type': 'application/json',
       Prefer: 'return=representation',
     },
