@@ -274,11 +274,17 @@ async function generateOnOpenRouter({ prompt, imageUrl, duration, useEndFrame })
 }
 
 async function supabase(pathname, options = {}) {
-  const response = await fetch(`${SUPABASE_URL}${pathname}`, {
+  // One helper serves both surfaces, but they now live in different projects:
+  // reaction_* tables stayed in mam-prod, the reaction-media bucket moved to
+  // Shotlee. Pick the target from the path rather than the caller.
+  const isTable = pathname.startsWith('/rest/v1/');
+  const base = isTable ? DB_URL : SUPABASE_URL;
+  const key  = isTable ? DB_KEY : SUPABASE_KEY;
+  const response = await fetch(`${base}${pathname}`, {
     ...options,
     headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
+      apikey: key,
+      Authorization: `Bearer ${key}`,
       ...(options.headers || {}),
     },
   });
