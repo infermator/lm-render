@@ -7,8 +7,14 @@ import { fileURLToPath } from 'node:url';
 
 const MAM_BASE = (process.env.MAM_BASE || 'https://21media-mam.vercel.app').replace(/\/$/, '');
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || '');
+// Storage (reaction-media) MOVED to the Shotlee project, while the reaction_*
+// TABLES stayed in mam-prod. One pair of credentials can no longer serve both,
+// so the database target is configured separately. Both fall back to the old
+// vars, so this file is safe to deploy before the new secrets exist.
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_KEY = String(process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
+const DB_URL = String(process.env.REACTION_DB_URL || process.env.SUPABASE_URL || '').replace(/\/$/, '');
+const DB_KEY = String(process.env.REACTION_DB_KEY || process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '');
 const REQUESTED_JOB_ID = String(process.env.JOB_ID || '').trim();
 const HF_MUSETALK_WORKER = String(process.env.HF_MUSETALK_WORKER || '').trim();
 const FAL_KEY = String(process.env.FAL_KEY || '').trim();
@@ -78,6 +84,7 @@ const CALIBRATE_TARGET = process.argv[2] === '--calibrate' ? String(process.argv
 if (!CALIBRATE_TARGET) {
   if (!SECRET) throw new Error('BUFFER_PUSH_SECRET missing');
   if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error('SUPABASE_URL / MAM_SUPABASE_SERVICE_ROLE_KEY missing');
+  if (!DB_URL || !DB_KEY) throw new Error('REACTION_DB_URL / REACTION_DB_KEY missing');
   if (!HF_MUSETALK_WORKER && !FAL_KEY) throw new Error('No lip-sync provider configured: set FAL_KEY or HF_MUSETALK_WORKER');
 }
 
@@ -131,11 +138,11 @@ async function progress(jobId, currentStage, renderMetaPatch = {}) {
 
 async function forceRequeue(jobId) {
   if (!jobId) return;
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/reaction_jobs?id=eq.${encodeURIComponent(jobId)}`, {
+  const response = await fetch(`${DB_URL}/rest/v1/reaction_jobs?id=eq.${encodeURIComponent(jobId)}`, {
     method: 'PATCH',
     headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
+      apikey: DB_KEY,
+      Authorization: `Bearer ${DB_KEY}`,
       'Content-Type': 'application/json',
       Prefer: 'return=representation',
     },
