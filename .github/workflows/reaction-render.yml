@@ -83,12 +83,34 @@ jobs:
         env:
           MAM_BASE: 'https://21media-mam.vercel.app'
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+          # These credentials are for reaction-media Storage in Shotlee. Job DB
+          # mutations go through the Reaction API instead of direct Supabase REST.
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
           HF_MUSETALK_WORKER: ${{ github.workspace }}/scripts/reaction/hf_musetalk_lipsync.py
           FAL_KEY: ${{ secrets.FAL_KEY }}
         run: |
           set -uo pipefail
+
+          # A replay used to PATCH reaction_jobs through SUPABASE_URL. That URL is
+          # now the Shotlee Storage project while reaction_jobs lives in mam-prod,
+          # so the direct DB call 404s. Requeue through the authenticated MAM API
+          # and disable render-v4's legacy direct-DB fallback for this process.
+          if [ "${FORCE_REQUEUE:-0}" = "1" ] && [ -n "${JOB_ID:-}" ]; then
+            echo "[reaction-worker-v4] requeueing $JOB_ID through Reaction API"
+            HTTP_CODE="$(curl -sS -o /tmp/requeue.json -w '%{http_code}' \
+              -X POST "$MAM_BASE/api/reaction/requeue" \
+              -H "Authorization: Bearer $BUFFER_PUSH_SECRET" \
+              -H 'Content-Type: application/json' \
+              --data "{\"job_id\":\"$JOB_ID\"}")"
+            cat /tmp/requeue.json
+            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+              echo "Reaction API requeue failed with HTTP $HTTP_CODE" >&2
+              exit 1
+            fi
+            export FORCE_REQUEUE=0
+          fi
+
           # Scheduled firings are throttled hard: the cron asks for every five
           # minutes and the measured median gap is 52. Draining the queue in one
           # run means a backlog clears together instead of costing an hour each.
@@ -112,8 +134,8 @@ jobs:
       - name: Persist diagnostic replay result
         if: always() && github.event_name == 'push'
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+          MAM_BASE: 'https://21media-mam.vercel.app'
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
         run: |
           set -euo pipefail
           if [ -z "${REPLAY_JOB_ID:-}" ]; then
@@ -122,20 +144,16 @@ jobs:
           fi
           python - <<'PY'
           import json, os, urllib.parse, urllib.request
-          base = os.environ['SUPABASE_URL'].rstrip('/')
-          key = os.environ['MAM_SUPABASE_SERVICE_ROLE_KEY']
+          base = os.environ['MAM_BASE'].rstrip('/')
+          secret = os.environ['BUFFER_PUSH_SECRET']
           job = os.environ['REPLAY_JOB_ID']
-          query = urllib.parse.urlencode({
-              'id': f'eq.{job}',
-              'select': 'id,status,current_stage,error,result_url,result_path,completed_at,updated_at,attempts,render_meta,reaction_plan',
-          })
           req = urllib.request.Request(
-              f'{base}/rest/v1/reaction_jobs?{query}',
-              headers={'apikey': key, 'Authorization': f'Bearer {key}'},
+              f'{base}/api/reaction/jobs/{urllib.parse.quote(job)}',
+              headers={'Authorization': f'Bearer {secret}'},
           )
           with urllib.request.urlopen(req, timeout=30) as response:
-              rows = json.loads(response.read().decode('utf-8'))
-          payload = rows[0] if rows else {'id': job, 'status': 'missing'}
+              payload = json.loads(response.read().decode('utf-8'))
+          payload = payload.get('job', payload)
           payload['captured_at'] = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
           with open('.github/last-render-diagnostic.json', 'w', encoding='utf-8') as fh:
               json.dump(payload, fh, indent=2, ensure_ascii=False)
