@@ -25,12 +25,13 @@ const FPS = 30;
 const OUT_W = 1080;
 const OUT_H = 1920;
 
-// Persona assets are 16:9 green screen; the final product is 9:16. The avatar
-// frame is scaled as a whole and pinned flush to the bottom-right corner, so the
-// subject — who sits on the right of his reference frame with his body running
-// off the right and bottom edges — lands in the corner with those cut edges
-// hidden by the canvas edges. The empty green left half keys out to nothing.
-const AVATAR_H = 620;
+// Persona assets are 16:9 green screen; the final product is 9:16. Corner
+// overlays are intentionally normalized 30% smaller than before. Full-width
+// band layouts later scale this same 16:9 track back to OUT_W, so top_band and
+// bottom_band still occupy the full width at roughly the same ~608px height.
+// The empty green half keys out, leaving only the smaller corner cut-out.
+const CORNER_SCALE = 0.70;
+const AVATAR_H = Math.round((620 * CORNER_SCALE) / 2) * 2;
 const AVATAR_W = Math.round((AVATAR_H * 16) / 9 / 2) * 2;
 
 // Silence wrapped around every TTS line. It makes the lip-sync model produce a
