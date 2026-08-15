@@ -114,23 +114,42 @@ jobs:
             export FORCE_REQUEUE=0
           fi
 
-          # Scheduled firings are throttled hard: the cron asks for every five
-          # minutes and the measured median gap is 52. Draining the queue in one
-          # run means a backlog clears together instead of costing an hour each.
+          # GitHub's generated shell uses `bash -e`, so a deliberate exit 3 from
+          # run-v4-hardened ("queue empty") must be captured inside an if; a bare
+          # command would terminate the step before CODE=$? can run.
+          run_renderer() {
+            if node scripts/reaction/run-v4-hardened.mjs; then
+              return 0
+            else
+              return $?
+            fi
+          }
+
           if [ -n "${JOB_ID:-}" ]; then
-            node scripts/reaction/run-v4-hardened.mjs
-            exit $?
+            if run_renderer; then
+              CODE=0
+            else
+              CODE=$?
+            fi
+            exit "$CODE"
           fi
+
+          # Scheduled firings are throttled hard: the cron asks for every five
+          # minutes and the measured median gap is much larger. Drain multiple
+          # queued jobs in one worker run so a backlog clears together.
           for pass in $(seq 1 8); do
             echo "[reaction-worker-v4] queue pass $pass"
-            node scripts/reaction/run-v4-hardened.mjs
-            CODE=$?
+            if run_renderer; then
+              CODE=0
+            else
+              CODE=$?
+            fi
             if [ "$CODE" = "3" ]; then
               echo "[reaction-worker-v4] queue empty"
               exit 0
             fi
             if [ "$CODE" != "0" ]; then
-              exit $CODE
+              exit "$CODE"
             fi
           done
 
