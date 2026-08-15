@@ -9,14 +9,20 @@ on:
         default: ''
   schedule:
     - cron: '*/5 * * * *'
+  # Ordinary renderer pushes must not launch a heavy smoke that competes with
+  # real renders. This file is touched only when we deliberately want to kick
+  # the production queue without waiting for cron.
   push:
     paths:
-      - '.github/workflows/clipper-render.yml'
-      - 'scripts/clipper/**'
-      - 'scripts/reaction/transcribe_local.py'
+      - '.github/clipper-render-kick'
 
 permissions:
   contents: read
+
+concurrency:
+  # New group intentionally does not wait behind the old smoke-shared worker.
+  group: clipper-render-production-v2
+  cancel-in-progress: false
 
 jobs:
   render:
@@ -37,26 +43,22 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install CLIPPER media tooling
+      - name: Install lightweight CLIPPER media tooling
         timeout-minutes: 5
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl
 
-          # Rendering must never be held hostage by an optional caption stack.
-          # yt-dlp is the only Python dependency required for the source window.
-          python -m pip install --disable-pip-version-check --only-binary=:all: 'yt-dlp>=2026.8.1'
-
-          # Captions are best-effort in render.mjs. Prefer wheels and cap setup time;
-          # if Whisper cannot install quickly, the render continues without captions.
-          timeout 120 python -m pip install --disable-pip-version-check --only-binary=:all: 'faster-whisper>=1.0.3' \
-            || echo '[clipper-worker] faster-whisper unavailable; captions will be skipped for this run'
+          # Only source materialization is required before claim. Captions are
+          # optional and render.mjs installs faster-whisper AFTER it has claimed
+          # a captions-enabled row, so queued -> rendering is no longer blocked.
+          python -m pip install --disable-pip-version-check --no-input 'yt-dlp[default]'
 
           yt-dlp --version
           node --version
           node --check scripts/clipper/render.mjs
-          ffmpeg -hide_banner -filters | grep -q ' subtitles ' && echo 'libass: yes' || echo 'libass: missing — captions may be skipped'
+          ffmpeg -version | head -1
 
       - name: Render CLIPPER queue
         env:
@@ -76,15 +78,12 @@ jobs:
             fi
           }
 
-          # Exact dispatch renders only the requested row.
           if [ -n "${RENDER_ID:-}" ]; then
             run_one
             exit $?
           fi
 
-          # Scheduled/push workers drain a few rows. Claims are conditional in the
-          # MAM API, so overlapping runners are safe and avoid one bad setup run
-          # blocking the entire queue.
+          # Scheduled/kick workers drain a few rows because GitHub cron may lag.
           for pass in $(seq 1 5); do
             echo "[clipper-worker] queue pass $pass"
             if run_one; then
