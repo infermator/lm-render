@@ -9,6 +9,11 @@ on:
         default: ''
   schedule:
     - cron: '*/5 * * * *'
+  push:
+    paths:
+      - '.github/workflows/clipper-render.yml'
+      - 'scripts/clipper/**'
+      - 'scripts/reaction/transcribe_local.py'
 
 permissions:
   contents: read
@@ -67,7 +72,9 @@ jobs:
             exit $?
           fi
 
-          # Scheduled runs drain several rows because GitHub cron can be delayed.
+          # Pushes are also a safe smoke test: with an empty queue this exits 0
+          # after the claim endpoint returns no work. If a real row is queued,
+          # the same code path proves the end-to-end worker instead.
           for pass in $(seq 1 5); do
             echo "[clipper-worker] queue pass $pass"
             if run_one; then
