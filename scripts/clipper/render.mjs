@@ -26,6 +26,14 @@ async function api(route, body) {
   return payload;
 }
 
+async function progress(renderId, stage, message = '') {
+  try {
+    await api('/api/clipper/progress', { render_id: renderId, stage, message });
+  } catch (error) {
+    console.warn(`[clipper-render] progress ${stage} failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function run(command, args, options = {}) {
   console.log(`[clipper-render] $ ${command} ${args.join(' ')}`);
   const result = spawnSync(command, args, { stdio: 'inherit', ...options });
@@ -38,6 +46,17 @@ function runCapture(command, args, options = {}) {
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} exited ${result.status}: ${(result.stderr || '').slice(-1200)}`);
   return result.stdout || '';
+}
+
+function commandOk(command, args) {
+  const result = spawnSync(command, args, { stdio: 'ignore' });
+  return !result.error && result.status === 0;
+}
+
+function ensureCaptionTooling() {
+  if (commandOk('python3', ['-c', 'import faster_whisper'])) return;
+  console.log('[clipper-render] installing faster-whisper only because this selected render requested captions');
+  run('python3', ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', 'faster-whisper>=1.0.3']);
 }
 
 function findDownloadedFile(dir) {
@@ -94,14 +113,17 @@ function escapeSubtitlePath(filePath) {
 
 function uploadObject(localPath, objectPath, contentType) {
   const encoded = objectPath.split('/').map(encodeURIComponent).join('/');
-  run('curl', [
+  // GitHub masks configured secrets, but do not print this curl command at all.
+  const result = spawnSync('curl', [
     '-fsS', '-X', 'POST', `${STORAGE_URL}/storage/v1/object/clipper-media/${encoded}`,
     '-H', `Authorization: Bearer ${STORAGE_KEY}`,
     '-H', `apikey: ${STORAGE_KEY}`,
     '-H', 'x-upsert: true',
     '-H', `Content-Type: ${contentType}`,
     '--data-binary', `@${localPath}`,
-  ]);
+  ], { stdio: 'inherit' });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`storage upload exited ${result.status}`);
 }
 
 function probe(file) {
@@ -110,6 +132,8 @@ function probe(file) {
 }
 
 async function main() {
+  // IMPORTANT: claim before any optional heavy setup. The UI should move from
+  // queued -> rendering in seconds, not after Whisper dependencies finish.
   const claimed = await api('/api/clipper/claim', { render_id: EXACT_RENDER_ID || undefined, worker_run_id: WORKER_RUN_ID });
   if (!claimed.render) {
     console.log('[clipper-render] queue empty');
@@ -118,6 +142,7 @@ async function main() {
   }
 
   const { render, candidate, vod } = claimed;
+  await progress(render.id, 'claimed', `GitHub run ${WORKER_RUN_ID}`);
   const work = fs.mkdtempSync(path.join(os.tmpdir(), `clipper-${String(render.id).slice(0, 8)}-`));
   console.log(`[clipper-render] render=${render.id} candidate=${candidate.id} vod=${vod.id}`);
 
@@ -128,9 +153,11 @@ async function main() {
     const output = plan.output || {};
     const start = Number(plan.candidate?.start_s ?? candidate.clip_start_s);
     const end = Number(plan.candidate?.end_s ?? candidate.clip_end_s);
+    const duration = end - start;
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new Error('Invalid candidate timestamp range');
-    if ((end - start) > 180) throw new Error(`Candidate window too long (${(end - start).toFixed(1)}s)`);
+    if (duration < 15 || duration > 90.01) throw new Error(`CLIPPER duration contract violated (${duration.toFixed(1)}s; expected 15–90s)`);
 
+    await progress(render.id, 'downloading', `Materializing ${duration.toFixed(1)}s selected window`);
     const sourcePattern = path.join(work, 'source.%(ext)s');
     run('yt-dlp', [
       '--no-playlist',
@@ -146,6 +173,7 @@ async function main() {
 
     let source = findDownloadedFile(work);
     if (!source) throw new Error('yt-dlp completed without a source file');
+    await progress(render.id, 'normalizing', 'Normalizing selected source window');
     const canonicalSource = path.join(work, 'candidate-source.mp4');
     run('ffmpeg', ['-y', '-i', source, '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', canonicalSource]);
     source = canonicalSource;
@@ -154,13 +182,16 @@ async function main() {
     const captionPath = path.join(work, 'captions.srt');
     let captionMeta = { created: false, provider: null, words: 0 };
     if (captionsEnabled) {
+      await progress(render.id, 'transcribing', 'Preparing local Whisper captions');
       try {
+        ensureCaptionTooling();
         captionMeta = writeCaptions(source, captionPath, output.language || vod.language || 'auto');
       } catch (error) {
         console.warn(`[clipper-render] captions skipped: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
+    await progress(render.id, 'composing', 'Rendering 1080×1920 vertical edit');
     const layout = output.layout === 'center_crop' ? 'center_crop' : 'fit_blur';
     const out = path.join(work, 'video.mp4');
     const captionFilter = captionMeta.created
@@ -186,18 +217,20 @@ async function main() {
       throw new Error(`Unexpected output geometry ${videoStream.width}x${videoStream.height}`);
     }
 
+    await progress(render.id, 'uploading', 'Uploading source window and rendered MP4 to clipper-media');
     sourceStoragePath = `candidates/${candidate.id}/source.mp4`;
     resultStoragePath = `renders/${candidate.id}/${render.id}/video.mp4`;
     uploadObject(source, sourceStoragePath, 'video/mp4');
     uploadObject(out, resultStoragePath, 'video/mp4');
 
+    await progress(render.id, 'finalizing', 'Persisting render result and QC');
     await api('/api/clipper/complete', {
       render_id: render.id,
       ok: true,
       source_storage_path: sourceStoragePath,
       result_storage_path: resultStoragePath,
       render_meta: {
-        worker: 'lm-render/clipper-v1',
+        worker: 'lm-render/clipper-v2',
         worker_run_id: WORKER_RUN_ID,
         source_window_s: [start, end],
         layout,
@@ -221,7 +254,7 @@ async function main() {
         ok: false,
         source_storage_path: sourceStoragePath,
         result_storage_path: resultStoragePath,
-        render_meta: { worker: 'lm-render/clipper-v1', worker_run_id: WORKER_RUN_ID },
+        render_meta: { worker: 'lm-render/clipper-v2', worker_run_id: WORKER_RUN_ID },
         error: message.slice(0, 2800),
       });
     } catch (completeError) {
