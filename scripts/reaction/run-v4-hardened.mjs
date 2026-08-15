@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 const DRY_RUN = process.env.REACTION_V4_HARDEN_DRY_RUN === '1';
+const DIRECT_REACTION_API = 'https://reaction-lab-coral.vercel.app';
 
 // This launcher used to rewrite render-v4.mjs at runtime because the canonical
 // renderer was missing production guarantees. Those guarantees now live in the
@@ -77,7 +78,14 @@ async function main() {
     return;
   }
 
-  const child = spawn(process.execPath, [rendererPath], { stdio: 'inherit', env: process.env });
+  // Machine traffic must never silently fall back to the MAM browser-session
+  // gateway. The workflow sets MAM_BASE explicitly, and this fallback protects
+  // manual/alternate launches from regressing to the old 401 route.
+  const renderEnv = {
+    ...process.env,
+    MAM_BASE: String(process.env.MAM_BASE || DIRECT_REACTION_API).replace(/\/$/, ''),
+  };
+  const child = spawn(process.execPath, [rendererPath], { stdio: 'inherit', env: renderEnv });
   const code = await new Promise((resolve, reject) => {
     child.on('error', reject);
     child.on('close', resolve);
