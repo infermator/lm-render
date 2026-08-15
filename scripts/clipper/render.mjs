@@ -59,6 +59,26 @@ function ensureCaptionTooling() {
   run('python3', ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', 'faster-whisper>=1.0.3']);
 }
 
+function ensureFaceTooling() {
+  if (commandOk('python3', ['-c', 'import cv2'])) return;
+  console.log('[clipper-render] installing opencv only because creator/gameplay auto framing was requested');
+  run('python3', ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--only-binary=:all:', 'opencv-python-headless>=4.10.0']);
+}
+
+function detectFacecam(source) {
+  try {
+    ensureFaceTooling();
+    const script = path.resolve('scripts/clipper/detect_facecam.py');
+    const raw = runCapture('python3', [script, source]);
+    const result = JSON.parse(raw);
+    if (!result?.ok || !result?.detected || !result?.crop) return null;
+    return result;
+  } catch (error) {
+    console.warn(`[clipper-render] creator detection unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
 function findDownloadedFile(dir) {
   const preferred = ['source.mp4', 'source.mkv', 'source.webm', 'source.mov'];
   for (const name of preferred) {
@@ -113,7 +133,6 @@ function escapeSubtitlePath(filePath) {
 
 function uploadObject(localPath, objectPath, contentType) {
   const encoded = objectPath.split('/').map(encodeURIComponent).join('/');
-  // GitHub masks configured secrets, but do not print this curl command at all.
   const result = spawnSync('curl', [
     '-fsS', '-X', 'POST', `${STORAGE_URL}/storage/v1/object/clipper-media/${encoded}`,
     '-H', `Authorization: Bearer ${STORAGE_KEY}`,
@@ -131,9 +150,28 @@ function probe(file) {
   return JSON.parse(raw);
 }
 
+function creatorGameplayFilter(face, captionFilter) {
+  const srcW = Number(face?.source?.width || 0);
+  const srcH = Number(face?.source?.height || 0);
+  const crop = face?.crop || {};
+  if (!srcW || !srcH) return null;
+
+  const x = Math.max(0, Math.round(Number(crop.x || 0) * srcW));
+  const y = Math.max(0, Math.round(Number(crop.y || 0) * srcH));
+  const w = Math.max(2, Math.min(srcW - x, Math.round(Number(crop.w || 0.3) * srcW)));
+  const h = Math.max(2, Math.min(srcH - y, Math.round(Number(crop.h || 0.3) * srcH)));
+
+  // Top ~36% is creator, lower ~64% is gameplay. Both are generated from the
+  // actual source geometry; there is no 16:9 assumption anywhere in this crop.
+  return [
+    `[0:v]split=2[game0][creator0]`,
+    `[game0]scale=1080:1230:force_original_aspect_ratio=increase,crop=1080:1230[game]`,
+    `[creator0]crop=${w}:${h}:${x}:${y},scale=1080:690:force_original_aspect_ratio=increase,crop=1080:690[creator]`,
+    `[creator][game]vstack=inputs=2${captionFilter}[v]`,
+  ].join(';');
+}
+
 async function main() {
-  // IMPORTANT: claim before any optional heavy setup. The UI should move from
-  // queued -> rendering in seconds, not after Whisper dependencies finish.
   const claimed = await api('/api/clipper/claim', { render_id: EXACT_RENDER_ID || undefined, worker_run_id: WORKER_RUN_ID });
   if (!claimed.render) {
     console.log('[clipper-render] queue empty');
@@ -178,6 +216,12 @@ async function main() {
     run('ffmpeg', ['-y', '-i', source, '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', canonicalSource]);
     source = canonicalSource;
 
+    let facecam = null;
+    if (output.layout === 'creator_gameplay_auto' || output.creator_detection === true) {
+      await progress(render.id, 'detecting_creator', 'Detecting persistent creator facecam independently of source aspect ratio');
+      facecam = detectFacecam(source);
+    }
+
     const captionsEnabled = output.captions !== false;
     const captionPath = path.join(work, 'captions.srt');
     let captionMeta = { created: false, provider: null, words: 0 };
@@ -191,16 +235,20 @@ async function main() {
       }
     }
 
-    await progress(render.id, 'composing', 'Rendering 1080×1920 vertical edit');
-    const layout = output.layout === 'center_crop' ? 'center_crop' : 'fit_blur';
+    await progress(render.id, 'composing', facecam ? 'Rendering creator + gameplay vertical composition' : 'Rendering 1080×1920 vertical edit');
+    const requestedLayout = String(output.layout || 'fit_blur');
+    const layout = requestedLayout === 'creator_gameplay_auto'
+      ? (facecam ? 'creator_gameplay_auto' : 'fit_blur')
+      : (requestedLayout === 'center_crop' ? 'center_crop' : 'fit_blur');
     const out = path.join(work, 'video.mp4');
     const captionFilter = captionMeta.created
       ? `,subtitles='${escapeSubtitlePath(captionPath)}':force_style='FontName=DejaVu Sans,FontSize=18,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=190'`
       : '';
 
-    const filter = layout === 'center_crop'
+    const autoFilter = layout === 'creator_gameplay_auto' ? creatorGameplayFilter(facecam, captionFilter) : null;
+    const filter = autoFilter || (layout === 'center_crop'
       ? `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920${captionFilter}[v]`
-      : `[0:v]split=2[bg0][fg0];[bg0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.16[bg];[fg0]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2${captionFilter}[v]`;
+      : `[0:v]split=2[bg0][fg0];[bg0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.16[bg];[fg0]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2${captionFilter}[v]`);
 
     run('ffmpeg', [
       '-y', '-i', source,
@@ -230,10 +278,12 @@ async function main() {
       source_storage_path: sourceStoragePath,
       result_storage_path: resultStoragePath,
       render_meta: {
-        worker: 'lm-render/clipper-v2',
+        worker: 'lm-render/clipper-v3',
         worker_run_id: WORKER_RUN_ID,
         source_window_s: [start, end],
         layout,
+        requested_layout: requestedLayout,
+        creator_detection: facecam,
         captions: captionMeta,
         ffprobe: resultProbe,
       },
@@ -254,7 +304,7 @@ async function main() {
         ok: false,
         source_storage_path: sourceStoragePath,
         result_storage_path: resultStoragePath,
-        render_meta: { worker: 'lm-render/clipper-v2', worker_run_id: WORKER_RUN_ID },
+        render_meta: { worker: 'lm-render/clipper-v3', worker_run_id: WORKER_RUN_ID },
         error: message.slice(0, 2800),
       });
     } catch (completeError) {
