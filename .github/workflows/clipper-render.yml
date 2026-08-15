@@ -1,0 +1,85 @@
+name: CLIPPER Render Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      render_id:
+        description: 'Optional exact clipper_renders UUID (blank = oldest queued)'
+        required: false
+        default: ''
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clipper-render-worker
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      WHISPER_MODEL: tiny
+    steps:
+      - name: Checkout renderer
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install CLIPPER media tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl
+          python -m pip install --upgrade pip
+          python -m pip install 'yt-dlp[default]' 'faster-whisper>=1.0.3'
+          yt-dlp --version
+          node --version
+          node --check scripts/clipper/render.mjs
+          ffmpeg -hide_banner -filters | grep -q ' subtitles ' && echo 'libass: yes' || echo 'libass: missing — captions may be skipped'
+
+      - name: Render CLIPPER queue
+        env:
+          MAM_BASE: 'https://reaction-lab-coral.vercel.app'
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+          SHOTLEE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SHOTLEE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+          RENDER_ID: ${{ inputs.render_id }}
+        run: |
+          set -uo pipefail
+
+          run_one() {
+            if node scripts/clipper/render.mjs; then
+              return 0
+            else
+              return $?
+            fi
+          }
+
+          # Exact dispatch renders only the requested row.
+          if [ -n "${RENDER_ID:-}" ]; then
+            run_one
+            exit $?
+          fi
+
+          # Scheduled runs drain several rows because GitHub cron can be delayed.
+          for pass in $(seq 1 5); do
+            echo "[clipper-worker] queue pass $pass"
+            if run_one; then
+              code=0
+            else
+              code=$?
+            fi
+            if [ "$code" = "3" ]; then
+              echo "[clipper-worker] queue empty"
+              exit 0
+            fi
+            if [ "$code" != "0" ]; then
+              exit "$code"
+            fi
+          done
