@@ -81,7 +81,10 @@ jobs:
 
       - name: Render one Reaction Lab job
         env:
-          MAM_BASE: 'https://21media-mam.vercel.app'
+          # Machine traffic must bypass the MAM/browser-session gateway. The
+          # standalone Reaction Lab middleware accepts the worker bearer and the
+          # routes still read/write the same MAM reaction_* database.
+          MAM_BASE: 'https://reaction-lab-coral.vercel.app'
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           # These credentials are for reaction-media Storage in Shotlee. Job DB
           # mutations go through the Reaction API instead of direct Supabase REST.
@@ -94,8 +97,8 @@ jobs:
 
           # A replay used to PATCH reaction_jobs through SUPABASE_URL. That URL is
           # now the Shotlee Storage project while reaction_jobs lives in mam-prod,
-          # so the direct DB call 404s. Requeue through the authenticated MAM API
-          # and disable render-v4's legacy direct-DB fallback for this process.
+          # so the direct DB call 404s. Requeue through the authenticated Reaction
+          # API and disable render-v4's legacy direct-DB fallback for this process.
           if [ "${FORCE_REQUEUE:-0}" = "1" ] && [ -n "${JOB_ID:-}" ]; then
             echo "[reaction-worker-v4] requeueing $JOB_ID through Reaction API"
             HTTP_CODE="$(curl -sS -o /tmp/requeue.json -w '%{http_code}' \
@@ -134,7 +137,7 @@ jobs:
       - name: Persist diagnostic replay result
         if: always() && github.event_name == 'push'
         env:
-          MAM_BASE: 'https://21media-mam.vercel.app'
+          MAM_BASE: 'https://reaction-lab-coral.vercel.app'
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
         run: |
           set -euo pipefail
