@@ -1,3 +1,2 @@
-kick 2026-08-14T17:43+03:00
-job fb46b3cc-c661-4078-9754-1c68653b39d0
-replay through Reaction API requeue path
+kick 2026-08-15T15:16+03:00
+reason queue-drain-after-worker-fix
