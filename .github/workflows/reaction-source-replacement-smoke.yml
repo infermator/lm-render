@@ -1,0 +1,20 @@
+name: Reaction Source Replacement Smoke
+
+on:
+  push:
+    paths:
+      - '.github/source-replacement-smoke-kick'
+      - 'scripts/reaction/run-v4-hardened.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate hardened runtime source replacement
+        env:
+          REACTION_V4_HARDEN_DRY_RUN: '1'
+        run: node scripts/reaction/run-v4-hardened.mjs
