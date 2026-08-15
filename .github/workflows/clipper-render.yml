@@ -54,7 +54,13 @@ jobs:
           # a captions-enabled row, so queued -> rendering is no longer blocked.
           python -m pip install --disable-pip-version-check --no-input 'yt-dlp[default]'
 
-          yt-dlp --version
+          # GitHub-hosted runner IPs are frequently challenged by YouTube.
+          # Route every CLIPPER yt-dlp invocation through our wrapper. The
+          # wrapper still runs yt-dlp anonymously first, then one alternate
+          # official client, and can consume optional cookies/proxy secrets.
+          sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
+
+          yt-dlp --version || true
           node --version
           node --check scripts/clipper/render.mjs
           ffmpeg -version | head -1
@@ -65,6 +71,11 @@ jobs:
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SHOTLEE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SHOTLEE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+          # Optional. Empty/nonexistent secrets are harmless; when configured,
+          # they let source materialization survive YouTube bot challenges on
+          # shared GitHub runner egress without exposing credentials in logs.
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
+          YOUTUBE_PROXY_URL: ${{ secrets.YOUTUBE_PROXY_URL }}
           RENDER_ID: ${{ inputs.render_id }}
         run: |
           set -uo pipefail
