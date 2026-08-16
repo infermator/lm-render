@@ -3,11 +3,13 @@ set -uo pipefail
 
 # Wrapper for yt-dlp on shared GitHub-hosted runners. YouTube frequently
 # challenges those egress IPs with HTTP 429 / bot checks. Keep the normal
-# anonymous path, support a small set of official-client fallbacks, then use a
-# local BotGuard PO-token provider when available. Cookies/proxy remain optional
-# last-mile overrides and are never printed.
+# anonymous path, support official-client and PO-token fallbacks, then resolve
+# the same public video through unauthenticated Piped instances. Piped returns
+# proxied media URLs, so the GitHub runner no longer has to fetch media from
+# YouTube directly. Cookies/proxy remain optional last-mile overrides only.
 
 COOKIE_FILE=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cleanup() {
   if [ -n "$COOKIE_FILE" ] && [ -f "$COOKIE_FILE" ]; then
     rm -f "$COOKIE_FILE"
@@ -82,8 +84,18 @@ if [ "${CLIPPER_BGUTIL_ENABLED:-0}" = '1' ]; then
   fi
 fi
 
+# 4) Login-free public fallback. Piped's /streams API is unauthenticated and
+# returns media through its own proxy/CDN. This specifically avoids the GitHub
+# datacenter-IP -> YouTube hop that caused the bot-check failures above.
+if [ "${CLIPPER_YOUTUBE_BOT_BLOCKED:-0}" = '1' ] && [ "${CLIPPER_PIPED_ENABLED:-1}" != '0' ]; then
+  echo '[clipper-source] direct YouTube blocked; trying free Piped proxy fallback'
+  if node "$SCRIPT_DIR/piped-fetch.mjs" "$@"; then
+    exit 0
+  fi
+fi
+
 if [ "${CLIPPER_YOUTUBE_BOT_BLOCKED:-0}" = '1' ]; then
-  echo '[clipper-source] youtube_bot_blocked: YouTube rejected GitHub runner egress even after official-client and PO-token fallbacks. Configure YOUTUBE_COOKIES_B64 or YOUTUBE_PROXY_URL, then retry.' >&2
+  echo '[clipper-source] youtube_bot_blocked: direct YouTube access was blocked and free Piped fallback could not materialize the source.' >&2
   exit 42
 fi
 
