@@ -1,0 +1,57 @@
+name: CLIPPER Vercel Resolver Smoke
+
+on:
+  push:
+    paths:
+      - '.github/workflows/clipper-vercel-resolver-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Resolve GTA V source through Reaction Lab Vercel egress
+        env:
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$BUFFER_PUSH_SECRET"
+          curl -fsS \
+            -H "Authorization: Bearer $BUFFER_PUSH_SECRET" \
+            -H 'Content-Type: application/json' \
+            --data '{"video_id":"IzdxE1kw2ho","include_urls":true}' \
+            'https://reaction-lab-coral.vercel.app/api/clipper/source-resolve' \
+            > /tmp/clipper-resolver.json
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('/tmp/clipper-resolver.json', 'utf8'));
+          if (!data.ok || !data.video_url) {
+            console.error(JSON.stringify({ok:data.ok, provider:data.provider, errors:data.errors}, null, 2));
+            process.exit(1);
+          }
+          console.log(`resolver OK provider=${data.provider} host=${data.video_host} muxed=${data.muxed}`);
+          fs.writeFileSync('/tmp/video-url.txt', data.video_url);
+          if (data.audio_url) fs.writeFileSync('/tmp/audio-url.txt', data.audio_url);
+          NODE
+
+          VIDEO_URL="$(cat /tmp/video-url.txt)"
+          curl -fsSL --range 0-65535 -o /tmp/video-head.bin "$VIDEO_URL"
+          VIDEO_BYTES="$(wc -c < /tmp/video-head.bin | tr -d ' ')"
+          test "$VIDEO_BYTES" -gt 1024
+          echo "proxied video fetch OK bytes=$VIDEO_BYTES"
+
+          if [ -s /tmp/audio-url.txt ]; then
+            AUDIO_URL="$(cat /tmp/audio-url.txt)"
+            curl -fsSL --range 0-65535 -o /tmp/audio-head.bin "$AUDIO_URL"
+            AUDIO_BYTES="$(wc -c < /tmp/audio-head.bin | tr -d ' ')"
+            test "$AUDIO_BYTES" -gt 1024
+            echo "proxied audio fetch OK bytes=$AUDIO_BYTES"
+          fi
