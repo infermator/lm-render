@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const DEFAULT_INSTANCES = [
+const DEFAULT_PIPED_INSTANCES = [
   'https://pipedapi.kavin.rocks',
   'https://pipedapi.tokhmi.xyz',
   'https://pipedapi.moomoo.me',
@@ -13,8 +13,14 @@ const DEFAULT_INSTANCES = [
   'https://piped-api.garudalinux.org',
 ];
 
+const DEFAULT_INVIDIOUS_INSTANCES = [
+  'https://inv.nadeko.net',
+  'https://invidious.nerdvpn.de',
+  'https://yt.chocolatemoo53.com',
+];
+
 function log(message) {
-  console.log(`[clipper-piped] ${message}`);
+  console.log(`[clipper-proxy] ${message}`);
 }
 
 function parseArgs(argv) {
@@ -57,11 +63,11 @@ function parseArgs(argv) {
   return { videoId, start, end, duration: end - start, output };
 }
 
-function instanceList() {
-  const configured = String(process.env.PIPED_INSTANCES || '').trim();
+function configuredInstances(envName, defaults) {
+  const configured = String(process.env[envName] || '').trim();
   const values = configured
     ? configured.split(',').map(value => value.trim()).filter(Boolean)
-    : DEFAULT_INSTANCES;
+    : defaults;
   return [...new Set(values.map(value => value.replace(/\/$/, '')))];
 }
 
@@ -83,30 +89,6 @@ async function getJson(url, timeoutMs = 15000) {
   }
 }
 
-function scoreVideo(stream) {
-  const mime = String(stream?.mimeType || '').toLowerCase();
-  const codec = String(stream?.codec || '').toLowerCase();
-  const height = Number(stream?.height || 0);
-  const bitrate = Number(stream?.bitrate || 0);
-  let score = 0;
-  if (mime.includes('video/mp4') || String(stream?.format || '').toUpperCase().includes('MPEG_4')) score += 1_000_000;
-  if (codec.includes('avc1') || codec.includes('h264')) score += 500_000;
-  if (height <= 1080) score += Math.max(0, height) * 1000;
-  else score -= (height - 1080) * 1000;
-  score += Math.min(100_000, Math.floor(bitrate / 100));
-  return score;
-}
-
-function scoreAudio(stream) {
-  const mime = String(stream?.mimeType || '').toLowerCase();
-  const codec = String(stream?.codec || '').toLowerCase();
-  const bitrate = Number(stream?.bitrate || 0);
-  let score = bitrate;
-  if (mime.includes('audio/mp4') || String(stream?.format || '').toUpperCase() === 'M4A') score += 1_000_000;
-  if (codec.includes('mp4a') || codec.includes('aac')) score += 500_000;
-  return score;
-}
-
 function validHttpUrl(value) {
   try {
     const parsed = new URL(String(value || ''));
@@ -116,7 +98,52 @@ function validHttpUrl(value) {
   }
 }
 
-function chooseStreams(payload) {
+function streamHeight(stream) {
+  const direct = Number(stream?.height || 0);
+  if (direct > 0) return direct;
+  const text = `${stream?.qualityLabel || ''} ${stream?.quality || ''} ${stream?.resolution || ''}`;
+  const match = text.match(/(\d{3,4})p|\b(\d{3,4})x(\d{3,4})\b/i);
+  if (!match) return 0;
+  if (match[1]) return Number(match[1]);
+  return Math.min(Number(match[2] || 0), Number(match[3] || 0));
+}
+
+function streamMime(stream) {
+  return String(stream?.mimeType || stream?.type || '').toLowerCase();
+}
+
+function streamCodec(stream) {
+  const explicit = String(stream?.codec || stream?.encoding || '').toLowerCase();
+  const type = streamMime(stream);
+  const codecMatch = type.match(/codecs?="([^"]+)"/i);
+  return explicit || String(codecMatch?.[1] || '').toLowerCase();
+}
+
+function scoreVideo(stream) {
+  const mime = streamMime(stream);
+  const codec = streamCodec(stream);
+  const height = streamHeight(stream);
+  const bitrate = Number(stream?.bitrate || 0);
+  let score = 0;
+  if (mime.includes('video/mp4') || String(stream?.format || stream?.container || '').toUpperCase().includes('MP4')) score += 1_000_000;
+  if (codec.includes('avc1') || codec.includes('h264')) score += 500_000;
+  if (height <= 1080) score += Math.max(0, height) * 1000;
+  else score -= (height - 1080) * 1000;
+  score += Math.min(100_000, Math.floor(bitrate / 100));
+  return score;
+}
+
+function scoreAudio(stream) {
+  const mime = streamMime(stream);
+  const codec = streamCodec(stream);
+  const bitrate = Number(stream?.bitrate || 0);
+  let score = bitrate;
+  if (mime.includes('audio/mp4') || String(stream?.format || stream?.container || '').toUpperCase() === 'M4A') score += 1_000_000;
+  if (codec.includes('mp4a') || codec.includes('aac')) score += 500_000;
+  return score;
+}
+
+function choosePipedStreams(payload) {
   const videos = (Array.isArray(payload?.videoStreams) ? payload.videoStreams : [])
     .filter(stream => validHttpUrl(stream?.url));
   const audios = (Array.isArray(payload?.audioStreams) ? payload.audioStreams : [])
@@ -134,6 +161,24 @@ function chooseStreams(payload) {
   if (muxed) return { video: muxed, audio: null, muxed: true };
 
   throw new Error('Piped response contained no usable media streams');
+}
+
+function chooseInvidiousStreams(payload) {
+  const adaptive = (Array.isArray(payload?.adaptiveFormats) ? payload.adaptiveFormats : [])
+    .filter(stream => validHttpUrl(stream?.url));
+  const videos = adaptive.filter(stream => streamMime(stream).startsWith('video/'));
+  const audios = adaptive.filter(stream => streamMime(stream).startsWith('audio/'));
+
+  const separateVideo = videos.sort((a, b) => scoreVideo(b) - scoreVideo(a))[0] || null;
+  const audio = audios.sort((a, b) => scoreAudio(b) - scoreAudio(a))[0] || null;
+  if (separateVideo && audio) return { video: separateVideo, audio, muxed: false };
+
+  const muxed = (Array.isArray(payload?.formatStreams) ? payload.formatStreams : [])
+    .filter(stream => validHttpUrl(stream?.url))
+    .sort((a, b) => scoreVideo(b) - scoreVideo(a))[0] || null;
+  if (muxed) return { video: muxed, audio: null, muxed: true };
+
+  throw new Error('Invidious response contained no usable proxied media streams');
 }
 
 function ffmpegWindow({ selection, start, duration, output }) {
@@ -168,7 +213,7 @@ function ffmpegWindow({ selection, start, duration, output }) {
   const result = spawnSync('ffmpeg', args, { stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`ffmpeg exited ${result.status}`);
-  if (!fs.existsSync(output) || fs.statSync(output).size < 100_000) throw new Error('Piped ffmpeg produced no usable MP4');
+  if (!fs.existsSync(output) || fs.statSync(output).size < 100_000) throw new Error('Proxy ffmpeg produced no usable MP4');
 }
 
 function probeDuration(file) {
@@ -180,36 +225,69 @@ function probeDuration(file) {
   return Number.isFinite(duration) ? duration : null;
 }
 
+function verifyOutput(request) {
+  const actual = probeDuration(request.output);
+  if (actual != null && actual < Math.max(5, request.duration - 2.5)) {
+    throw new Error(`output too short (${actual.toFixed(2)}s vs requested ${request.duration.toFixed(2)}s)`);
+  }
+  return actual;
+}
+
+async function tryPiped(request, errors) {
+  for (const instance of configuredInstances('PIPED_INSTANCES', DEFAULT_PIPED_INSTANCES)) {
+    try {
+      log(`Piped: trying ${instance} for ${request.videoId}`);
+      const payload = await getJson(`${instance}/streams/${encodeURIComponent(request.videoId)}`);
+      if (payload?.livestream) throw new Error('livestream source');
+      const selection = choosePipedStreams(payload);
+      log(`Piped: resolved ${selection.muxed ? 'muxed' : 'separate A/V'} proxied stream via ${instance}`);
+      ffmpegWindow({ selection, ...request });
+      const actual = verifyOutput(request);
+      log(`Piped: success -> ${request.output}${actual == null ? '' : ` (${actual.toFixed(2)}s)`}`);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`Piped ${instance}: ${message}`);
+      log(`Piped instance failed: ${instance} · ${message}`);
+      try { if (fs.existsSync(request.output)) fs.rmSync(request.output, { force: true }); } catch {}
+    }
+  }
+  return false;
+}
+
+async function tryInvidious(request, errors) {
+  for (const instance of configuredInstances('INVIDIOUS_INSTANCES', DEFAULT_INVIDIOUS_INSTANCES)) {
+    try {
+      log(`Invidious: trying ${instance} for ${request.videoId}`);
+      const payload = await getJson(`${instance}/api/v1/videos/${encodeURIComponent(request.videoId)}?local=true`);
+      if (payload?.liveNow) throw new Error('livestream source');
+      const selection = chooseInvidiousStreams(payload);
+      log(`Invidious: resolved ${selection.muxed ? 'muxed' : 'separate A/V'} proxied stream via ${instance}`);
+      ffmpegWindow({ selection, ...request });
+      const actual = verifyOutput(request);
+      log(`Invidious: success -> ${request.output}${actual == null ? '' : ` (${actual.toFixed(2)}s)`}`);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`Invidious ${instance}: ${message}`);
+      log(`Invidious instance failed: ${instance} · ${message}`);
+      try { if (fs.existsSync(request.output)) fs.rmSync(request.output, { force: true }); } catch {}
+    }
+  }
+  return false;
+}
+
 async function main() {
   const request = parseArgs(process.argv.slice(2));
   const errors = [];
 
-  for (const instance of instanceList()) {
-    try {
-      log(`trying ${instance} for ${request.videoId}`);
-      const payload = await getJson(`${instance}/streams/${encodeURIComponent(request.videoId)}`);
-      if (payload?.livestream) throw new Error('livestream sources are not supported by CLIPPER fallback');
-      const selection = chooseStreams(payload);
-      log(`resolved ${selection.muxed ? 'muxed' : 'separate A/V'} proxied stream via ${instance}`);
-      ffmpegWindow({ selection, ...request });
-      const actual = probeDuration(request.output);
-      if (actual != null && actual < Math.max(5, request.duration - 2.5)) {
-        throw new Error(`output too short (${actual.toFixed(2)}s vs requested ${request.duration.toFixed(2)}s)`);
-      }
-      log(`success -> ${request.output}${actual == null ? '' : ` (${actual.toFixed(2)}s)`}`);
-      return;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push(`${instance}: ${message}`);
-      log(`instance failed: ${instance} · ${message}`);
-      try { if (fs.existsSync(request.output)) fs.rmSync(request.output, { force: true }); } catch {}
-    }
-  }
+  if (await tryPiped(request, errors)) return;
+  if (await tryInvidious(request, errors)) return;
 
-  throw new Error(`all free Piped instances failed: ${errors.join(' | ').slice(-4000)}`);
+  throw new Error(`all free proxy instances failed: ${errors.join(' | ').slice(-5000)}`);
 }
 
 main().catch(error => {
-  console.error(`[clipper-piped] failed: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`[clipper-proxy] failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });
