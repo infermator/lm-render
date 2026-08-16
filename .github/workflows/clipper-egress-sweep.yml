@@ -1,0 +1,82 @@
+name: CLIPPER Free Egress Sweep
+
+on:
+  push:
+    paths:
+      - '.github/workflows/clipper-egress-sweep.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-slim
+          - ubuntu-22.04
+          - ubuntu-26.04
+          - ubuntu-26.04-arm
+          - macos-15-intel
+          - macos-26-intel
+          - macos-26
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Probe anonymous GTA V media
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner=${{ matrix.runner }}"
+          python -m pip install --disable-pip-version-check --no-input yt-dlp
+          URL='https://www.youtube.com/watch?v=IzdxE1kw2ho'
+          python -m yt_dlp --no-playlist --js-runtimes node --remote-components ejs:github \
+            --extractor-args 'youtube:player_client=android_vr,web_embedded,tv' \
+            -f 'bv*+ba/b' -g "$URL" > "$RUNNER_TEMP/urls.txt"
+          MEDIA_URL="$(grep -E '^https?://' "$RUNNER_TEMP/urls.txt" | head -n 1)"
+          test -n "$MEDIA_URL"
+          curl -fsSL --range 0-65535 -o "$RUNNER_TEMP/media.bin" "$MEDIA_URL"
+          bytes="$(wc -c < "$RUNNER_TEMP/media.bin" | tr -d ' ')"
+          test "$bytes" -gt 1024
+          echo "CLIPPER_EGRESS_SUCCESS runner=${{ matrix.runner }} bytes=$bytes"
+
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - windows-2022
+          - windows-2025
+          - windows-2025-vs2026
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Probe anonymous GTA V media
+        shell: pwsh
+        run: |
+          Write-Host "runner=${{ matrix.runner }}"
+          python -m pip install --disable-pip-version-check --no-input yt-dlp
+          $url = 'https://www.youtube.com/watch?v=IzdxE1kw2ho'
+          $urls = Join-Path $env:RUNNER_TEMP 'urls.txt'
+          python -m yt_dlp --no-playlist --js-runtimes node --remote-components ejs:github --extractor-args 'youtube:player_client=android_vr,web_embedded,tv' -f 'bv*+ba/b' -g $url | Set-Content -Path $urls
+          if ($LASTEXITCODE -ne 0) { throw "yt-dlp failed $LASTEXITCODE" }
+          $media = Get-Content $urls | Where-Object { $_ -match '^https?://' } | Select-Object -First 1
+          if (-not $media) { throw 'No anonymous media URL returned' }
+          $dest = Join-Path $env:RUNNER_TEMP 'media.bin'
+          Invoke-WebRequest -Uri $media -Headers @{ Range = 'bytes=0-65535' } -OutFile $dest
+          $bytes = (Get-Item $dest).Length
+          if ($bytes -lt 1024) { throw "Media fetch too small: $bytes" }
+          Write-Host "CLIPPER_EGRESS_SUCCESS runner=${{ matrix.runner }} bytes=$bytes"
