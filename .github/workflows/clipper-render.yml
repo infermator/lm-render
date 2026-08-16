@@ -20,7 +20,6 @@ permissions:
   contents: read
 
 concurrency:
-  # New group intentionally does not wait behind the old smoke-shared worker.
   group: clipper-render-production-v2
   cancel-in-progress: false
 
@@ -43,21 +42,37 @@ jobs:
           python-version: '3.12'
 
       - name: Install lightweight CLIPPER media tooling
-        timeout-minutes: 5
+        timeout-minutes: 7
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl
 
-          # Only source materialization is required before claim. Captions are
-          # optional and render.mjs installs faster-whisper AFTER it has claimed
-          # a captions-enabled row, so queued -> rendering is no longer blocked.
-          python -m pip install --disable-pip-version-check --no-input 'yt-dlp[default]'
+          # Source materialization first; heavy caption tooling remains lazy and
+          # is installed by render.mjs only after a row has actually been claimed.
+          python -m pip install --disable-pip-version-check --no-input \
+            'yt-dlp[default]' \
+            'bgutil-ytdlp-pot-provider==1.3.1'
 
-          # GitHub-hosted runner IPs are frequently challenged by YouTube.
-          # Route every CLIPPER yt-dlp invocation through our wrapper. The
-          # wrapper still runs yt-dlp anonymously first, then one alternate
-          # official client, and can consume optional cookies/proxy secrets.
+          # Current yt-dlp guidance recommends a PO-token provider for mweb when
+          # YouTube applies BotGuard/Proof-of-Origin enforcement to datacenter IPs.
+          # Run the provider locally so no third-party API or user account is
+          # required for the normal path.
+          docker run --name bgutil-provider -d --init -p 4416:4416 \
+            brainicism/bgutil-ytdlp-pot-provider:1.3.1
+
+          for i in $(seq 1 12); do
+            if curl -fsS http://127.0.0.1:4416/ >/dev/null 2>&1; then
+              echo '[clipper-source] bgutil PO-token provider ready'
+              break
+            fi
+            if [ "$i" = '12' ]; then
+              echo '[clipper-source] bgutil provider did not report ready; wrapper will continue with other fallbacks'
+            fi
+            sleep 1
+          done
+
+          # Route every CLIPPER yt-dlp invocation through the hardened wrapper.
           sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
 
           yt-dlp --version || true
@@ -71,9 +86,9 @@ jobs:
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SHOTLEE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SHOTLEE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
-          # Optional. Empty/nonexistent secrets are harmless; when configured,
-          # they let source materialization survive YouTube bot challenges on
-          # shared GitHub runner egress without exposing credentials in logs.
+          CLIPPER_BGUTIL_ENABLED: '1'
+          BGUTIL_BASE_URL: 'http://127.0.0.1:4416'
+          # Optional last-mile fallbacks. Empty/nonexistent secrets are harmless.
           YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
           YOUTUBE_PROXY_URL: ${{ secrets.YOUTUBE_PROXY_URL }}
           RENDER_ID: ${{ inputs.render_id }}
