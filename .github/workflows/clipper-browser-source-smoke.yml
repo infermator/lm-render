@@ -11,7 +11,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 5
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -24,6 +24,7 @@ jobs:
           npm install --no-audit --no-fund playwright >/dev/null
           npx playwright install --with-deps chromium >/dev/null
       - name: Test anonymous YouTube playback
+        timeout-minutes: 2
         shell: bash
         run: |
           set -euo pipefail
@@ -42,43 +43,79 @@ jobs:
             viewport: { width: 1280, height: 720 },
           });
           const page = await context.newPage();
-          await page.goto('https://www.youtube.com/watch?v=IzdxE1kw2ho&t=607s', { waitUntil: 'domcontentloaded', timeout: 60000 });
-          await page.waitForTimeout(6000);
+          page.setDefaultTimeout(3000);
 
-          // Consent screens are not logins; accept if YouTube presents one.
-          for (const label of ['Accept all', 'Reject all', 'I agree']) {
-            const button = page.getByRole('button', { name: label }).first();
-            if (await button.isVisible().catch(() => false)) {
-              await button.click().catch(() => {});
-              await page.waitForTimeout(2000);
-              break;
+          try {
+            await page.goto('https://www.youtube.com/watch?v=IzdxE1kw2ho&t=607s', { waitUntil: 'domcontentloaded', timeout: 30000 });
+            console.log(`loaded url=${page.url()} title=${JSON.stringify(await page.title().catch(() => ''))}`);
+            await page.waitForTimeout(5000);
+
+            for (const label of ['Accept all', 'Reject all', 'I agree']) {
+              const button = page.getByRole('button', { name: label }).first();
+              if (await button.isVisible({ timeout: 1000 }).catch(() => false)) {
+                console.log(`consent=${label}`);
+                await button.click({ timeout: 1000 }).catch(() => {});
+                await page.waitForTimeout(1500);
+                break;
+              }
             }
-          }
 
-          const result = await page.evaluate(async () => {
-            const text = document.body?.innerText || '';
-            const video = document.querySelector('video');
-            if (!video) return { ok: false, reason: 'no_video_element', bot: /confirm you.?re not a bot/i.test(text) };
-            try {
+            const initial = await page.evaluate(() => {
+              const text = document.body?.innerText || '';
+              const video = document.querySelector('video');
+              const player = document.querySelector('#movie_player');
+              return {
+                hasVideo: Boolean(video),
+                currentTime: video?.currentTime ?? null,
+                readyState: video?.readyState ?? null,
+                paused: video?.paused ?? null,
+                duration: Number.isFinite(video?.duration) ? video.duration : null,
+                videoWidth: video?.videoWidth ?? null,
+                videoHeight: video?.videoHeight ?? null,
+                bot: /confirm you.?re not a bot/i.test(text),
+                signIn: /sign in/i.test(text),
+                unavailable: /video unavailable|this video is unavailable/i.test(text),
+                playerError: player?.querySelector('.ytp-error')?.textContent?.trim() || null,
+                bodySample: text.slice(0, 900).replace(/\s+/g, ' '),
+              };
+            });
+            console.log(`initial=${JSON.stringify(initial)}`);
+
+            await page.evaluate(() => {
+              const video = document.querySelector('video');
+              if (!video) return;
               video.muted = true;
-              if (Number.isFinite(video.duration) && video.duration > 608) video.currentTime = 607;
-              await video.play();
-            } catch {}
-            await new Promise(r => setTimeout(r, 6000));
-            return {
-              ok: video.readyState >= 2 && !video.paused && video.currentTime > 607.5,
-              currentTime: video.currentTime,
-              readyState: video.readyState,
-              paused: video.paused,
-              duration: video.duration,
-              videoWidth: video.videoWidth,
-              videoHeight: video.videoHeight,
-              bot: /confirm you.?re not a bot/i.test(text),
-              unavailable: /video unavailable|this video is unavailable/i.test(text),
-            };
-          });
-          console.log(JSON.stringify(result));
-          await browser.close();
-          if (!result.ok) process.exit(1);
+              try { video.currentTime = 607; } catch {}
+              Promise.resolve(video.play()).catch(() => {});
+            });
+            await page.waitForTimeout(8000);
+
+            const result = await page.evaluate(() => {
+              const text = document.body?.innerText || '';
+              const video = document.querySelector('video');
+              const player = document.querySelector('#movie_player');
+              return {
+                ok: Boolean(video && video.readyState >= 2 && video.currentTime > 607.5),
+                hasVideo: Boolean(video),
+                currentTime: video?.currentTime ?? null,
+                readyState: video?.readyState ?? null,
+                paused: video?.paused ?? null,
+                duration: Number.isFinite(video?.duration) ? video.duration : null,
+                videoWidth: video?.videoWidth ?? null,
+                videoHeight: video?.videoHeight ?? null,
+                bot: /confirm you.?re not a bot/i.test(text),
+                signIn: /sign in/i.test(text),
+                unavailable: /video unavailable|this video is unavailable/i.test(text),
+                playerError: player?.querySelector('.ytp-error')?.textContent?.trim() || null,
+              };
+            });
+            console.log(`result=${JSON.stringify(result)}`);
+            if (!result.ok) process.exitCode = 1;
+          } catch (error) {
+            console.error(`browser-smoke-error=${error instanceof Error ? error.message : String(error)}`);
+            process.exitCode = 1;
+          } finally {
+            await browser.close().catch(() => {});
+          }
           NODE
-          node smoke.mjs
+          timeout 90s node smoke.mjs
