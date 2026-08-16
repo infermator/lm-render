@@ -1,4 +1,4 @@
-name: CLIPPER Piped Source Smoke
+name: CLIPPER Free Proxy Source Smoke
 
 on:
   push:
@@ -19,13 +19,13 @@ jobs:
           node-version: '24'
       - name: Install ffmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
-      - name: Fetch exact GTA source window via free Piped proxy
+      - name: Fetch exact GTA source window via free Piped or Invidious proxy
         run: |
           set -euo pipefail
-          mkdir -p /tmp/clipper-piped-smoke
+          mkdir -p /tmp/clipper-proxy-smoke
           node scripts/clipper/piped-fetch.mjs \
             --download-sections '*607-612' \
-            -o '/tmp/clipper-piped-smoke/source.%(ext)s' \
+            -o '/tmp/clipper-proxy-smoke/source.%(ext)s' \
             'https://www.youtube.com/watch?v=IzdxE1kw2ho'
-          test -s /tmp/clipper-piped-smoke/source.mp4
-          ffprobe -v error -show_entries format=duration,size -of default=nw=1 /tmp/clipper-piped-smoke/source.mp4
+          test -s /tmp/clipper-proxy-smoke/source.mp4
+          ffprobe -v error -show_entries format=duration,size -of default=nw=1 /tmp/clipper-proxy-smoke/source.mp4
