@@ -1,0 +1,30 @@
+name: CLIPPER Supabase Edge Egress Smoke
+
+on:
+  push:
+    paths:
+      - '.github/workflows/clipper-supabase-egress-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    steps:
+      - name: Probe Supabase Edge YouTube access
+        shell: bash
+        run: |
+          set -euo pipefail
+          HTTP_CODE="$(curl -sS -o /tmp/clipper-supabase-probe.json -w '%{http_code}' \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            'https://fyflgsyxlfoygsjrlyyy.supabase.co/functions/v1/clipper-youtube-egress-probe')"
+          node - <<'NODE'
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('/tmp/clipper-supabase-probe.json', 'utf8'));
+          console.log(JSON.stringify(data, null, 2));
+          if (!data.ok) process.exit(1);
+          NODE
+          test "$HTTP_CODE" = '200'
