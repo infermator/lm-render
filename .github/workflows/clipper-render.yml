@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl wireguard-tools
 
           # Source materialization first; heavy caption tooling remains lazy and
           # is installed by render.mjs only after a row has actually been claimed.
@@ -81,6 +81,27 @@ jobs:
           node --version
           node --check scripts/clipper/render.mjs
           ffmpeg -version | head -1
+
+      - name: Enable residential WireGuard egress
+        env:
+          CLIPPER_WIREGUARD_CONFIG_B64: ${{ secrets.CLIPPER_WIREGUARD_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLIPPER_WIREGUARD_CONFIG_B64:-}" ]; then
+            echo '[clipper-egress] CLIPPER_WIREGUARD_CONFIG_B64 not configured; using hosted runner egress'
+            exit 0
+          fi
+
+          echo '[clipper-egress] enabling configured WireGuard egress'
+          printf '%s' "$CLIPPER_WIREGUARD_CONFIG_B64" | base64 --decode | sudo tee /etc/wireguard/clipper.conf >/dev/null
+          sudo chmod 600 /etc/wireguard/clipper.conf
+          sudo wg-quick up clipper >/dev/null
+
+          # Do not print endpoint, keys, or public IP into Actions logs. Verify only
+          # that the interface exists and outbound HTTPS still works through it.
+          sudo wg show clipper >/dev/null
+          curl -fsS --max-time 15 https://www.youtube.com/generate_204 >/dev/null
+          echo '[clipper-egress] WireGuard tunnel is up and outbound YouTube HTTPS is reachable'
 
       - name: Render CLIPPER queue
         env:
@@ -135,3 +156,13 @@ jobs:
 
           echo "[clipper-worker] drain pass limit reached; recorded failures=$failures"
           exit 0
+
+      - name: Disable residential WireGuard egress
+        if: always()
+        env:
+          CLIPPER_WIREGUARD_CONFIG_B64: ${{ secrets.CLIPPER_WIREGUARD_CONFIG_B64 }}
+        run: |
+          if [ -n "${CLIPPER_WIREGUARD_CONFIG_B64:-}" ] && sudo wg show clipper >/dev/null 2>&1; then
+            sudo wg-quick down clipper >/dev/null || true
+            echo '[clipper-egress] WireGuard tunnel stopped'
+          fi
