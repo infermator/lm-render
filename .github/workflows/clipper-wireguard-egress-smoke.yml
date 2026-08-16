@@ -1,0 +1,61 @@
+name: CLIPPER WireGuard Egress Smoke
+
+on:
+  push:
+    paths:
+      - '.github/clipper-wireguard-smoke-kick'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install probe tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends wireguard-tools curl ffmpeg
+          python -m pip install --disable-pip-version-check --no-input 'yt-dlp[default]'
+
+      - name: Probe GTA V source through configured WireGuard egress
+        env:
+          CLIPPER_WIREGUARD_CONFIG_B64: ${{ secrets.CLIPPER_WIREGUARD_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "${CLIPPER_WIREGUARD_CONFIG_B64:-}"
+
+          printf '%s' "$CLIPPER_WIREGUARD_CONFIG_B64" | base64 --decode | sudo tee /etc/wireguard/clipper.conf >/dev/null
+          sudo chmod 600 /etc/wireguard/clipper.conf
+          sudo wg-quick up clipper >/dev/null
+          trap 'sudo wg-quick down clipper >/dev/null 2>&1 || true' EXIT
+
+          sudo wg show clipper >/dev/null
+          curl -fsS --max-time 15 https://www.youtube.com/generate_204 >/dev/null
+
+          mkdir -p /tmp/clipper-wireguard-smoke
+          yt-dlp \
+            --no-playlist \
+            --js-runtimes node \
+            --remote-components ejs:github \
+            --download-sections '*607-612' \
+            --force-keyframes-at-cuts \
+            --merge-output-format mp4 \
+            -f 'bv*+ba/b' \
+            -o '/tmp/clipper-wireguard-smoke/source.%(ext)s' \
+            'https://www.youtube.com/watch?v=IzdxE1kw2ho'
+
+          SOURCE="$(find /tmp/clipper-wireguard-smoke -maxdepth 1 -type f -name 'source.*' -size +100k | head -1)"
+          test -n "$SOURCE"
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of default=nw=1 "$SOURCE"
+          echo '[clipper-wireguard-smoke] PASS: real YouTube media materialized through configured residential tunnel'
