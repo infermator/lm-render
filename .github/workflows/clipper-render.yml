@@ -50,29 +50,7 @@ jobs:
 
           # Source materialization first; heavy caption tooling remains lazy and
           # is installed by render.mjs only after a row has actually been claimed.
-          python -m pip install --disable-pip-version-check --no-input \
-            'yt-dlp[default]' \
-            'bgutil-ytdlp-pot-provider==1.3.1'
-
-          # Current yt-dlp guidance recommends a PO-token provider for mweb when
-          # YouTube applies BotGuard/Proof-of-Origin enforcement to datacenter IPs.
-          # Run the provider locally so no third-party API or user account is
-          # required for the normal path.
-          docker run --name bgutil-provider -d --init -p 4416:4416 \
-            brainicism/bgutil-ytdlp-pot-provider:1.3.1
-
-          # bgutil exposes /ping as its health endpoint. Using / here returns a
-          # non-success response even when the token provider is healthy.
-          for i in $(seq 1 20); do
-            if curl -fsS http://127.0.0.1:4416/ping >/dev/null 2>&1; then
-              echo '[clipper-source] bgutil PO-token provider ready'
-              break
-            fi
-            if [ "$i" = '20' ]; then
-              echo '[clipper-source] bgutil provider did not become ready; wrapper will continue with other fallbacks'
-            fi
-            sleep 1
-          done
+          python -m pip install --disable-pip-version-check --no-input 'yt-dlp[default]'
 
           # Route every CLIPPER yt-dlp invocation through the hardened wrapper.
           sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
@@ -138,8 +116,6 @@ jobs:
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SHOTLEE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SHOTLEE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
-          CLIPPER_BGUTIL_ENABLED: '1'
-          BGUTIL_BASE_URL: 'http://127.0.0.1:4416'
           # Optional last-mile fallback. An empty/nonexistent secret is harmless.
           # YOUTUBE_PROXY_URL is exported by the WARP step above via GITHUB_ENV;
           # declaring it here as well would shadow that value.

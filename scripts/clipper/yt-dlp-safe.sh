@@ -80,21 +80,8 @@ if run_attempt alternate-client --extractor-args 'youtube:player_client=web_safa
   exit 0
 fi
 
-# 3) Current yt-dlp guidance recommends an mweb PO-token provider when YouTube
-# enforces BotGuard/Proof-of-Origin. The worker starts bgutil locally, so no
-# account session is required for this path.
-if [ "${CLIPPER_BGUTIL_ENABLED:-0}" = '1' ]; then
-  BGUTIL_BASE_URL="${BGUTIL_BASE_URL:-http://127.0.0.1:4416}"
-  if run_attempt po-token-mweb \
-    --extractor-args 'youtube:player_client=mweb' \
-    --extractor-args "youtubepot-bgutilhttp:base_url=${BGUTIL_BASE_URL}" \
-    "$@"; then
-    exit 0
-  fi
-fi
-
 if [ "${CLIPPER_YOUTUBE_BOT_BLOCKED:-0}" = '1' ]; then
-  echo '[clipper-source] youtube_bot_blocked: YouTube rejected GitHub runner egress even after official-client and PO-token fallbacks. Configure YOUTUBE_COOKIES_B64 or YOUTUBE_PROXY_URL, then retry.' >&2
+  echo '[clipper-source] youtube_bot_blocked: YouTube rejected this egress even after the official-client fallback. The worker normally materializes sources through Cloudflare WARP; check that the WARP step reported active egress for this run.' >&2
   exit 42
 fi
 
