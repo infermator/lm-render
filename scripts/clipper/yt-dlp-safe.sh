@@ -35,6 +35,17 @@ fi
 
 if [ -n "${YOUTUBE_PROXY_URL:-}" ]; then
   EXTRA+=(--proxy "$YOUTUBE_PROXY_URL")
+  # --download-sections hands the byte-range fetch to ffmpeg, and the
+  # googlevideo URL is bound to the address that resolved the player response.
+  # ffmpeg cannot speak SOCKS but does honour http_proxy, so export the proxy
+  # here: only yt-dlp and the ffmpeg it spawns inherit it, while render.mjs
+  # keeps talking to Reaction Lab and Supabase over direct egress.
+  case "$YOUTUBE_PROXY_URL" in
+    http://*|https://*)
+      export http_proxy="$YOUTUBE_PROXY_URL"
+      export https_proxy="$YOUTUBE_PROXY_URL"
+      ;;
+  esac
   echo '[clipper-source] YouTube proxy enabled'
 fi
 
