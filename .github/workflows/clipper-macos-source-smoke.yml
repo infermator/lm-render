@@ -1,0 +1,34 @@
+name: CLIPPER macOS Anonymous Source Smoke
+
+on:
+  push:
+    paths:
+      - '.github/workflows/clipper-macos-source-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install yt-dlp
+        run: python -m pip install --disable-pip-version-check --no-input 'yt-dlp[default]'
+      - name: Resolve and fetch bytes anonymously from exact GTA V source
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://www.youtube.com/watch?v=IzdxE1kw2ho'
+          python -m yt_dlp --no-playlist --js-runtimes node --remote-components ejs:github \
+            -f 'bv*+ba/b' -g "$URL" > /tmp/clipper-urls.txt
+          test -s /tmp/clipper-urls.txt
+          MEDIA_URL="$(head -n 1 /tmp/clipper-urls.txt)"
+          case "$MEDIA_URL" in http://*|https://*) ;; *) echo 'No media URL returned'; exit 1 ;; esac
+          curl -fsSL --range 0-65535 -o /tmp/clipper-head.bin "$MEDIA_URL"
+          test "$(wc -c < /tmp/clipper-head.bin | tr -d ' ')" -gt 1024
+          echo "anonymous media fetch OK ($(wc -c < /tmp/clipper-head.bin | tr -d ' ') bytes)"
