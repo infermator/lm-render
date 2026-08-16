@@ -55,3 +55,5 @@ jobs:
             test "$AUDIO_BYTES" -gt 1024
             echo "proxied audio fetch OK bytes=$AUDIO_BYTES"
           fi
+
+          echo 'Vercel resolver smoke completed after production deployment.'
