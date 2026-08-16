@@ -103,12 +103,17 @@ jobs:
             fi
           }
 
+          # A manually dispatched exact render should still make the Action red
+          # when that exact render fails.
           if [ -n "${RENDER_ID:-}" ]; then
             run_one
             exit $?
           fi
 
-          # Scheduled/kick workers drain a few rows because GitHub cron may lag.
+          # Scheduled/kick workers are queue drainers, not one-row jobs. A render
+          # failure is persisted by /api/clipper/complete, so continue to the next
+          # row instead of leaving unrelated rows stuck in render_queued forever.
+          failures=0
           for pass in $(seq 1 5); do
             echo "[clipper-worker] queue pass $pass"
             if run_one; then
@@ -117,10 +122,14 @@ jobs:
               code=$?
             fi
             if [ "$code" = "3" ]; then
-              echo "[clipper-worker] queue empty"
+              echo "[clipper-worker] queue empty; recorded failures=$failures"
               exit 0
             fi
             if [ "$code" != "0" ]; then
-              exit "$code"
+              failures=$((failures + 1))
+              echo "[clipper-worker] render failed with code $code; failure is recorded, continuing queue"
             fi
           done
+
+          echo "[clipper-worker] drain pass limit reached; recorded failures=$failures"
+          exit 0
