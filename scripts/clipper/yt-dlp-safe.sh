@@ -3,8 +3,9 @@ set -uo pipefail
 
 # Wrapper for yt-dlp on shared GitHub-hosted runners. YouTube frequently
 # challenges those egress IPs with HTTP 429 / bot checks. Keep the normal
-# anonymous path, but support authenticated cookies and/or a stable proxy
-# without ever printing either secret.
+# anonymous path, support a small set of official-client fallbacks, then use a
+# local BotGuard PO-token provider when available. Cookies/proxy remain optional
+# last-mile overrides and are never printed.
 
 COOKIE_FILE=""
 cleanup() {
@@ -57,22 +58,34 @@ run_attempt() {
   return "$code"
 }
 
-# First preserve the exact renderer request.
+# 1) Preserve the exact renderer request first.
 if run_attempt default "$@"; then
   exit 0
 fi
 
-# A different official player client can occasionally bypass a broken web
-# response. It is intentionally only one retry; hammering a challenged GitHub
-# IP makes the 429 situation worse.
+# 2) Cheap official-client fallback. Keep this to one attempt so challenged
+# shared egress is not hammered with retries.
 if run_attempt alternate-client --extractor-args 'youtube:player_client=web_safari,android_vr' "$@"; then
   exit 0
 fi
 
+# 3) Current yt-dlp guidance recommends an mweb PO-token provider when YouTube
+# enforces BotGuard/Proof-of-Origin. The worker starts bgutil locally, so no
+# account session is required for this path.
+if [ "${CLIPPER_BGUTIL_ENABLED:-0}" = '1' ]; then
+  BGUTIL_BASE_URL="${BGUTIL_BASE_URL:-http://127.0.0.1:4416}"
+  if run_attempt po-token-mweb \
+    --extractor-args 'youtube:player_client=mweb' \
+    --extractor-args "youtubepot-bgutilhttp:base_url=${BGUTIL_BASE_URL}" \
+    "$@"; then
+    exit 0
+  fi
+fi
+
 if [ "${CLIPPER_YOUTUBE_BOT_BLOCKED:-0}" = '1' ]; then
-  echo '[clipper-source] youtube_bot_blocked: GitHub runner egress was challenged by YouTube. Configure repository secret YOUTUBE_COOKIES_B64 (Netscape cookies.txt encoded as base64) or YOUTUBE_PROXY_URL, then retry the render.' >&2
+  echo '[clipper-source] youtube_bot_blocked: YouTube rejected GitHub runner egress even after official-client and PO-token fallbacks. Configure YOUTUBE_COOKIES_B64 or YOUTUBE_PROXY_URL, then retry.' >&2
   exit 42
 fi
 
-echo '[clipper-source] youtube_source_download_failed: yt-dlp failed after the safe retry.' >&2
+echo '[clipper-source] youtube_source_download_failed: yt-dlp failed after all safe source attempts.' >&2
 exit 1
