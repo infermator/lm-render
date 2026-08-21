@@ -1,0 +1,381 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Three-day compilation stitch workflow
+#
+# Takes a list of already-uploaded Reaction Lab Shorts, normalises them to a
+# uniform codec/resolution, concatenates them in publication order, uploads
+# the result to Shotlee (reaction-media bucket), and reports the stitch to
+# the Reaction Lab control plane.  The orchestrator on the persistent
+# Windows machine dispatches this workflow, polls for its completion, then
+# downloads the artifact and publishes the compilation to YouTube.
+#
+# This workflow calls exactly two Reaction Lab endpoints:
+#   POST /api/reaction/compilation/upload-url
+#   POST /api/reaction/compilation/stitch-report
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Three-day compilation
+
+# ── Trap 1 ──────────────────────────────────────────────────────────────────
+# The orchestrator locates this run by matching display_title against the
+# literal string "Three-day compilation " + request_id.  Any deviation means
+# the run is never found and the lane retries forever.
+run-name: Three-day compilation ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: 'Compilation request identifier (comp-*)'
+        required: true
+        type: string
+      source_urls_json:
+        description: 'JSON array of immutable Shotlee render URLs'
+        required: true
+        type: string
+      source_ids_json:
+        description: 'JSON array of internal video ids'
+        required: true
+        type: string
+      source_render_sha256_json:
+        description: 'JSON array of expected SHA-256 hashes (lowercase hex)'
+        required: true
+        type: string
+      source_publication_ids_json:
+        description: 'JSON array of MAM publication row ids'
+        required: true
+        type: string
+      source_job_ids_json:
+        description: 'JSON array of MAM job ids'
+        required: true
+        type: string
+      window_start:
+        description: 'ISO-8601 window start (pass through verbatim)'
+        required: true
+        type: string
+      window_end:
+        description: 'ISO-8601 window end (pass through verbatim)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: three-day-compilation
+  cancel-in-progress: false
+
+jobs:
+  stitch:
+    runs-on: ubuntu-latest
+    # A window can legitimately contain 20+ Shorts; give ffmpeg plenty of room.
+    timeout-minutes: 120
+
+    steps:
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      - name: Stitch compilation
+        env:
+          INPUT_REQUEST_ID:                  ${{ inputs.request_id }}
+          INPUT_SOURCE_URLS_JSON:            ${{ inputs.source_urls_json }}
+          INPUT_SOURCE_IDS_JSON:             ${{ inputs.source_ids_json }}
+          INPUT_SOURCE_RENDER_SHA256_JSON:    ${{ inputs.source_render_sha256_json }}
+          INPUT_SOURCE_PUBLICATION_IDS_JSON:  ${{ inputs.source_publication_ids_json }}
+          INPUT_SOURCE_JOB_IDS_JSON:         ${{ inputs.source_job_ids_json }}
+          INPUT_WINDOW_START:                ${{ inputs.window_start }}
+          INPUT_WINDOW_END:                  ${{ inputs.window_end }}
+          REACTION_PIPELINE_SECRET:          ${{ secrets.REACTION_PIPELINE_SECRET }}
+          API_BASE:                          'https://reaction-lab-coral.vercel.app'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # ────────────────────────────────────────────────────────────────────
+          # Helper: SHA-256 of a file (lowercase hex)
+          # ────────────────────────────────────────────────────────────────────
+          file_sha256() {
+            sha256sum "$1" | awk '{print $1}'
+          }
+
+          # ────────────────────────────────────────────────────────────────────
+          # Helper: exact byte size of a file
+          # ────────────────────────────────────────────────────────────────────
+          file_bytes() {
+            stat --format='%s' "$1"
+          }
+
+          # ────────────────────────────────────────────────────────────────────
+          # Helper: ffprobe duration in seconds (decimal)
+          # ────────────────────────────────────────────────────────────────────
+          file_duration() {
+            ffprobe -v error -show_entries format=duration \
+              -of default=noprint_wrappers=1:nokey=1 "$1"
+          }
+
+          # ────────────────────────────────────────────────────────────────────
+          # Helper: POST JSON to Reaction Lab API
+          # ────────────────────────────────────────────────────────────────────
+          api_post() {
+            local endpoint="$1"
+            local body="$2"
+            local response_file="$3"
+            local http_code
+            http_code=$(curl -sS -o "$response_file" -w '%{http_code}' \
+              -X POST "${API_BASE}${endpoint}" \
+              -H "Authorization: Bearer ${REACTION_PIPELINE_SECRET}" \
+              -H 'Content-Type: application/json' \
+              --data "$body")
+            echo "$http_code"
+          }
+
+          # ════════════════════════════════════════════════════════════════════
+          # 01 — Validate inputs
+          # ════════════════════════════════════════════════════════════════════
+          echo "::group::01 Validate inputs"
+
+          REQUEST_ID="${INPUT_REQUEST_ID}"
+          if [[ ! "$REQUEST_ID" =~ ^comp-[A-Za-z0-9._-]{8,120}$ ]]; then
+            echo "::error::request_id '${REQUEST_ID}' does not match expected pattern"
+            exit 1
+          fi
+
+          # Parse JSON arrays into bash arrays via jq
+          mapfile -t SOURCE_URLS   < <(echo "$INPUT_SOURCE_URLS_JSON"            | jq -r '.[]')
+          mapfile -t SOURCE_IDS    < <(echo "$INPUT_SOURCE_IDS_JSON"             | jq -r '.[]')
+          mapfile -t SOURCE_SHA    < <(echo "$INPUT_SOURCE_RENDER_SHA256_JSON"    | jq -r '.[]')
+          mapfile -t SOURCE_PUBS   < <(echo "$INPUT_SOURCE_PUBLICATION_IDS_JSON"  | jq -r '.[]')
+          mapfile -t SOURCE_JOBS   < <(echo "$INPUT_SOURCE_JOB_IDS_JSON"         | jq -r '.[]')
+
+          COUNT=${#SOURCE_URLS[@]}
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::source_urls_json is empty"
+            exit 1
+          fi
+          if [ "${#SOURCE_IDS[@]}" -ne "$COUNT" ] || \
+             [ "${#SOURCE_SHA[@]}" -ne "$COUNT" ] || \
+             [ "${#SOURCE_PUBS[@]}" -ne "$COUNT" ] || \
+             [ "${#SOURCE_JOBS[@]}" -ne "$COUNT" ]; then
+            echo "::error::All five source arrays must have identical length (got urls=$COUNT ids=${#SOURCE_IDS[@]} sha=${#SOURCE_SHA[@]} pubs=${#SOURCE_PUBS[@]} jobs=${#SOURCE_JOBS[@]})"
+            exit 1
+          fi
+
+          WINDOW_START="${INPUT_WINDOW_START}"
+          WINDOW_END="${INPUT_WINDOW_END}"
+          if [ -z "$WINDOW_START" ] || [ -z "$WINDOW_END" ]; then
+            echo "::error::window_start and window_end are required"
+            exit 1
+          fi
+
+          echo "request_id:   $REQUEST_ID"
+          echo "source_count: $COUNT"
+          echo "window:       $WINDOW_START → $WINDOW_END"
+          echo "::endgroup::"
+
+          # ════════════════════════════════════════════════════════════════════
+          # 02 — Download and verify every source
+          # ════════════════════════════════════════════════════════════════════
+          echo "::group::02 Download and verify sources"
+          mkdir -p sources
+
+          for i in $(seq 0 $((COUNT - 1))); do
+            url="${SOURCE_URLS[$i]}"
+            expected_sha="${SOURCE_SHA[$i]}"
+            dest="sources/source_${i}.mp4"
+
+            echo "[$((i+1))/$COUNT] Downloading: $url"
+            curl -fSL --retry 3 --retry-delay 5 -o "$dest" "$url"
+
+            actual_sha=$(file_sha256 "$dest")
+            if [ "$actual_sha" != "$expected_sha" ]; then
+              echo "::error::SHA-256 mismatch for source $i: expected=$expected_sha actual=$actual_sha"
+              exit 1
+            fi
+            echo "  ✓ SHA-256 verified: $actual_sha"
+          done
+          echo "::endgroup::"
+
+          # ════════════════════════════════════════════════════════════════════
+          # 03 — Normalise each clip
+          # ════════════════════════════════════════════════════════════════════
+          echo "::group::03 Normalise clips"
+          mkdir -p normalised
+
+          for i in $(seq 0 $((COUNT - 1))); do
+            src="sources/source_${i}.mp4"
+            dst="normalised/clip_${i}.ts"
+
+            echo "[$((i+1))/$COUNT] Normalising: $src → $dst"
+            ffmpeg -y -i "$src" \
+              -vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1" \
+              -r 30 \
+              -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p \
+              -c:a aac -ar 44100 -ac 2 -b:a 128k \
+              -f mpegts \
+              "$dst" 2>&1 | tail -3
+            echo "  ✓ Normalised"
+          done
+          echo "::endgroup::"
+
+          # ════════════════════════════════════════════════════════════════════
+          # 04 — Concatenate in array order (oldest → newest)
+          # ════════════════════════════════════════════════════════════════════
+          echo "::group::04 Concatenate"
+          mkdir -p out
+
+          # Build the concat input list
+          CONCAT_INPUT=""
+          for i in $(seq 0 $((COUNT - 1))); do
+            if [ -n "$CONCAT_INPUT" ]; then
+              CONCAT_INPUT="${CONCAT_INPUT}|"
+            fi
+            CONCAT_INPUT="${CONCAT_INPUT}normalised/clip_${i}.ts"
+          done
+
+          ffmpeg -y -i "concat:${CONCAT_INPUT}" \
+            -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p \
+            -c:a aac -ar 44100 -ac 2 -b:a 128k \
+            -movflags +faststart \
+            "out/compilation.mp4" 2>&1 | tail -5
+
+          echo "  ✓ Compilation created"
+          echo "::endgroup::"
+
+          # ════════════════════════════════════════════════════════════════════
+          # 05 — Measure the result
+          # ════════════════════════════════════════════════════════════════════
+          echo "::group::05 Measure result"
+
+          FINAL_SHA256=$(file_sha256 "out/compilation.mp4")
+          FINAL_BYTES=$(file_bytes "out/compilation.mp4")
+          FINAL_DURATION=$(file_duration "out/compilation.mp4")
+
+          echo "sha256:     $FINAL_SHA256"
+          echo "bytes:      $FINAL_BYTES"
+          echo "duration_s: $FINAL_DURATION"
+
+          if [ "$FINAL_BYTES" -eq 0 ]; then
+            echo "::error::Compilation is empty (0 bytes)"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          # ════════════════════════════════════════════════════════════════════
+          # 06 — Upload to Shotlee
+          # ════════════════════════════════════════════════════════════════════
+          echo "::group::06 Upload to Shotlee"
+
+          # 06a — Get signed upload URL
+          UPLOAD_BODY=$(jq -nc --arg rid "$REQUEST_ID" '{"request_id": $rid}')
+          HTTP_CODE=$(api_post "/api/reaction/compilation/upload-url" "$UPLOAD_BODY" "/tmp/upload-url-response.json")
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::upload-url failed with HTTP $HTTP_CODE"
+            cat /tmp/upload-url-response.json
+            exit 1
+          fi
+
+          SIGNED_URL=$(jq -r '.signed_url' /tmp/upload-url-response.json)
+          TOKEN=$(jq -r '.token' /tmp/upload-url-response.json)
+
+          if [ -z "$SIGNED_URL" ] || [ "$SIGNED_URL" = "null" ]; then
+            echo "::error::No signed_url in upload-url response"
+            cat /tmp/upload-url-response.json
+            exit 1
+          fi
+
+          echo "Signed URL obtained (expires in $(jq -r '.expires_in_seconds' /tmp/upload-url-response.json)s)"
+          echo "Storage path: $(jq -r '.path' /tmp/upload-url-response.json)"
+
+          # 06b — PUT the MP4 to the signed URL
+          UPLOAD_HTTP=$(curl -sS -o /tmp/upload-put-response.txt -w '%{http_code}' \
+            -X PUT "$SIGNED_URL" \
+            -H "Content-Type: video/mp4" \
+            --data-binary @out/compilation.mp4)
+
+          if [ "$UPLOAD_HTTP" -lt 200 ] || [ "$UPLOAD_HTTP" -ge 300 ]; then
+            echo "::error::PUT to signed URL failed with HTTP $UPLOAD_HTTP"
+            cat /tmp/upload-put-response.txt
+            exit 1
+          fi
+          echo "  ✓ Upload complete (HTTP $UPLOAD_HTTP)"
+          echo "::endgroup::"
+
+          # ════════════════════════════════════════════════════════════════════
+          # 07 — Report the stitch
+          # ════════════════════════════════════════════════════════════════════
+          echo "::group::07 Report stitch"
+
+          # Build the stitch report payload
+          # Arrays are echoed back from dispatch inputs — same order, untouched
+          STITCH_BODY=$(jq -nc \
+            --arg rid "$REQUEST_ID" \
+            --arg ws "$WINDOW_START" \
+            --arg we "$WINDOW_END" \
+            --arg sha "$FINAL_SHA256" \
+            --argjson dur "$FINAL_DURATION" \
+            --argjson bytes "$FINAL_BYTES" \
+            --argjson sids "$INPUT_SOURCE_IDS_JSON" \
+            --argjson spids "$INPUT_SOURCE_PUBLICATION_IDS_JSON" \
+            --argjson sjids "$INPUT_SOURCE_JOB_IDS_JSON" \
+            --argjson ssha "$INPUT_SOURCE_RENDER_SHA256_JSON" \
+            '{
+              request_id: $rid,
+              window_start: $ws,
+              window_end: $we,
+              source_ids: $sids,
+              source_publication_ids: $spids,
+              source_job_ids: $sjids,
+              source_render_sha256: $ssha,
+              sha256: $sha,
+              duration_s: $dur,
+              bytes: $bytes
+            }')
+
+          echo "Stitch report payload:"
+          echo "$STITCH_BODY" | jq .
+
+          STITCH_HTTP=$(api_post "/api/reaction/compilation/stitch-report" "$STITCH_BODY" "/tmp/stitch-response.json")
+
+          if [ "$STITCH_HTTP" -lt 200 ] || [ "$STITCH_HTTP" -ge 300 ]; then
+            echo "::error::stitch-report failed with HTTP $STITCH_HTTP"
+            cat /tmp/stitch-response.json
+            exit 1
+          fi
+
+          # Verify the server returned ok
+          SERVER_OK=$(jq -r '.ok // empty' /tmp/stitch-response.json)
+          if [ "$SERVER_OK" != "true" ]; then
+            echo "::error::stitch-report did not return ok=true"
+            cat /tmp/stitch-response.json
+            exit 1
+          fi
+
+          # ── Trap 3 ──────────────────────────────────────────────────────────
+          # Save the server's stitch_marker verbatim.  Do not construct your
+          # own — the orchestrator re-checks against the server's marker.
+          jq '.stitch_marker' /tmp/stitch-response.json > out/stitch-success.json
+
+          echo "  ✓ Stitch reported and marker saved"
+          echo "Stitch marker:"
+          cat out/stitch-success.json | jq .
+          echo "::endgroup::"
+
+      # ══════════════════════════════════════════════════════════════════════
+      # 08 — Publish the artifact
+      # ══════════════════════════════════════════════════════════════════════
+      # ── Trap 2 ──────────────────────────────────────────────────────────────
+      # The artifact name must be exactly three-day-compilation-<request_id>.
+      # The orchestrator matches this name literally after the run succeeds.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: three-day-compilation-${{ inputs.request_id }}
+          path: |
+            out/compilation.mp4
+            out/stitch-success.json
+          retention-days: 14
+          if-no-files-found: error
