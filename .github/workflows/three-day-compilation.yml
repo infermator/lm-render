@@ -88,7 +88,13 @@ jobs:
           INPUT_SOURCE_JOB_IDS_JSON:         ${{ inputs.source_job_ids_json }}
           INPUT_WINDOW_START:                ${{ inputs.window_start }}
           INPUT_WINDOW_END:                  ${{ inputs.window_end }}
-          REACTION_PIPELINE_SECRET:          ${{ secrets.REACTION_PIPELINE_SECRET }}
+          # Reaction Lab accepts either name as a worker bearer and treats them as
+          # a set, and every other reaction workflow in this repo already
+          # authenticates with BUFFER_PUSH_SECRET. Falling back to it means this
+          # workflow needs no new secret, and keeps working through a rename.
+          # An unset secret expands to the empty string, so without this the
+          # header goes out as "Bearer " and every call 401s.
+          REACTION_PIPELINE_SECRET:          ${{ secrets.REACTION_PIPELINE_SECRET || secrets.BUFFER_PUSH_SECRET }}
           API_BASE:                          'https://reaction-lab-coral.vercel.app'
         shell: bash
         run: |
@@ -136,6 +142,13 @@ jobs:
           # 01 — Validate inputs
           # ════════════════════════════════════════════════════════════════════
           echo "::group::01 Validate inputs"
+
+          # Check this before doing 100 minutes of ffmpeg work only to 401 at the
+          # upload. An unset secret is an empty string, not an error.
+          if [ -z "${REACTION_PIPELINE_SECRET:-}" ]; then
+            echo "::error::No worker bearer available. Set REACTION_PIPELINE_SECRET or BUFFER_PUSH_SECRET in this repository's Actions secrets."
+            exit 1
+          fi
 
           REQUEST_ID="${INPUT_REQUEST_ID}"
           if [[ ! "$REQUEST_ID" =~ ^comp-[A-Za-z0-9._-]{8,120}$ ]]; then
@@ -204,19 +217,42 @@ jobs:
           echo "::group::03 Normalise clips"
           mkdir -p normalised
 
+          VF="scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+
           for i in $(seq 0 $((COUNT - 1))); do
             src="sources/source_${i}.mp4"
             dst="normalised/clip_${i}.ts"
 
             echo "[$((i+1))/$COUNT] Normalising: $src → $dst"
-            ffmpeg -y -i "$src" \
-              -vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1" \
-              -r 30 \
-              -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p \
-              -c:a aac -ar 44100 -ac 2 -b:a 128k \
-              -f mpegts \
-              "$dst" 2>&1 | tail -3
-            echo "  ✓ Normalised"
+
+            # Every clip must carry exactly one video and one audio stream. The
+            # concat protocol joins these TS files blind: a single silent source
+            # would give the join mismatched stream counts and desync or truncate
+            # everything after it. Substitute silence rather than let that happen.
+            if ffprobe -v error -select_streams a:0 \
+                 -show_entries stream=codec_type -of csv=p=0 "$src" | grep -q audio; then
+              ffmpeg -y -i "$src" \
+                -map 0:v:0 -map 0:a:0 \
+                -filter:v "$VF" \
+                -r 30 \
+                -c:v libx264 -preset fast -crf 21 -pix_fmt yuv420p \
+                -c:a aac -ar 44100 -ac 2 -b:a 128k \
+                -f mpegts \
+                "$dst" 2>&1 | tail -3
+              echo "  ✓ Normalised (source audio)"
+            else
+              echo "  ! No audio stream; substituting silence"
+              ffmpeg -y -i "$src" \
+                -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 \
+                -map 0:v:0 -map 1:a:0 -shortest \
+                -filter:v "$VF" \
+                -r 30 \
+                -c:v libx264 -preset fast -crf 21 -pix_fmt yuv420p \
+                -c:a aac -ar 44100 -ac 2 -b:a 128k \
+                -f mpegts \
+                "$dst" 2>&1 | tail -3
+              echo "  ✓ Normalised (silent track added)"
+            fi
           done
           echo "::endgroup::"
 
@@ -235,8 +271,14 @@ jobs:
             CONCAT_INPUT="${CONCAT_INPUT}normalised/clip_${i}.ts"
           done
 
+          # CRF 21, not 18. This file is not an archive master: it is uploaded to
+          # Shotlee, zipped into an Actions artifact, pulled down by the
+          # orchestrator, and then pushed through a browser into YouTube Studio
+          # under a 45-minute upload budget. CRF 18 on a twenty-clip 1080x1920
+          # window produces gigabytes for no visible gain at Shorts scale, and the
+          # first thing to break is that browser upload.
           ffmpeg -y -i "concat:${CONCAT_INPUT}" \
-            -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p \
+            -c:v libx264 -preset fast -crf 21 -pix_fmt yuv420p \
             -c:a aac -ar 44100 -ac 2 -b:a 128k \
             -movflags +faststart \
             "out/compilation.mp4" 2>&1 | tail -5
@@ -291,10 +333,15 @@ jobs:
           echo "Storage path: $(jq -r '.path' /tmp/upload-url-response.json)"
 
           # 06b — PUT the MP4 to the signed URL
+          # --upload-file, not --data-binary. --data-binary reads the whole file
+          # into memory before sending; a full window is comfortably over a
+          # gigabyte and the runner does not need to hold it. -T streams from disk
+          # and sets Content-Length from the file itself, and implies PUT.
           UPLOAD_HTTP=$(curl -sS -o /tmp/upload-put-response.txt -w '%{http_code}' \
-            -X PUT "$SIGNED_URL" \
+            --retry 3 --retry-delay 5 \
+            -T out/compilation.mp4 \
             -H "Content-Type: video/mp4" \
-            --data-binary @out/compilation.mp4)
+            "$SIGNED_URL")
 
           if [ "$UPLOAD_HTTP" -lt 200 ] || [ "$UPLOAD_HTTP" -ge 300 ]; then
             echo "::error::PUT to signed URL failed with HTTP $UPLOAD_HTTP"
