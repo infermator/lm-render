@@ -153,3 +153,11 @@ test('Podcast batch materialization stays ephemeral while outputs are uploaded',
   assert.match(worker, /source_storage_path: null/);
   assert.match(worker, /shared_materialization: \{ ephemeral: true/);
 });
+
+test('Podcast render owns the same isolated proof-of-origin fallback as transcript ingest', () => {
+  const workflow = fs.readFileSync(new URL('../../.github/workflows/clipper-podcast-render.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /yt-dlp-getpot-wpc==1\.1\.2/);
+  assert.match(workflow, /patch_wpc_provider\.py/);
+  assert.match(workflow, /CLIPPER_PODCAST_WPC_ENABLED: '1'/);
+  assert.match(workflow, /xvfb-run -a node scripts\/clipper\/podcast_render\.mjs/);
+});
