@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { subtitleFilterSuffix } from './ffmpeg_filters.mjs';
 import {
@@ -41,6 +42,7 @@ const WORKER_RUN_ID = [
 const STORAGE_BUCKET = 'clipper-media';
 const MAX_COMPRESSED_ARTIFACT_BYTES = 32 * 1024 * 1024;
 const MAX_ARTIFACT_BYTES = 128 * 1024 * 1024;
+const CLIPPER_SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 if (!SECRET) throw new Error('Existing BUFFER_PUSH_SECRET / REACTION_PIPELINE_SECRET is missing');
 if (!STORAGE_URL || !STORAGE_KEY) throw new Error('Existing CLIPPER storage credentials are missing');
@@ -217,7 +219,7 @@ function estimateSpeakerCenters(source, intervals, duration, work) {
     const samplesPath = path.join(work, 'speaker-samples.json');
     const samples = sampleTimes(intervals, duration);
     fs.writeFileSync(samplesPath, JSON.stringify(samples), 'utf8');
-    const raw = runCapture('python3', [path.resolve('scripts/clipper/podcast_speaker_frames.py'), source, samplesPath]);
+    const raw = runCapture('python3', [path.join(CLIPPER_SCRIPT_DIR, 'podcast_speaker_frames.py'), source, samplesPath]);
     const analysis = JSON.parse(raw);
     return {
       centers: normalizedSpeakerCenters(analysis?.speaker_centers),
@@ -274,7 +276,7 @@ function alignAnchor({ batchAudio, alignmentAudio, anchor, expectedLocal, durati
     '-t', duration.toFixed(3), '-vn', '-ac', '1', '-ar', '4000', '-c:a', 'pcm_s16le', reference,
   ]);
   const raw = runCapture('python3', [
-    path.resolve('scripts/clipper/podcast_audio_align.py'), batchAudio, reference,
+    path.join(CLIPPER_SCRIPT_DIR, 'podcast_audio_align.py'), batchAudio, reference,
     expectedLocal.toFixed(3), '--radius-s', '82',
   ]);
   const result = JSON.parse(raw);

@@ -220,6 +220,10 @@ test('Podcast batch materialization stays ephemeral while outputs are uploaded',
   assert.match(worker, /CLIPPER_PODCAST_LOCAL_SOURCE_START_S/);
   assert.match(worker, /Manual Podcast source duration/);
   assert.match(worker, /fs\.copyFileSync\(localSource, downloaded\)/);
+  assert.match(worker, /fileURLToPath\(import\.meta\.url\)/);
+  assert.match(worker, /path\.join\(CLIPPER_SCRIPT_DIR, 'podcast_speaker_frames\.py'\)/);
+  assert.match(worker, /path\.join\(CLIPPER_SCRIPT_DIR, 'podcast_audio_align\.py'\)/);
+  assert.doesNotMatch(worker, /path\.resolve\('scripts\/clipper\/podcast_/);
 });
 
 test('Podcast render owns the same isolated proof-of-origin fallback as transcript ingest', () => {
