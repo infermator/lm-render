@@ -22,6 +22,7 @@ import requests
 from faster_whisper import WhisperModel
 from podcast_audio_source import download_podcast_audio
 from podcast_diarization import local_acoustic_diarize
+from podcast_storage_contract import assert_storage_project
 
 
 BUCKET = "clipper-media"
@@ -246,6 +247,9 @@ def main() -> int:
     vod_id = vod["id"]
     failure_stage = "claimed"
     try:
+        expected_storage_ref = str(claim.get("storage_project_ref") or "").strip()
+        if expected_storage_ref:
+            assert_storage_project(args.storage_url, expected_storage_ref)
         recovery = claim.get("recovery") if isinstance(claim.get("recovery"), dict) else None
         if recovery and recovery.get("mode") == "transcript_artifact" and isinstance(recovery.get("artifact"), dict):
             try:

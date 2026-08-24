@@ -39,9 +39,10 @@ jobs:
           python scripts/clipper/patch_wpc_provider.py
           sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
           python scripts/clipper/patch_wpc_provider_test.py
+          python scripts/clipper/podcast_storage_contract_test.py
           python scripts/clipper/podcast_audio_source_test.py
           python scripts/clipper/podcast_diarization_test.py
-          python -m py_compile scripts/clipper/patch_wpc_provider.py scripts/clipper/podcast_audio_source.py scripts/clipper/podcast_diarization.py scripts/clipper/podcast_transcribe.py
+          python -m py_compile scripts/clipper/patch_wpc_provider.py scripts/clipper/podcast_storage_contract.py scripts/clipper/podcast_audio_source.py scripts/clipper/podcast_diarization.py scripts/clipper/podcast_transcribe.py
 
       - name: Start Cloudflare WARP source egress
         continue-on-error: true
