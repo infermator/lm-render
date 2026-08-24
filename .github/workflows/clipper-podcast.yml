@@ -36,10 +36,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg curl lsb-release privoxy xvfb
           python -m pip install --disable-pip-version-check --no-input -r scripts/clipper/requirements-podcast.txt 'yt-dlp[default]' 'yt-dlp-getpot-wpc==1.1.2'
+          python scripts/clipper/patch_wpc_provider.py
           sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
+          python scripts/clipper/patch_wpc_provider_test.py
           python scripts/clipper/podcast_audio_source_test.py
           python scripts/clipper/podcast_diarization_test.py
-          python -m py_compile scripts/clipper/podcast_audio_source.py scripts/clipper/podcast_diarization.py scripts/clipper/podcast_transcribe.py
+          python -m py_compile scripts/clipper/patch_wpc_provider.py scripts/clipper/podcast_audio_source.py scripts/clipper/podcast_diarization.py scripts/clipper/podcast_transcribe.py
 
       - name: Start Cloudflare WARP source egress
         continue-on-error: true
@@ -84,9 +86,7 @@ jobs:
           browser_path="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           if [ -n "$browser_path" ]; then
             echo '[podcast-source] Isolated browser proof-of-origin provider enabled'
-            chmod 700 scripts/clipper/chrome-podcast-ci.sh
-            echo "CLIPPER_PODCAST_REAL_BROWSER_PATH=$browser_path" >> "$GITHUB_ENV"
-            echo "CLIPPER_PODCAST_BROWSER_PATH=$GITHUB_WORKSPACE/scripts/clipper/chrome-podcast-ci.sh" >> "$GITHUB_ENV"
+            echo "CLIPPER_PODCAST_BROWSER_PATH=$browser_path" >> "$GITHUB_ENV"
           else
             echo '[podcast-source] Chrome unavailable; continuing with WARP/client fallbacks'
           fi
