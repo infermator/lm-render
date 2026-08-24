@@ -239,3 +239,15 @@ test('Podcast render owns the same isolated proof-of-origin fallback as transcri
   assert.match(wrapper, /CLIPPER_YTDLP_ATTEMPT_TIMEOUT_SECONDS=90 run_attempt podcast-mweb-browser-pot/);
   assert.match(wrapper, /else\n  # V2 sequence remains intentionally unchanged\./);
 });
+
+test('both CLIPPER tracks add caption shadows after their existing layout composition', () => {
+  const podcastWorker = fs.readFileSync(new URL('./podcast_render.mjs', import.meta.url), 'utf8');
+  const streamWorker = fs.readFileSync(new URL('./render.mjs', import.meta.url), 'utf8');
+  for (const worker of [podcastWorker, streamWorker]) {
+    assert.match(worker, /layoutOutputLabel = .*caption_base/);
+    assert.match(worker, /captionCompositeFilter\(/);
+    assert.match(worker, /layoutFilter/);
+  }
+  assert.match(podcastWorker, /PODCAST_CAPTION_FORCE_STYLE/);
+  assert.match(streamWorker, /creatorGameplayFilter\(facecam, layoutOutputLabel\)/);
+});

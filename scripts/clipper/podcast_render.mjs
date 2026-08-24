@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { subtitleFilterSuffix } from './ffmpeg_filters.mjs';
+import { captionCompositeFilter } from './ffmpeg_filters.mjs';
 import {
   PODCAST_CAPTION_FORCE_STYLE,
   activeSpeakerCropFilter,
@@ -185,12 +185,12 @@ function probe(file) {
   return JSON.parse(runCapture('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', file]));
 }
 
-function fitBlurFilter(captionSuffix) {
-  return `[0:v]split=2[bg0][fg0];[bg0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.16[bg];[fg0]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2${captionSuffix}[v]`;
+function fitBlurFilter(outputLabel = 'v') {
+  return `[0:v]split=2[bg0][fg0];[bg0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.16[bg];[fg0]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[${outputLabel}]`;
 }
 
-function centerCropFilter(captionSuffix) {
-  return `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920${captionSuffix}[v]`;
+function centerCropFilter(outputLabel = 'v') {
+  return `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[${outputLabel}]`;
 }
 
 function sampleTimes(intervals, duration) {
@@ -420,9 +420,8 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const captionWords = plan?.output?.captions === false ? [] : wordsForWindow(artifact, start, end);
   const srt = buildTranscriptSrt(captionWords);
   if (srt.trim()) fs.writeFileSync(captionPath, srt, 'utf8');
-  const captionSuffix = srt.trim()
-    ? subtitleFilterSuffix(captionPath, PODCAST_CAPTION_FORCE_STYLE)
-    : '';
+  const captionsCreated = Boolean(srt.trim());
+  const layoutOutputLabel = captionsCreated ? 'caption_base' : 'v';
 
   const sourceProbe = probe(source);
   const sourceVideo = (sourceProbe.streams || []).find(stream => stream.codec_type === 'video') || {};
@@ -431,10 +430,15 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     height: sourceVideo.height,
     centers,
     intervals,
-    captionSuffix,
+    outputLabel: layoutOutputLabel,
   }) : null;
   const actualLayout = activeFilter ? 'active_speaker' : layout === 'center_crop' ? 'center_crop' : 'fit_blur';
-  const filter = activeFilter || (actualLayout === 'center_crop' ? centerCropFilter(captionSuffix) : fitBlurFilter(captionSuffix));
+  const layoutFilter = activeFilter || (actualLayout === 'center_crop'
+    ? centerCropFilter(layoutOutputLabel)
+    : fitBlurFilter(layoutOutputLabel));
+  const filter = captionsCreated
+    ? `${layoutFilter};${captionCompositeFilter({ filePath: captionPath, forceStyle: PODCAST_CAPTION_FORCE_STYLE })}`
+    : layoutFilter;
   await progress(render.id, 'composing', `Rendering 1080x1920 podcast edit (${actualLayout})`);
   const output = path.join(work, 'video.mp4');
   run('ffmpeg', [

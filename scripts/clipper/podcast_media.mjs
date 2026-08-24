@@ -295,7 +295,7 @@ export function resolvePodcastFraming({ localCenters, speakerPositions, interval
   };
 }
 
-export function activeSpeakerCropFilter({ width, height, centers, intervals, captionSuffix = '' }) {
+export function activeSpeakerCropFilter({ width, height, centers, intervals, captionSuffix = '', outputLabel = 'v' }) {
   const rawWidth = Number(width);
   const rawHeight = Number(height);
   if (!Number.isFinite(rawWidth) || !Number.isFinite(rawHeight) || rawWidth < 2 || rawHeight < 2) return null;
@@ -335,5 +335,5 @@ export function activeSpeakerCropFilter({ width, height, centers, intervals, cap
     xExpression = `if(lt(t,${transitionStart.toFixed(3)}),${xExpression},if(lt(t,${transitionEnd.toFixed(3)}),${previousX}+(${delta})*(t-${transitionStart.toFixed(3)})/${transitionDuration.toFixed(3)},${position.x}))`;
     previousX = position.x;
   }
-  return `[0:v]crop=${cropWidth}:${cropHeight}:x='${xExpression}':y=${defaultY},scale=1080:1920${captionSuffix}[v]`;
+  return `[0:v]crop=${cropWidth}:${cropHeight}:x='${xExpression}':y=${defaultY},scale=1080:1920${captionSuffix}[${outputLabel}]`;
 }

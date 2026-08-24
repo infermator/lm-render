@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { subtitleFilterSuffix } from './ffmpeg_filters.mjs';
+import { captionCompositeFilter } from './ffmpeg_filters.mjs';
 
 const MAM_BASE = String(process.env.MAM_BASE || 'https://reaction-lab-coral.vercel.app').replace(/\/$/, '');
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || process.env.REACTION_PIPELINE_SECRET || '').trim();
@@ -147,7 +147,7 @@ function probe(file) {
   return JSON.parse(raw);
 }
 
-function creatorGameplayFilter(face, captionFilter) {
+function creatorGameplayFilter(face, outputLabel = 'v') {
   const srcW = Number(face?.source?.width || 0);
   const srcH = Number(face?.source?.height || 0);
   const crop = face?.crop || {};
@@ -164,7 +164,7 @@ function creatorGameplayFilter(face, captionFilter) {
     `[0:v]split=2[game0][creator0]`,
     `[game0]scale=1080:1230:force_original_aspect_ratio=increase,crop=1080:1230[game]`,
     `[creator0]crop=${w}:${h}:${x}:${y},scale=1080:690:force_original_aspect_ratio=increase,crop=1080:690[creator]`,
-    `[creator][game]vstack=inputs=2${captionFilter}[v]`,
+    `[creator][game]vstack=inputs=2[${outputLabel}]`,
   ].join(';');
 }
 
@@ -238,14 +238,15 @@ async function main() {
       ? (facecam ? 'creator_gameplay_auto' : 'fit_blur')
       : (requestedLayout === 'center_crop' ? 'center_crop' : 'fit_blur');
     const out = path.join(work, 'video.mp4');
-    const captionFilter = captionMeta.created
-      ? subtitleFilterSuffix(captionPath, 'FontName=DejaVu Sans,FontSize=18,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=190')
-      : '';
-
-    const autoFilter = layout === 'creator_gameplay_auto' ? creatorGameplayFilter(facecam, captionFilter) : null;
-    const filter = autoFilter || (layout === 'center_crop'
-      ? `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920${captionFilter}[v]`
-      : `[0:v]split=2[bg0][fg0];[bg0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.16[bg];[fg0]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2${captionFilter}[v]`);
+    const captionStyle = 'FontName=DejaVu Sans,FontSize=18,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=190';
+    const layoutOutputLabel = captionMeta.created ? 'caption_base' : 'v';
+    const autoFilter = layout === 'creator_gameplay_auto' ? creatorGameplayFilter(facecam, layoutOutputLabel) : null;
+    const layoutFilter = autoFilter || (layout === 'center_crop'
+      ? `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[${layoutOutputLabel}]`
+      : `[0:v]split=2[bg0][fg0];[bg0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.16[bg];[fg0]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[${layoutOutputLabel}]`);
+    const filter = captionMeta.created
+      ? `${layoutFilter};${captionCompositeFilter({ filePath: captionPath, forceStyle: captionStyle })}`
+      : layoutFilter;
 
     run('ffmpeg', [
       '-y', '-i', source,
