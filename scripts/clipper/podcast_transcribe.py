@@ -23,6 +23,7 @@ from faster_whisper import WhisperModel
 from podcast_audio_source import download_podcast_audio
 from podcast_diarization import local_acoustic_diarize
 from podcast_recovery_artifact import persist_recovery_artifact
+from podcast_source_cache import download_source_cache, upload_source_cache, validate_source_cache
 from podcast_storage_contract import assert_storage_project
 
 
@@ -46,13 +47,29 @@ def api(base_url: str, secret: str, path: str, payload: dict[str, Any], timeout:
     return response.json()
 
 
-def progress(base_url: str, secret: str, vod_id: str, stage: str, message: str = "", error: str = "") -> None:
+def progress(
+    base_url: str,
+    secret: str,
+    vod_id: str,
+    stage: str,
+    message: str = "",
+    error: str = "",
+    source_cache: Optional[dict[str, Any]] = None,
+) -> None:
     try:
-        api(base_url, secret, "/api/clipper/podcast/progress", {
+        payload: dict[str, Any] = {
             "vod_id": vod_id, "stage": stage, "message": message, "error": error,
             "worker_run_id": WORKER_RUN_ID,
-        }, timeout=30)
-    except Exception as exc:  # Progress must never hide the original failure.
+        }
+        if source_cache is not None:
+            payload["source_cache"] = source_cache
+        api(base_url, secret, "/api/clipper/podcast/progress", payload, timeout=30)
+    except Exception as exc:
+        # Cache registration is a retry contract, not cosmetic progress. Fail
+        # before Whisper if the control plane did not persist it.
+        if source_cache is not None:
+            raise
+        # Ordinary progress must never hide the original worker failure.
         print(f"progress warning: {exc}", flush=True)
 
 
@@ -285,7 +302,30 @@ def main() -> int:
             source_message = "Fetching YouTube fallback audio once through the existing protected source path" \
                 if source_kind == "youtube_fallback" else "Fetching open podcast audio channel"
             progress(args.base_url, args.secret, vod_id, failure_stage, source_message)
-            download_podcast_audio(vod, source)
+            prior_meta = vod.get("ingest_meta") if isinstance(vod.get("ingest_meta"), dict) else {}
+            source_cache = validate_source_cache(vod_id, prior_meta.get("source_audio_cache")) \
+                if source_kind == "youtube_fallback" else None
+            if source_cache:
+                try:
+                    download_source_cache(args.storage_url, args.storage_key, source_cache, source)
+                    progress(args.base_url, args.secret, vod_id, failure_stage, "Reused verified private YouTube source cache")
+                except RuntimeError as exc:
+                    if not str(exc).startswith(("podcast_source_cache_missing:", "podcast_source_cache_download_failed:")):
+                        raise
+                    print(f"{exc}; rebuilding from YouTube", flush=True)
+                    source_cache = None
+            if not source_cache:
+                download_podcast_audio(vod, source)
+                if source_kind == "youtube_fallback":
+                    source_cache = upload_source_cache(args.storage_url, args.storage_key, vod_id, source)
+                    progress(
+                        args.base_url,
+                        args.secret,
+                        vod_id,
+                        failure_stage,
+                        "Cached verified YouTube source in private CLIPPER storage",
+                        source_cache=source_cache,
+                    )
             normalize_audio(source, wav)
             failure_stage = "transcribing"
             progress(args.base_url, args.secret, vod_id, failure_stage, f"Whisper {args.model} with word timestamps")
