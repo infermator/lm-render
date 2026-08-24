@@ -217,6 +217,9 @@ test('Podcast batch materialization stays ephemeral while outputs are uploaded',
   assert.doesNotMatch(worker, /uploadObject\(batchSource/);
   assert.match(worker, /source_storage_path: null/);
   assert.match(worker, /shared_materialization: \{ ephemeral: true/);
+  assert.match(worker, /CLIPPER_PODCAST_LOCAL_SOURCE_START_S/);
+  assert.match(worker, /Manual Podcast source duration/);
+  assert.match(worker, /fs\.copyFileSync\(localSource, downloaded\)/);
 });
 
 test('Podcast render owns the same isolated proof-of-origin fallback as transcript ingest', () => {

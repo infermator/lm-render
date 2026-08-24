@@ -30,6 +30,8 @@ const STORAGE_KEY = String(process.env.SHOTLEE_SUPABASE_SERVICE_ROLE_KEY || proc
 const EXACT_VOD_ID = String(process.env.VOD_ID || '').trim();
 const DISPATCH_TOKEN = String(process.env.DISPATCH_TOKEN || '').trim();
 const SHARD_INDEX = Math.max(0, Math.floor(Number(process.env.SHARD_INDEX || 0)));
+const LOCAL_SOURCE_PATH = String(process.env.CLIPPER_PODCAST_LOCAL_SOURCE || '').trim();
+const LOCAL_SOURCE_START_S = Number(process.env.CLIPPER_PODCAST_LOCAL_SOURCE_START_S);
 const WORKER_RUN_ID = [
   process.env.GITHUB_RUN_ID || `local-${Date.now()}`,
   process.env.GITHUB_RUN_ATTEMPT || '1',
@@ -542,14 +544,33 @@ async function main() {
       throw new Error(`Invalid shared podcast materialization window (${batchStart}-${batchEnd})`);
     }
     for (const render of renders) await progress(render.id, 'downloading', `Materializing one shared ${batchDuration.toFixed(1)}s source window`);
-    const sourcePattern = path.join(root, 'batch.%(ext)s');
-    run('yt-dlp', [
-      '--no-playlist', '--js-runtimes', 'node', '--remote-components', 'ejs:github',
-      '--download-sections', `*${batchStart}-${batchEnd}`, '--force-keyframes-at-cuts',
-      '--merge-output-format', 'mp4', '-f', 'bv*+ba/b', '-o', sourcePattern, String(vod.video_source_url),
-    ]);
-    const downloaded = findDownloadedFile(root);
-    if (!downloaded) throw new Error('yt-dlp completed without a podcast video source');
+    let downloaded;
+    if (LOCAL_SOURCE_PATH) {
+      const localSource = path.resolve(LOCAL_SOURCE_PATH);
+      const localStat = fs.lstatSync(localSource);
+      if (!path.isAbsolute(LOCAL_SOURCE_PATH) || !localStat.isFile() || localStat.isSymbolicLink() || localStat.size < 1024 * 1024) {
+        throw new Error('Manual Podcast source override must be an absolute, regular media file');
+      }
+      if (!Number.isFinite(LOCAL_SOURCE_START_S) || Math.abs(LOCAL_SOURCE_START_S - batchStart) > 0.05) {
+        throw new Error(`Manual Podcast source starts at ${LOCAL_SOURCE_START_S}; claimed batch starts at ${batchStart}`);
+      }
+      const localDuration = Number(probe(localSource).format?.duration || 0);
+      if (localDuration < batchDuration - 0.5 || localDuration > batchDuration + 5) {
+        throw new Error(`Manual Podcast source duration ${localDuration.toFixed(2)}s does not match ${batchDuration.toFixed(2)}s batch`);
+      }
+      downloaded = path.join(root, 'batch.mp4');
+      fs.copyFileSync(localSource, downloaded);
+      console.log(`[podcast-render] using verified local source recovery (${localDuration.toFixed(2)}s at ${batchStart.toFixed(2)}s)`);
+    } else {
+      const sourcePattern = path.join(root, 'batch.%(ext)s');
+      run('yt-dlp', [
+        '--no-playlist', '--js-runtimes', 'node', '--remote-components', 'ejs:github',
+        '--download-sections', `*${batchStart}-${batchEnd}`, '--force-keyframes-at-cuts',
+        '--merge-output-format', 'mp4', '-f', 'bv*+ba/b', '-o', sourcePattern, String(vod.video_source_url),
+      ]);
+      downloaded = findDownloadedFile(root);
+      if (!downloaded) throw new Error('yt-dlp completed without a podcast video source');
+    }
 
     for (const render of renders) await progress(render.id, 'normalizing', 'Normalizing the shared podcast source once');
     const batchSource = path.join(root, 'batch-source.mp4');
