@@ -22,14 +22,14 @@ jobs:
           p=Path('scripts/reaction/render-v4.mjs')
           s=p.read_text()
           old="""async function uploadResult(jobId, file) {
-  const storagePath = `results/${jobId}.mp4`;
-  const bytes = await fs.readFile(file);
-"""
+            const storagePath = `results/${jobId}.mp4`;
+            const bytes = await fs.readFile(file);
+          """
           new="""async function uploadResult(jobId, file) {
-  const renderId = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-  const storagePath = `results/${jobId}/${renderId}.mp4`;
-  const bytes = await fs.readFile(file);
-"""
+            const renderId = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+            const storagePath = `results/${jobId}/${renderId}.mp4`;
+            const bytes = await fs.readFile(file);
+          """
           if old not in s: raise SystemExit('uploadResult target missing')
           s=s.replace(old,new,1)
           s=s.replace("'x-upsert': 'true',","'x-upsert': 'false',",1)

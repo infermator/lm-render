@@ -24,46 +24,46 @@ jobs:
           s=p.read_text()
 
           old_asset="""    const asset = chooseAsset(assets, String(event.type), Number(event.intensity ?? 0.35)) || neutralAssets[neutralState.index++ % neutralAssets.length];
-    const hasComment = request.voice_lipsync === true && typeof event.comment === 'string' && event.comment.trim().length > 0;
-    let duration = clamp(Number(event.duration ?? 2.4), 0.8, 8);
-"""
+              const hasComment = request.voice_lipsync === true && typeof event.comment === 'string' && event.comment.trim().length > 0;
+              let duration = clamp(Number(event.duration ?? 2.4), 0.8, 8);
+          """
           new_asset="""    const reactionAsset = chooseAsset(assets, String(event.type), Number(event.intensity ?? 0.35)) || neutralAssets[neutralState.index++ % neutralAssets.length];
-    const hasComment = request.voice_lipsync === true && typeof event.comment === 'string' && event.comment.trim().length > 0;
-    const speechReadyAssets = assets.filter(candidate => candidate.enabled !== false && candidate.speech_ready === true);
-    const speechAsset = hasComment
-      ? (speechReadyAssets.find(candidate => candidate.reaction_type === String(event.type)) || speechReadyAssets[0] || null)
-      : null;
-    if (hasComment && !speechAsset) {
-      throw new Error('Voice render requires one enabled speech-ready reusable avatar asset; refusing to fake lip-sync on an unvalidated reaction clip.');
-    }
-    const asset = speechAsset || reactionAsset;
-    let duration = clamp(Number(event.duration ?? 2.4), 0.8, 8);
-"""
+              const hasComment = request.voice_lipsync === true && typeof event.comment === 'string' && event.comment.trim().length > 0;
+              const speechReadyAssets = assets.filter(candidate => candidate.enabled !== false && candidate.speech_ready === true);
+              const speechAsset = hasComment
+                ? (speechReadyAssets.find(candidate => candidate.reaction_type === String(event.type)) || speechReadyAssets[0] || null)
+                : null;
+              if (hasComment && !speechAsset) {
+                throw new Error('Voice render requires one enabled speech-ready reusable avatar asset; refusing to fake lip-sync on an unvalidated reaction clip.');
+              }
+              const asset = speechAsset || reactionAsset;
+              let duration = clamp(Number(event.duration ?? 2.4), 0.8, 8);
+          """
           if old_asset in s:
               s=s.replace(old_asset,new_asset,1)
 
           old_comment="""        lipsync_provider: synced.provider,
-        lipsync_duration: synced.duration,
-      });
-"""
+                  lipsync_duration: synced.duration,
+                });
+          """
           new_comment="""        lipsync_provider: synced.provider,
-        lipsync_duration: synced.duration,
-        speech_asset_id: asset.id,
-        speech_asset_label: asset.label || null,
-      });
-"""
+                  lipsync_duration: synced.duration,
+                  speech_asset_id: asset.id,
+                  speech_asset_label: asset.label || null,
+                });
+          """
           if old_comment in s:
               s=s.replace(old_comment,new_comment,1)
 
           old_upload="""async function uploadResult(jobId, file) {
-  const storagePath = `results/${jobId}.mp4`;
-  const bytes = await fs.readFile(file);
-"""
+            const storagePath = `results/${jobId}.mp4`;
+            const bytes = await fs.readFile(file);
+          """
           new_upload="""async function uploadResult(jobId, file) {
-  const renderId = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-  const storagePath = `results/${jobId}/${renderId}.mp4`;
-  const bytes = await fs.readFile(file);
-"""
+            const renderId = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+            const storagePath = `results/${jobId}/${renderId}.mp4`;
+            const bytes = await fs.readFile(file);
+          """
           if old_upload in s:
               s=s.replace(old_upload,new_upload,1)
               s=s.replace("'x-upsert': 'true',","'x-upsert': 'false',",1)
