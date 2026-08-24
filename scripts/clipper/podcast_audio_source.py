@@ -14,7 +14,7 @@ import pathlib
 import socket
 import subprocess
 from typing import Any, Mapping, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -25,6 +25,33 @@ from urllib3.poolmanager import PoolManager
 
 MAX_AUDIO_BYTES = 2_000_000_000
 MAX_REDIRECTS = 5
+
+
+def _canonical_youtube_url(raw: str) -> str:
+    """Validate an untrusted claim payload and retain only the video identity."""
+    parsed = urlparse(raw)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise RuntimeError("YouTube fallback URL must use HTTPS")
+    if parsed.username or parsed.password:
+        raise RuntimeError("YouTube fallback URL must not contain credentials")
+    host = parsed.hostname.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    parts = [part for part in parsed.path.split("/") if part]
+    if host == "youtu.be":
+        video_id = parts[0] if parts else ""
+    elif host in {"youtube.com", "m.youtube.com"}:
+        video_id = (parse_qs(parsed.query).get("v") or [""])[0]
+        if not video_id and len(parts) > 1 and parts[0] in {"shorts", "live", "embed"}:
+            video_id = parts[1]
+    else:
+        raise RuntimeError("YouTube fallback must use a YouTube URL")
+    if not 6 <= len(video_id) <= 20 or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+        for character in video_id
+    ):
+        raise RuntimeError("YouTube fallback video ID could not be resolved")
+    return f"https://www.youtube.com/watch?v={video_id}"
 
 
 def _public_socket(connection: HTTPConnection) -> socket.socket:
@@ -159,16 +186,30 @@ def _download_http_audio(url: str, target: pathlib.Path) -> None:
 
 
 def _download_youtube_audio(url: str, target: pathlib.Path) -> None:
-    subprocess.run([
-        "yt-dlp",
-        "--no-playlist",
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
-        "--max-filesize", "2000M",
-        "-f", "ba/b",
-        "-o", str(target),
-        url,
-    ], check=True)
+    try:
+        subprocess.run([
+            "yt-dlp",
+            "--no-playlist",
+            "--js-runtimes", "node",
+            "--remote-components", "ejs:github",
+            "--max-filesize", "2000M",
+            "-f", "ba/b",
+            "-o", str(target),
+            url,
+        ], check=True)
+    except subprocess.CalledProcessError as exc:
+        # yt-dlp-safe owns detailed diagnostics in the private Action log. Keep
+        # database/UI errors stable, actionable, and free of local paths or a
+        # potentially signed source URL.
+        if exc.returncode == 42:
+            raise RuntimeError(
+                "youtube_bot_blocked: YouTube rejected the hosted worker after WARP "
+                "and safe client attempts; use trusted source egress or authenticated "
+                "YouTube cookies"
+            ) from None
+        if exc.returncode == 64:
+            raise RuntimeError("youtube_source_configuration_invalid: YouTube cookie configuration is invalid") from None
+        raise RuntimeError("youtube_source_download_failed: yt-dlp exhausted the safe source attempts") from None
     if not target.is_file() or target.stat().st_size < 1:
         raise RuntimeError("yt-dlp completed without a podcast audio source")
     if target.stat().st_size > MAX_AUDIO_BYTES:
@@ -182,7 +223,7 @@ def download_podcast_audio(vod: Mapping[str, Any], target: pathlib.Path) -> str:
         youtube_url = str(vod.get("video_source_url") or audio_url).strip()
         if not youtube_url:
             raise RuntimeError("YouTube fallback podcast is missing its video URL")
-        _download_youtube_audio(youtube_url, target)
+        _download_youtube_audio(_canonical_youtube_url(youtube_url), target)
         return "youtube_fallback"
     if kind not in {"rss", "direct"}:
         raise RuntimeError(f"Unsupported podcast audio source kind: {kind or 'missing'}")

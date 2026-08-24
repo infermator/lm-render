@@ -44,6 +44,10 @@ if [ -n "${YOUTUBE_PROXY_URL:-}" ]; then
     http://*|https://*)
       export http_proxy="$YOUTUBE_PROXY_URL"
       export https_proxy="$YOUTUBE_PROXY_URL"
+      # A Podcast-only proof-of-origin plugin may need its local provider;
+      # never send that loopback request through privoxy/WARP.
+      export no_proxy="127.0.0.1,localhost"
+      export NO_PROXY="$no_proxy"
       ;;
   esac
   echo '[clipper-source] YouTube proxy enabled'
@@ -78,6 +82,18 @@ fi
 # shared egress is not hammered with retries.
 if run_attempt alternate-client --extractor-args 'youtube:player_client=web_safari,android_vr' "$@"; then
   exit 0
+fi
+
+# 3) Podcast V3 can opt into a pinned, isolated retest of bgutil 1.3.2. V2
+# deliberately leaves this disabled because the older provider degraded video
+# source selection to 360p. Podcast transcript ingest requests audio only.
+if [ "${CLIPPER_PODCAST_BGUTIL_ENABLED:-0}" = '1' ]; then
+  if run_attempt podcast-mweb-pot \
+    --extractor-args 'youtube:player_client=mweb' \
+    --extractor-args 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416' \
+    "$@"; then
+    exit 0
+  fi
 fi
 
 if [ "${CLIPPER_YOUTUBE_BOT_BLOCKED:-0}" = '1' ]; then

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from podcast_audio_source import _assert_public_http_url, _download_http_audio, download_podcast_audio
+from podcast_audio_source import _assert_public_http_url, _canonical_youtube_url, _download_http_audio, download_podcast_audio
 
 
 class PodcastAudioSourceTests(unittest.TestCase):
@@ -50,6 +51,29 @@ class PodcastAudioSourceTests(unittest.TestCase):
             self.assertEqual(command[0], "yt-dlp")
             self.assertIn("ba/b", command)
             self.assertEqual(command[-1], "https://www.youtube.com/watch?v=abcDEF_1234")
+
+    def test_youtube_fallback_canonicalizes_claim_payload(self) -> None:
+        self.assertEqual(
+            _canonical_youtube_url("https://youtu.be/abcDEF_1234?t=12"),
+            "https://www.youtube.com/watch?v=abcDEF_1234",
+        )
+        with self.assertRaisesRegex(RuntimeError, "must use HTTPS"):
+            _canonical_youtube_url("[https://youtu.be/abcDEF_1234](https://youtu.be/abcDEF_1234)")
+
+    def test_youtube_bot_block_is_reported_without_command_or_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            target = pathlib.Path(temp) / "source.audio"
+            with patch(
+                "podcast_audio_source.subprocess.run",
+                side_effect=subprocess.CalledProcessError(42, ["yt-dlp", "sensitive-url"]),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "^youtube_bot_blocked:") as raised:
+                    download_podcast_audio({
+                        "audio_source_kind": "youtube_fallback",
+                        "video_source_url": "https://www.youtube.com/watch?v=abcDEF_1234",
+                    }, target)
+            self.assertNotIn("sensitive-url", str(raised.exception))
+            self.assertNotIn(temp, str(raised.exception))
 
     def test_rss_audio_never_invokes_youtube_downloader(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

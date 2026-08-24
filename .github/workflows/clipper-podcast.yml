@@ -35,7 +35,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg curl lsb-release privoxy
-          python -m pip install --disable-pip-version-check --no-input -r scripts/clipper/requirements-podcast.txt 'yt-dlp[default]'
+          python -m pip install --disable-pip-version-check --no-input -r scripts/clipper/requirements-podcast.txt 'yt-dlp[default]' 'bgutil-ytdlp-pot-provider==1.3.2'
           sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
           python scripts/clipper/podcast_audio_source_test.py
           python scripts/clipper/podcast_diarization_test.py
@@ -78,6 +78,8 @@ jobs:
             echo '[podcast-source] WARP did not come up; continuing on direct egress'
           fi
           exit 0
+      - name: Start Podcast-only anonymous proof-of-origin provider
+        run: bash scripts/clipper/start-podcast-pot-provider.sh
       - name: Transcribe, diarize, persist artifact and Scout
         env:
           MAM_BASE: 'https://reaction-lab-coral.vercel.app'
@@ -85,6 +87,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
           YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
+          CLIPPER_PODCAST_BGUTIL_ENABLED: '1'
         run: >-
           python scripts/clipper/podcast_transcribe.py
           --vod-id "${{ inputs.vod_id }}"
