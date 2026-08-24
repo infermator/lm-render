@@ -84,7 +84,9 @@ jobs:
           browser_path="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           if [ -n "$browser_path" ]; then
             echo '[podcast-source] Isolated browser proof-of-origin provider enabled'
-            echo "CLIPPER_PODCAST_BROWSER_PATH=$browser_path" >> "$GITHUB_ENV"
+            chmod 700 scripts/clipper/chrome-podcast-ci.sh
+            echo "CLIPPER_PODCAST_REAL_BROWSER_PATH=$browser_path" >> "$GITHUB_ENV"
+            echo "CLIPPER_PODCAST_BROWSER_PATH=$GITHUB_WORKSPACE/scripts/clipper/chrome-podcast-ci.sh" >> "$GITHUB_ENV"
           else
             echo '[podcast-source] Chrome unavailable; continuing with WARP/client fallbacks'
           fi
