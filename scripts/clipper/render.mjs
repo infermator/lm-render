@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { subtitleFilterSuffix } from './ffmpeg_filters.mjs';
 
 const MAM_BASE = String(process.env.MAM_BASE || 'https://reaction-lab-coral.vercel.app').replace(/\/$/, '');
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || process.env.REACTION_PIPELINE_SECRET || '').trim();
@@ -127,10 +128,6 @@ function writeCaptions(source, outPath, language) {
   return { created: Boolean(srt.trim()), provider: payload.provider || null, words: words.length };
 }
 
-function escapeSubtitlePath(filePath) {
-  return filePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
-}
-
 function uploadObject(localPath, objectPath, contentType) {
   const encoded = objectPath.split('/').map(encodeURIComponent).join('/');
   const result = spawnSync('curl', [
@@ -242,7 +239,7 @@ async function main() {
       : (requestedLayout === 'center_crop' ? 'center_crop' : 'fit_blur');
     const out = path.join(work, 'video.mp4');
     const captionFilter = captionMeta.created
-      ? `,subtitles='${escapeSubtitlePath(captionPath)}':force_style='FontName=DejaVu Sans,FontSize=18,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=190'`
+      ? subtitleFilterSuffix(captionPath, 'FontName=DejaVu Sans,FontSize=18,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=190')
       : '';
 
     const autoFilter = layout === 'creator_gameplay_auto' ? creatorGameplayFilter(facecam, captionFilter) : null;

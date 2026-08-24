@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { gunzipSync } from 'node:zlib';
+import { subtitleFilterSuffix } from './ffmpeg_filters.mjs';
 import {
   PODCAST_CAPTION_FORCE_STYLE,
   activeSpeakerCropFilter,
@@ -180,10 +181,6 @@ function uploadObject(localPath, objectPath, contentType, { upsert = false } = {
 
 function probe(file) {
   return JSON.parse(runCapture('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', file]));
-}
-
-function escapeSubtitlePath(filePath) {
-  return filePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
 }
 
 function fitBlurFilter(captionSuffix) {
@@ -422,7 +419,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const srt = buildTranscriptSrt(captionWords);
   if (srt.trim()) fs.writeFileSync(captionPath, srt, 'utf8');
   const captionSuffix = srt.trim()
-    ? `,subtitles='${escapeSubtitlePath(captionPath)}':force_style='${PODCAST_CAPTION_FORCE_STYLE}'`
+    ? subtitleFilterSuffix(captionPath, PODCAST_CAPTION_FORCE_STYLE)
     : '';
 
   const sourceProbe = probe(source);
