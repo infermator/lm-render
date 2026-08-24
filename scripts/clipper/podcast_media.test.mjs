@@ -221,8 +221,14 @@ test('Podcast batch materialization stays ephemeral while outputs are uploaded',
 
 test('Podcast render owns the same isolated proof-of-origin fallback as transcript ingest', () => {
   const workflow = fs.readFileSync(new URL('../../.github/workflows/clipper-podcast-render.yml', import.meta.url), 'utf8');
+  const wrapper = fs.readFileSync(new URL('./yt-dlp-safe.sh', import.meta.url), 'utf8');
   assert.match(workflow, /yt-dlp-getpot-wpc==1\.1\.2/);
   assert.match(workflow, /patch_wpc_provider\.py/);
   assert.match(workflow, /CLIPPER_PODCAST_WPC_ENABLED: '1'/);
   assert.match(workflow, /xvfb-run -a node scripts\/clipper\/podcast_render\.mjs/);
+  assert.match(wrapper, /podcast-default-retry/);
+  assert.match(wrapper, /player_client=tv_downgraded;fetch_pot=never/);
+  assert.match(wrapper, /run_direct_attempt podcast-direct-progressive/);
+  assert.match(wrapper, /CLIPPER_YTDLP_ATTEMPT_TIMEOUT_SECONDS=90 run_attempt podcast-mweb-browser-pot/);
+  assert.match(wrapper, /else\n  # V2 sequence remains intentionally unchanged\./);
 });

@@ -22,7 +22,7 @@ ORIGINAL = """        return nodriver.core.config.Config(
 PATCHED = """        return nodriver.core.config.Config(
             headless=False,
             browser_executable_path=browser_executable_path,
-            browser_args=browser_args,
+            browser_args=browser_args + ['--no-sandbox', '--disable-setuid-sandbox'],
             sandbox=False
         )"""
 

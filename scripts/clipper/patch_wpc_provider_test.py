@@ -16,7 +16,10 @@ class PatchWpcProviderTests(unittest.TestCase):
             target.write_text(f"before\n{ORIGINAL}\nafter\n", encoding="utf-8")
             self.assertTrue(patch_provider(target))
             self.assertFalse(patch_provider(target))
-            self.assertIn(PATCHED, target.read_text(encoding="utf-8"))
+            patched = target.read_text(encoding="utf-8")
+            self.assertIn(PATCHED, patched)
+            self.assertIn("--no-sandbox", patched)
+            self.assertIn("sandbox=False", patched)
 
     def test_unknown_provider_layout_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
