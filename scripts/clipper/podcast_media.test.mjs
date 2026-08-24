@@ -6,6 +6,7 @@ import {
   activeSpeakerCropFilter,
   buildTranscriptSrt,
   refinePodcastSpeechWindow,
+  resolvePodcastFraming,
   speakerAt,
   speakerIntervalsForWindow,
   validateAlignmentArtifactMetadata,
@@ -108,13 +109,52 @@ test('Podcast cuts preserve an existing sentence ending and reject unverifiable 
   assert.equal(unsafe.end, 128);
 });
 
-test('diarization supplies active speaker intervals and crop switching', () => {
+test('diarization supplies stable framing and eased multi-speaker crop switching', () => {
   assert.equal(speakerAt(artifact, 101), 'SPEAKER_00');
   const intervals = speakerIntervalsForWindow(artifact, 100, 104);
   assert.deepEqual(intervals, [{ start: 0, end: 3, speaker: 'SPEAKER_00' }]);
-  const filter = activeSpeakerCropFilter({ width: 1920, height: 1080, centers: { SPEAKER_00: 0.25 }, intervals });
-  assert.match(filter, /between\(t,0\.000,3\.000\)/);
+  assert.deepEqual(resolvePodcastFraming({
+    localCenters: { SPEAKER_00: 0.56 },
+    speakerPositions: { SPEAKER_00: 'center' },
+    intervals,
+  }), {
+    mode: 'center_crop',
+    reason: 'single_speaker_stable',
+    centers: { SPEAKER_00: 0.5 },
+    raw_centers: { SPEAKER_00: 0.56 },
+  });
+
+  const movingIntervals = [
+    { start: 0, end: 1.5, speaker: 'SPEAKER_00' },
+    { start: 2, end: 4, speaker: 'SPEAKER_01' },
+  ];
+  const moving = resolvePodcastFraming({
+    localCenters: { SPEAKER_00: 0.24, SPEAKER_01: 0.76 },
+    speakerPositions: { SPEAKER_00: 'left', SPEAKER_01: 'right' },
+    intervals: movingIntervals,
+  });
+  assert.equal(moving.mode, 'active_speaker');
+  assert.equal(moving.reason, 'separated_multi_speaker');
+  const filter = activeSpeakerCropFilter({ width: 1920, height: 1080, centers: moving.centers, intervals: movingIntervals });
+  assert.match(filter, /lt\(t,2\.000\)/);
+  assert.match(filter, /lt\(t,2\.350\)/);
+  assert.doesNotMatch(filter, /between\(/);
   assert.match(filter, /scale=1080:1920/);
+});
+
+test('nearby multi-speaker positions do not create fake camera motion', () => {
+  const framing = resolvePodcastFraming({
+    localCenters: { SPEAKER_00: 0.47, SPEAKER_01: 0.56 },
+    speakerPositions: { SPEAKER_00: 'left', SPEAKER_01: 'right' },
+    intervals: [
+      { start: 0, end: 2, speaker: 'SPEAKER_00' },
+      { start: 2, end: 4, speaker: 'SPEAKER_01' },
+    ],
+  });
+  assert.equal(framing.mode, 'center_crop');
+  assert.equal(framing.reason, 'measured_positions_not_separated');
+  assert.deepEqual(framing.centers, { SPEAKER_00: 0.5, SPEAKER_01: 0.5 });
+  assert.equal(framing.raw_spread, 0.09);
 });
 
 test('alignment proxy metadata is content-addressed and bounded', () => {

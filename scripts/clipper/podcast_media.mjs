@@ -240,6 +240,58 @@ export function normalizedSpeakerCenters(raw) {
   }).filter(([, center]) => center != null));
 }
 
+export function resolvePodcastFraming({ localCenters, speakerPositions, intervals }) {
+  const rawCenters = normalizedSpeakerCenters(localCenters);
+  const centers = { ...rawCenters };
+  for (const [speaker, position] of Object.entries(speakerPositions || {})) {
+    if (position === 'left') centers[speaker] = 0.25;
+    if (position === 'center') centers[speaker] = 0.5;
+    if (position === 'right') centers[speaker] = 0.75;
+  }
+
+  const activeSpeakers = [...new Set((intervals || [])
+    .map(interval => String(interval?.speaker || ''))
+    .filter(speaker => speaker && Number.isFinite(Number(centers[speaker]))))];
+  if (!activeSpeakers.length) {
+    return { mode: 'fit_blur', reason: 'no_positioned_speaker', centers, raw_centers: rawCenters };
+  }
+
+  const activeCenters = activeSpeakers.map(speaker => Number(centers[speaker]));
+  const spread = Math.max(...activeCenters) - Math.min(...activeCenters);
+  if (activeSpeakers.length === 1) {
+    centers[activeSpeakers[0]] = 0.5;
+    return { mode: 'center_crop', reason: 'single_speaker_stable', centers, raw_centers: rawCenters };
+  }
+  const rawActiveCenters = activeSpeakers
+    .map(speaker => Number(rawCenters[speaker]))
+    .filter(Number.isFinite);
+  const rawSpread = rawActiveCenters.length >= 2
+    ? Math.max(...rawActiveCenters) - Math.min(...rawActiveCenters)
+    : null;
+  if (rawSpread != null && rawSpread < 0.18) {
+    for (const speaker of activeSpeakers) centers[speaker] = 0.5;
+    return {
+      mode: 'center_crop',
+      reason: 'measured_positions_not_separated',
+      centers,
+      raw_centers: rawCenters,
+      raw_spread: Number(rawSpread.toFixed(4)),
+    };
+  }
+  if (spread < 0.18) {
+    for (const speaker of activeSpeakers) centers[speaker] = 0.5;
+    return { mode: 'center_crop', reason: 'speaker_positions_not_separated', centers, raw_centers: rawCenters };
+  }
+  return {
+    mode: 'active_speaker',
+    reason: 'separated_multi_speaker',
+    centers,
+    raw_centers: rawCenters,
+    spread: Number(spread.toFixed(4)),
+    raw_spread: rawSpread == null ? null : Number(rawSpread.toFixed(4)),
+  };
+}
+
 export function activeSpeakerCropFilter({ width, height, centers, intervals, captionSuffix = '' }) {
   const rawWidth = Number(width);
   const rawHeight = Number(height);
@@ -254,14 +306,31 @@ export function activeSpeakerCropFilter({ width, height, centers, intervals, cap
     cropWidth = sourceWidth;
     cropHeight = Math.min(sourceHeight, Math.round(sourceWidth * 16 / 9));
   }
-  const defaultX = Math.max(0, Math.round((sourceWidth - cropWidth) / 2));
   const defaultY = Math.max(0, Math.round((sourceHeight - cropHeight) / 2));
-  let xExpression = String(defaultX);
-  for (const interval of [...intervals].reverse()) {
+  const positions = [];
+  for (const interval of intervals || []) {
     const center = Number(centers?.[interval.speaker]);
     if (!Number.isFinite(center)) continue;
     const x = Math.max(0, Math.min(sourceWidth - cropWidth, Math.round((center * sourceWidth) - (cropWidth / 2))));
-    xExpression = `if(between(t,${Number(interval.start).toFixed(3)},${Number(interval.end).toFixed(3)}),${x},${xExpression})`;
+    const start = Number(interval.start);
+    if (!Number.isFinite(start)) continue;
+    if (positions.at(-1)?.x === x) continue;
+    positions.push({ start, x });
+  }
+  if (!positions.length) return null;
+
+  // Hold the last crop through pauses. Only verified, spatially separated
+  // multi-speaker layouts reach this path; edited single-speaker footage uses
+  // one stable center crop instead of fighting the source camera cuts.
+  let xExpression = String(positions[0].x);
+  let previousX = positions[0].x;
+  for (const position of positions.slice(1)) {
+    const transitionStart = Math.max(0, position.start);
+    const transitionDuration = 0.35;
+    const transitionEnd = transitionStart + transitionDuration;
+    const delta = position.x - previousX;
+    xExpression = `if(lt(t,${transitionStart.toFixed(3)}),${xExpression},if(lt(t,${transitionEnd.toFixed(3)}),${previousX}+(${delta})*(t-${transitionStart.toFixed(3)})/${transitionDuration.toFixed(3)},${position.x}))`;
+    previousX = position.x;
   }
   return `[0:v]crop=${cropWidth}:${cropHeight}:x='${xExpression}':y=${defaultY},scale=1080:1920${captionSuffix}[v]`;
 }

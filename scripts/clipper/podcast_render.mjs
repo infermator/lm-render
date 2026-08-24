@@ -12,6 +12,7 @@ import {
   buildTranscriptSrt,
   normalizedSpeakerCenters,
   refinePodcastSpeechWindow,
+  resolvePodcastFraming,
   speakerAt,
   speakerIntervalsForWindow,
   validateAlignmentArtifactMetadata,
@@ -257,25 +258,13 @@ function extractConfirmationFrames(source, artifact, absoluteStart, duration, wo
   return frames;
 }
 
-function centersFromConfirmation(confirmation, fallback) {
-  const result = { ...normalizedSpeakerCenters(fallback) };
-  for (const [speaker, position] of Object.entries(confirmation?.speaker_positions || {})) {
-    if (result[speaker] != null) continue;
-    if (position === 'left') result[speaker] = 0.25;
-    if (position === 'center') result[speaker] = 0.5;
-    if (position === 'right') result[speaker] = 0.75;
-  }
-  return result;
-}
-
-function chooseLayout(plan, confirmation, centers, intervals) {
+function chooseLayout(plan, confirmation, framing) {
   const requested = String(plan?.output?.requested_layout || plan?.output?.layout || 'fit_blur');
   if (requested === 'center_crop') return 'center_crop';
   if (!confirmation?.confirmed) return 'fit_blur';
   if (confirmation.held_object || confirmation.screen_content || confirmation.recommended_layout === 'two_shot') return 'fit_blur';
   if (confirmation.recommended_layout === 'center_crop') return 'center_crop';
-  const knownIntervals = intervals.filter(interval => Number.isFinite(Number(centers?.[interval.speaker])));
-  if (confirmation.recommended_layout === 'active_speaker' && knownIntervals.length) return 'active_speaker';
+  if (confirmation.recommended_layout === 'active_speaker') return framing.mode;
   return 'fit_blur';
 }
 
@@ -419,8 +408,13 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     console.warn(`[podcast-render] visual confirmation fallback for ${render.id}: ${visualConfirmationError}`);
   }
 
-  const centers = centersFromConfirmation(visualConfirmation, speakerEstimate.centers);
-  const layout = chooseLayout(plan, visualConfirmation, centers, intervals);
+  const framing = resolvePodcastFraming({
+    localCenters: speakerEstimate.centers,
+    speakerPositions: visualConfirmation?.speaker_positions,
+    intervals,
+  });
+  const centers = framing.centers;
+  const layout = chooseLayout(plan, visualConfirmation, framing);
   const captionPath = path.join(work, 'captions.srt');
   const captionWords = plan?.output?.captions === false ? [] : wordsForWindow(artifact, start, end);
   const srt = buildTranscriptSrt(captionWords);
@@ -495,6 +489,11 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       speaker_framing: {
         intervals: intervals.length,
         centers,
+        raw_centers: framing.raw_centers,
+        strategy: framing.mode,
+        strategy_reason: framing.reason,
+        center_spread: framing.spread ?? null,
+        raw_center_spread: framing.raw_spread ?? null,
         local_analysis: speakerEstimate.analysis,
       },
       visual_confirmation: visualConfirmation,
