@@ -39,10 +39,11 @@ jobs:
           python scripts/clipper/patch_wpc_provider.py
           sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
           python scripts/clipper/patch_wpc_provider_test.py
+          python scripts/clipper/podcast_recovery_artifact_test.py
           python scripts/clipper/podcast_storage_contract_test.py
           python scripts/clipper/podcast_audio_source_test.py
           python scripts/clipper/podcast_diarization_test.py
-          python -m py_compile scripts/clipper/patch_wpc_provider.py scripts/clipper/podcast_storage_contract.py scripts/clipper/podcast_audio_source.py scripts/clipper/podcast_diarization.py scripts/clipper/podcast_transcribe.py
+          python -m py_compile scripts/clipper/patch_wpc_provider.py scripts/clipper/podcast_recovery_artifact.py scripts/clipper/podcast_storage_contract.py scripts/clipper/podcast_audio_source.py scripts/clipper/podcast_diarization.py scripts/clipper/podcast_transcribe.py
 
       - name: Start Cloudflare WARP source egress
         continue-on-error: true
@@ -99,6 +100,15 @@ jobs:
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
           YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
           CLIPPER_PODCAST_WPC_ENABLED: '1'
+          CLIPPER_PODCAST_RECOVERY_DIR: ${{ runner.temp }}/clipper-podcast-recovery
         run: >-
           xvfb-run -a python scripts/clipper/podcast_transcribe.py
           --vod-id "${{ inputs.vod_id }}"
+      - name: Preserve failed transcript for one-day recovery
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipper-podcast-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/clipper-podcast-recovery
+          if-no-files-found: ignore
+          retention-days: 1

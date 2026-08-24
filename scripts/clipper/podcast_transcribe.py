@@ -22,6 +22,7 @@ import requests
 from faster_whisper import WhisperModel
 from podcast_audio_source import download_podcast_audio
 from podcast_diarization import local_acoustic_diarize
+from podcast_recovery_artifact import persist_recovery_artifact
 from podcast_storage_contract import assert_storage_project
 
 
@@ -346,6 +347,9 @@ def main() -> int:
             compressed = gzip.compress(encoded, compresslevel=9, mtime=0)
             digest = hashlib.sha256(compressed).hexdigest()
             object_path = f"podcasts/{vod_id}/analysis/{digest}.json.gz"
+            recovery_root = str(os.getenv("CLIPPER_PODCAST_RECOVERY_DIR") or "").strip()
+            if recovery_root:
+                persist_recovery_artifact(pathlib.Path(recovery_root), vod_id, digest, compressed)
             failure_stage = "uploading_artifact"
             progress(args.base_url, args.secret, vod_id, failure_stage, "Uploading immutable transcript artifact to private CLIPPER storage")
             upload_artifact(args.storage_url, args.storage_key, object_path, compressed)
