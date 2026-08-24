@@ -7,9 +7,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { gunzipSync } from 'node:zlib';
 import {
+  PODCAST_CAPTION_FORCE_STYLE,
   activeSpeakerCropFilter,
   buildTranscriptSrt,
   normalizedSpeakerCenters,
+  refinePodcastSpeechWindow,
   speakerAt,
   speakerIntervalsForWindow,
   validateAlignmentArtifactMetadata,
@@ -359,10 +361,19 @@ async function completeFailure(render, message, extra = {}) {
 
 async function renderCandidate({ render, candidate, vod, artifact, batchSource, batchAudio, alignmentAudio, batchStart, batchIdentity, root }) {
   const plan = render.edit_plan || {};
-  const { start, end, duration } = validatePodcastWindow(
+  const plannedWindow = validatePodcastWindow(
     plan?.candidate?.start_s ?? candidate.clip_start_s,
     plan?.candidate?.end_s ?? candidate.clip_end_s,
   );
+  const refinedWindow = refinePodcastSpeechWindow(artifact, plannedWindow.start, plannedWindow.end, {
+    vodDurationS: vod.duration_s,
+    maxExtensionSeconds: 12,
+    tailSeconds: 0.55,
+  });
+  if (!refinedWindow.verified) {
+    throw new Error(`natural_end_unverified: no sentence ending or speech pause found within ${refinedWindow.original_end_s.toFixed(2)}-${(refinedWindow.original_end_s + 12).toFixed(2)}s`);
+  }
+  const { start, end, duration } = validatePodcastWindow(refinedWindow.start, refinedWindow.end);
   const work = path.join(root, String(render.id));
   fs.mkdirSync(work, { recursive: true });
   await progress(render.id, 'materializing_cuts', 'Verifying RSS-to-YouTube audio alignment before cutting');
@@ -415,7 +426,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const srt = buildTranscriptSrt(captionWords);
   if (srt.trim()) fs.writeFileSync(captionPath, srt, 'utf8');
   const captionSuffix = srt.trim()
-    ? `,subtitles='${escapeSubtitlePath(captionPath)}':force_style='FontName=DejaVu Sans,FontSize=18,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=190'`
+    ? `,subtitles='${escapeSubtitlePath(captionPath)}':force_style='${PODCAST_CAPTION_FORCE_STYLE}'`
     : '';
 
   const sourceProbe = probe(source);
@@ -469,6 +480,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       worker: 'lm-render/clipper-v3-podcast',
       worker_run_id: WORKER_RUN_ID,
       source_window_s: [start, end],
+      boundary_refinement: refinedWindow,
       shared_materialization: { ephemeral: true, identity: batchIdentity, start_s: batchStart },
       audio_alignment: alignment,
       layout: actualLayout,
@@ -495,6 +507,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       height: Number(resultVideo.height),
       duration_s: outputDuration,
       transcript_captions: Boolean(srt.trim()),
+      natural_speech_tail: refinedWindow.reason,
       visual_confirmation: Boolean(visualConfirmation),
     },
   });

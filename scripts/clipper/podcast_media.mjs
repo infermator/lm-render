@@ -1,3 +1,5 @@
+export const PODCAST_CAPTION_FORCE_STYLE = 'FontName=DejaVu Sans,FontSize=17,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1,Shadow=0,Alignment=2,MarginV=48';
+
 export function validatePodcastWindow(startValue, endValue) {
   const start = Number(startValue);
   const end = Number(endValue);
@@ -36,6 +38,105 @@ export function validateAlignmentArtifactMetadata(vodIdValue, raw) {
 
 function artifactSegments(artifact) {
   return Array.isArray(artifact?.transcript?.segments) ? artifact.transcript.segments : [];
+}
+
+function absoluteTranscriptWords(artifact) {
+  const words = [];
+  for (const segment of artifactSegments(artifact)) {
+    for (const word of Array.isArray(segment?.words) ? segment.words : []) {
+      const start = Number(word?.start_s);
+      const end = Number(word?.end_s);
+      const text = String(word?.text || '').trim();
+      if (!text || !Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;
+      words.push({ start, end, text });
+    }
+  }
+  return words.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function sentenceTerminal(text) {
+  return /[.!?][\]})"'’”]*$/.test(String(text || '').trim());
+}
+
+export function refinePodcastSpeechWindow(artifact, startValue, endValue, options = {}) {
+  const original = validatePodcastWindow(startValue, endValue);
+  const tailSeconds = Math.max(0.35, Math.min(1, Number(options.tailSeconds ?? 0.55)));
+  const pauseSeconds = Math.max(tailSeconds, Math.min(1.5, Number(options.pauseSeconds ?? 0.65)));
+  const extensionLimit = Math.max(0, Math.min(12, Number(options.maxExtensionSeconds ?? 12)));
+  const vodDuration = Number(options.vodDurationS);
+  const maximumEnd = Math.min(
+    Number.isFinite(vodDuration) && vodDuration > 0 ? vodDuration : Number.POSITIVE_INFINITY,
+    original.start + 180,
+    original.end + extensionLimit,
+  );
+  const words = absoluteTranscriptWords(artifact);
+  let lastIndex = -1;
+  for (let index = 0; index < words.length && words[index].start < original.end; index += 1) lastIndex = index;
+  if (lastIndex < 0) {
+    return {
+      ...original,
+      original_end_s: original.end,
+      extension_s: 0,
+      changed: false,
+      verified: false,
+      reason: 'no_transcript_words',
+    };
+  }
+
+  const lastAtPlan = words[lastIndex];
+  const nextAtPlan = words[lastIndex + 1] || null;
+  const existingTail = original.end - lastAtPlan.end;
+  const existingPause = !nextAtPlan || nextAtPlan.start - lastAtPlan.end >= pauseSeconds;
+  if (existingTail >= tailSeconds && (sentenceTerminal(lastAtPlan.text) || existingPause)) {
+    return {
+      ...original,
+      original_end_s: original.end,
+      extension_s: 0,
+      changed: false,
+      verified: true,
+      reason: 'existing_natural_tail',
+    };
+  }
+
+  let chosen = lastAtPlan;
+  let terminalFound = sentenceTerminal(lastAtPlan.text) && lastAtPlan.end >= original.end - 0.2;
+  let pauseFound = false;
+  for (let index = lastIndex; index < words.length && !terminalFound && !pauseFound; index += 1) {
+    const word = words[index];
+    if (word.start >= maximumEnd) break;
+    if (index > lastIndex) {
+      const prior = words[index - 1];
+      if (word.start - prior.end >= pauseSeconds && prior.end >= original.end - 0.2) {
+        chosen = prior;
+        pauseFound = true;
+        break;
+      }
+    }
+    chosen = word;
+    if (word.end >= original.end - 0.2 && sentenceTerminal(word.text)) {
+      terminalFound = true;
+      break;
+    }
+    const next = words[index + 1];
+    if (word.end >= original.end - 0.2 && (!next || next.start - word.end >= pauseSeconds)) {
+      pauseFound = true;
+    }
+  }
+
+  const verified = terminalFound || pauseFound;
+  const refinedEnd = verified
+    ? Math.max(original.end, Math.min(maximumEnd, chosen.end + tailSeconds))
+    : original.end;
+  return {
+    start: original.start,
+    end: Number(refinedEnd.toFixed(3)),
+    duration: Number((refinedEnd - original.start).toFixed(3)),
+    original_end_s: original.end,
+    extension_s: Number((refinedEnd - original.end).toFixed(3)),
+    changed: refinedEnd > original.end + 0.05,
+    verified,
+    reason: terminalFound ? 'sentence_terminal' : pauseFound ? 'speech_pause' : 'no_safe_boundary',
+  };
 }
 
 export function wordsForWindow(artifact, start, end) {

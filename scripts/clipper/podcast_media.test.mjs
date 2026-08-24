@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import {
+  PODCAST_CAPTION_FORCE_STYLE,
   activeSpeakerCropFilter,
   buildTranscriptSrt,
+  refinePodcastSpeechWindow,
   speakerAt,
   speakerIntervalsForWindow,
   validateAlignmentArtifactMetadata,
@@ -37,6 +39,73 @@ test('captions reuse absolute transcript word timings and shift them to the cut'
   const srt = buildTranscriptSrt(words);
   assert.match(srt, /00:00:00,500 --> 00:00:02,500/);
   assert.match(srt, /Hello world\./);
+});
+
+test('Podcast captions use a lower face-safe lane and restrained outline', () => {
+  assert.match(PODCAST_CAPTION_FORCE_STYLE, /Outline=1(?:,|$)/);
+  assert.match(PODCAST_CAPTION_FORCE_STYLE, /Alignment=2/);
+  assert.match(PODCAST_CAPTION_FORCE_STYLE, /MarginV=48/);
+  assert.doesNotMatch(PODCAST_CAPTION_FORCE_STYLE, /Outline=3/);
+});
+
+test('Podcast cuts extend through the next sentence and keep a natural tail', () => {
+  const boundaryArtifact = {
+    transcript: {
+      segments: [{
+        start_s: 125,
+        end_s: 133,
+        words: [
+          { start_s: 126.8, end_s: 127.2, text: 'Now' },
+          { start_s: 127.2, end_s: 127.5, text: "you're" },
+          { start_s: 127.5, end_s: 127.9, text: 'sitting' },
+          { start_s: 128.1, end_s: 128.5, text: 'there' },
+          { start_s: 128.5, end_s: 128.8, text: 'with' },
+          { start_s: 128.8, end_s: 129.0, text: 'no' },
+          { start_s: 129.0, end_s: 129.7, text: 'cashflow.' },
+        ],
+      }],
+    },
+  };
+  const refined = refinePodcastSpeechWindow(boundaryArtifact, 100, 128, { vodDurationS: 500 });
+  assert.equal(refined.verified, true);
+  assert.equal(refined.reason, 'sentence_terminal');
+  assert.equal(refined.end, 130.25);
+  assert.equal(refined.duration, 30.25);
+});
+
+test('Podcast cuts preserve an existing sentence ending and reject unverifiable tails', () => {
+  const complete = {
+    transcript: { segments: [{ words: [{ start_s: 120, end_s: 126.5, text: 'Done.' }] }] },
+  };
+  assert.deepEqual(
+    refinePodcastSpeechWindow(complete, 100, 127.5),
+    {
+      start: 100,
+      end: 127.5,
+      duration: 27.5,
+      original_end_s: 127.5,
+      extension_s: 0,
+      changed: false,
+      verified: true,
+      reason: 'existing_natural_tail',
+    },
+  );
+
+  const runOn = {
+    transcript: {
+      segments: [{
+        words: Array.from({ length: 40 }, (_, index) => ({
+          start_s: 120 + index * 0.45,
+          end_s: 120.4 + index * 0.45,
+          text: 'continuing',
+        })),
+      }],
+    },
+  };
+  const unsafe = refinePodcastSpeechWindow(runOn, 100, 128, { maxExtensionSeconds: 5 });
+  assert.equal(unsafe.verified, false);
+  assert.equal(unsafe.reason, 'no_safe_boundary');
+  assert.equal(unsafe.end, 128);
 });
 
 test('diarization supplies active speaker intervals and crop switching', () => {

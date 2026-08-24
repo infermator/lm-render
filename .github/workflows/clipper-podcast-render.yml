@@ -55,7 +55,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl lsb-release privoxy
-          python -m pip install --disable-pip-version-check --no-input 'yt-dlp[default]' 'opencv-python-headless>=4.10.0' 'requests>=2.32,<3'
+          python -m pip install --disable-pip-version-check --no-input 'yt-dlp[default]' 'opencv-python-headless==4.11.0.86' 'requests>=2.32,<3'
+          python -c "import cv2; assert callable(getattr(cv2, 'CascadeClassifier', None)), cv2.__version__"
           sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
           node --check scripts/clipper/podcast_render.mjs
           node --test scripts/clipper/podcast_media.test.mjs
