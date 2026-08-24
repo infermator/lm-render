@@ -74,6 +74,31 @@ test('Podcast cuts extend through the next sentence and keep a natural tail', ()
   assert.equal(refined.duration, 30.25);
 });
 
+test('Podcast cuts ignore punctuation when the same thought immediately continues', () => {
+  const continuingThought = {
+    transcript: {
+      segments: [{
+        words: [
+          { start_s: 127.4, end_s: 127.8, text: 'You' },
+          { start_s: 127.8, end_s: 128.2, text: 'fix' },
+          { start_s: 128.2, end_s: 128.6, text: 'them.' },
+          { start_s: 128.7, end_s: 129.1, text: 'Then' },
+          { start_s: 129.1, end_s: 129.5, text: 'you' },
+          { start_s: 129.5, end_s: 130.0, text: 'build' },
+          { start_s: 130.0, end_s: 130.3, text: 'the' },
+          { start_s: 130.3, end_s: 131.4, text: 'portfolio.' },
+          { start_s: 132.2, end_s: 132.5, text: 'Next' },
+        ],
+      }],
+    },
+  };
+  const refined = refinePodcastSpeechWindow(continuingThought, 100, 128, { vodDurationS: 500 });
+  assert.equal(refined.verified, true);
+  assert.equal(refined.reason, 'sentence_terminal');
+  assert.equal(refined.end, 131.95);
+  assert.equal(refined.extension_s, 3.95);
+});
+
 test('Podcast cuts preserve an existing sentence ending and reject unverifiable tails', () => {
   const complete = {
     transcript: { segments: [{ words: [{ start_s: 120, end_s: 126.5, text: 'Done.' }] }] },

@@ -87,7 +87,7 @@ export function refinePodcastSpeechWindow(artifact, startValue, endValue, option
   const nextAtPlan = words[lastIndex + 1] || null;
   const existingTail = original.end - lastAtPlan.end;
   const existingPause = !nextAtPlan || nextAtPlan.start - lastAtPlan.end >= pauseSeconds;
-  if (existingTail >= tailSeconds && (sentenceTerminal(lastAtPlan.text) || existingPause)) {
+  if (existingTail >= tailSeconds && existingPause) {
     return {
       ...original,
       original_end_s: original.end,
@@ -99,7 +99,9 @@ export function refinePodcastSpeechWindow(artifact, startValue, endValue, option
   }
 
   let chosen = lastAtPlan;
-  let terminalFound = sentenceTerminal(lastAtPlan.text) && lastAtPlan.end >= original.end - 0.2;
+  let terminalFound = sentenceTerminal(lastAtPlan.text)
+    && lastAtPlan.end >= original.end - 0.2
+    && existingPause;
   let pauseFound = false;
   for (let index = lastIndex; index < words.length && !terminalFound && !pauseFound; index += 1) {
     const word = words[index];
@@ -113,12 +115,13 @@ export function refinePodcastSpeechWindow(artifact, startValue, endValue, option
       }
     }
     chosen = word;
-    if (word.end >= original.end - 0.2 && sentenceTerminal(word.text)) {
+    const next = words[index + 1] || null;
+    const hasPauseAfter = !next || next.start - word.end >= pauseSeconds;
+    if (word.end >= original.end - 0.2 && sentenceTerminal(word.text) && hasPauseAfter) {
       terminalFound = true;
       break;
     }
-    const next = words[index + 1];
-    if (word.end >= original.end - 0.2 && (!next || next.start - word.end >= pauseSeconds)) {
+    if (word.end >= original.end - 0.2 && hasPauseAfter) {
       pauseFound = true;
     }
   }
