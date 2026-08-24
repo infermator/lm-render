@@ -1,0 +1,90 @@
+name: CLIPPER Podcast Transcript Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      vod_id:
+        description: Exact podcast VOD id (blank claims oldest queued)
+        required: false
+        default: ''
+  schedule:
+    - cron: '*/15 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clipper-podcast-transcript-${{ inputs.vod_id || 'queue' }}
+  cancel-in-progress: false
+
+jobs:
+  transcript-scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: scripts/clipper/requirements-podcast.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install podcast tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg curl lsb-release privoxy
+          python -m pip install --disable-pip-version-check --no-input -r scripts/clipper/requirements-podcast.txt 'yt-dlp[default]'
+          sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
+          python scripts/clipper/podcast_audio_source_test.py
+          python scripts/clipper/podcast_diarization_test.py
+          python -m py_compile scripts/clipper/podcast_audio_source.py scripts/clipper/podcast_diarization.py scripts/clipper/podcast_transcribe.py
+
+      - name: Start Cloudflare WARP source egress
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          YOUTUBE_PROXY_SECRET: ${{ secrets.YOUTUBE_PROXY_URL }}
+        run: |
+          set +e
+          if [ -n "${YOUTUBE_PROXY_SECRET:-}" ]; then
+            echo '[podcast-source] explicit YOUTUBE_PROXY_URL secret set; skipping WARP'
+            echo "YOUTUBE_PROXY_URL=$YOUTUBE_PROXY_SECRET" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg || exit 0
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -qq
+          sudo apt-get install -y cloudflare-warp || exit 0
+          sudo systemctl start warp-svc
+          sleep 5
+          warp-cli --accept-tos registration new || exit 0
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos proxy port 40000
+          warp-cli --accept-tos connect
+          sleep 8
+          echo 'forward-socks5t / 127.0.0.1:40000 .' | sudo tee -a /etc/privoxy/config
+          sudo systemctl restart privoxy
+          sleep 3
+          if curl -s --max-time 25 --proxy http://127.0.0.1:8118 \
+               https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'; then
+            echo '[podcast-source] WARP source egress active'
+            echo 'YOUTUBE_PROXY_URL=http://127.0.0.1:8118' >> "$GITHUB_ENV"
+          else
+            echo '[podcast-source] WARP did not come up; continuing on direct egress'
+          fi
+          exit 0
+      - name: Transcribe, diarize, persist artifact and Scout
+        env:
+          MAM_BASE: 'https://reaction-lab-coral.vercel.app'
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
+        run: >-
+          python scripts/clipper/podcast_transcribe.py
+          --vod-id "${{ inputs.vod_id }}"
