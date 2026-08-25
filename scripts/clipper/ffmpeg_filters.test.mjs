@@ -56,6 +56,34 @@ test('readable bottom captions receive a wider, stronger fade behind the text la
   assert.match(filter, /overlay=0:H-h:shortest=1/);
 });
 
+test('readable middle captions keep the centered vignette inside FFmpeg\'s eight-stop ceiling', () => {
+  const filter = captionCompositeFilter({
+    filePath: '/tmp/captions.srt',
+    forceStyle: 'Alignment=10,MarginV=48',
+    strength: 'readable',
+  });
+  assert.match(filter, /s=1080x1040/);
+  assert.match(filter, /n=8:c0=black@0\.00:c1=black@0\.035:c2=black@0\.14:c3=black@0\.32:c4=black@0\.32:c5=black@0\.14:c6=black@0\.035:c7=black@0\.00/);
+  assert.match(filter, /overlay=0:\(H-h\)\/2:shortest=1/);
+});
+
+test('no caption profile declares more gradient stops than FFmpeg accepts', () => {
+  for (const strength of ['subtle', 'readable']) {
+    for (const alignment of [2, 6, 10]) {
+      const filter = captionCompositeFilter({
+        filePath: '/tmp/captions.srt',
+        forceStyle: `Alignment=${alignment},MarginV=48`,
+        strength,
+      });
+      const declared = Number(filter.match(/(?::|=)n=(\d+)/)?.[1] || 0);
+      const stops = Array.from(filter.matchAll(/:c(\d+)=black@/g), match => Number(match[1]));
+      assert.ok(declared >= 2 && declared <= 8, `${strength}/${alignment} declares n=${declared}`);
+      assert.equal(Math.max(...stops), declared - 1, `${strength}/${alignment} stop indexes must match n`);
+      assert.ok(Math.max(...stops) <= 7, `${strength}/${alignment} uses c${Math.max(...stops)}`);
+    }
+  }
+});
+
 test('caption shadows reject unknown strength profiles', () => {
   assert.throws(
     () => captionCompositeFilter({

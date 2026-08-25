@@ -61,6 +61,10 @@ jobs:
           sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
           node --check scripts/clipper/podcast_render.mjs
           node --test scripts/clipper/podcast_media.test.mjs
+          node --test scripts/clipper/ffmpeg_filters.test.mjs
+          # Real-FFmpeg parse of every caption profile; string assertions alone
+          # once green-lit a graph the binary refuses to build.
+          node --test scripts/clipper/ffmpeg_filters.smoke.test.mjs
           python scripts/clipper/patch_wpc_provider_test.py
           python scripts/clipper/podcast_audio_source_test.py
           python scripts/clipper/podcast_audio_align_test.py

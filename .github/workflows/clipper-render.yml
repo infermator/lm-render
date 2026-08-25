@@ -59,6 +59,8 @@ jobs:
           node --version
           node --check scripts/clipper/render.mjs
           ffmpeg -version | head -1
+          node --test scripts/clipper/ffmpeg_filters.test.mjs
+          node --test scripts/clipper/ffmpeg_filters.smoke.test.mjs
 
       # YouTube refuses anonymous player requests from GitHub's datacenter
       # egress. Cloudflare WARP is a free, anonymously-registered consumer

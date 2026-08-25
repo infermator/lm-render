@@ -25,11 +25,18 @@ export function captionPlacementFromStyle(forceStyle) {
   return 'bottom';
 }
 
+// `gradients` accepts at most eight stops: c0..c7, with n/nb_colors capped at
+// 8. A ninth stop is not a softer ramp, it is a filter-graph that FFmpeg
+// refuses to build ("Value 9.000000 for parameter 'n' out of range [2 - 8]"),
+// which fails the whole render. Symmetric profiles therefore carry the peak on
+// a two-stop plateau rather than a single centre stop.
+const MAX_GRADIENT_STOPS = 8;
+
 function captionShadowSource(placement, strength) {
   if (strength === 'readable') {
     if (placement === 'middle') {
       return {
-        source: "gradients=s=1080x1040:r=30:speed=0:n=9:c0=black@0.00:c1=black@0.025:c2=black@0.10:c3=black@0.23:c4=black@0.34:c5=black@0.23:c6=black@0.10:c7=black@0.025:c8=black@0.00:x0=0:y0=0:x1=0:y1=1039,format=rgba",
+        source: "gradients=s=1080x1040:r=30:speed=0:n=8:c0=black@0.00:c1=black@0.035:c2=black@0.14:c3=black@0.32:c4=black@0.32:c5=black@0.14:c6=black@0.035:c7=black@0.00:x0=0:y0=0:x1=0:y1=1039,format=rgba",
         overlayY: '(H-h)/2',
       };
     }
@@ -62,6 +69,19 @@ function captionShadowSource(placement, strength) {
   };
 }
 
+function assertGradientStops(source) {
+  const declared = Number(String(source).match(/(?:^|:)(?:n|nb_colors)=(\d+)/)?.[1] || 0);
+  const highestIndex = Math.max(
+    -1,
+    ...Array.from(String(source).matchAll(/(?:^|:)c(\d+)=/g), match => Number(match[1])),
+  );
+  if (declared > MAX_GRADIENT_STOPS || highestIndex >= MAX_GRADIENT_STOPS) {
+    throw new Error(
+      `Caption shadow declares ${Math.max(declared, highestIndex + 1)} gradient stops; FFmpeg accepts at most ${MAX_GRADIENT_STOPS} (c0..c${MAX_GRADIENT_STOPS - 1})`,
+    );
+  }
+}
+
 export function captionCompositeFilter({
   filePath,
   forceStyle,
@@ -78,6 +98,7 @@ export function captionCompositeFilter({
     throw new Error(`Unsupported caption shadow strength: ${strength}`);
   }
   const shadow = captionShadowSource(resolvedPlacement, strength);
+  assertGradientStops(shadow.source);
   return [
     `${shadow.source}[caption_shadow]`,
     `[${inputLabel}][caption_shadow]overlay=0:${shadow.overlayY}:shortest=1:format=auto[caption_shaded]`,
