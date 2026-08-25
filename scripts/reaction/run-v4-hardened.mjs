@@ -14,6 +14,7 @@ const GUARANTEES = [
   { label: 'lip-sync duration contract', needle: 'Lip-sync output does not cover the line', why: 'a truncated lip-sync clip freezes the mouth while the voice keeps playing' },
   { label: 'anchor hard cuts', needle: "transition_mode: 'anchor_hard_cut'", why: 'dissolving between anchor-identical clips double-exposes the face' },
   { label: 'word-level caption timings', needle: 'transcribeLocally', why: 'model-guessed segment timings put captions seconds away from the words they transcribe' },
+  { label: 'source-text layout safety', needle: 'protectSourceLayout', why: 'a wide corner cut-out must not cover text in the neighbouring centre region' },
 ];
 
 function replaceExactlyOnce(source, needle, replacement, label) {
@@ -151,8 +152,8 @@ function patchSourceReplacement(canonicalSource) {
 
   source = replaceExactlyOnce(
     source,
-    "    layout_source: requested.forced ? 'operator_override' : 'director',",
-    "    layout_source: sourceReplacement ? 'localized_source_replacement' : requested.forced ? 'operator_override' : 'director',\n    source_replacement: sourceReplacement,",
+    "    layout_source: requested.forced ? 'operator_override' : layoutSafety.changed ? 'director_safety_correction' : 'director',",
+    "    layout_source: sourceReplacement ? 'localized_source_replacement' : requested.forced ? 'operator_override' : layoutSafety.changed ? 'director_safety_correction' : 'director',\n    source_replacement: sourceReplacement,",
     'render metadata replacement provenance',
   );
 

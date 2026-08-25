@@ -25,6 +25,7 @@ jobs:
           set -euo pipefail
           node --check scripts/reaction/render-v4.mjs
           node --check scripts/reaction/run-v4-hardened.mjs
+          node --test scripts/reaction/layout-safety.test.mjs
           node scripts/reaction/run-v4-hardened.mjs
           printf 'ok\nspeech_ready_selection=true\nimmutable_results=true\nkaggle_active_path=false\n' > .github/v4-dry-run-result.txt
       - name: Persist success marker

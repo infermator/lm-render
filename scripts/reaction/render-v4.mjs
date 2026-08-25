@@ -4,6 +4,10 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  LAYOUT_SAFETY_POLICY_VERSION,
+  protectSourceLayout,
+} from './layout-safety.mjs';
 
 const MAM_BASE = (process.env.MAM_BASE || 'https://21media-mam.vercel.app').replace(/\/$/, '');
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || '');
@@ -1603,6 +1607,27 @@ try {
       effectiveLayout = { avatar: 'bottom_right', captions: effectiveLayout.captions, source_shift: 'none', needs_background: false };
     }
   }
+  // The Director describes the source on a coarse 3x3 grid, while the actual
+  // corner cut-out spans more than one third of the canvas. Apply the measured
+  // footprint contract before captions/composition so a contradictory auto
+  // plan cannot put him across source text. Manual overrides remain literal.
+  const safetyResolution = requested.forced
+    ? {
+        layout: effectiveLayout,
+        changed: false,
+        policy_version: LAYOUT_SAFETY_POLICY_VERSION,
+        from: effectiveLayout.avatar,
+        to: effectiveLayout.avatar,
+        blocked_regions: [],
+        safe_corners_considered: null,
+        skipped: 'operator_override',
+      }
+    : protectSourceLayout(effectiveLayout, { backgroundAvailable: Boolean(plateFile) });
+  effectiveLayout = safetyResolution.layout;
+  const { layout: _resolvedLayout, ...layoutSafety } = safetyResolution;
+  if (layoutSafety.changed) {
+    log(`Layout safety: ${layoutSafety.from} -> ${layoutSafety.to}; protected regions=${layoutSafety.blocked_regions.join(', ') || 'safe_corners contract'}`);
+  }
   log(`Layout: avatar=${effectiveLayout.avatar} shift=${effectiveLayout.source_shift} plate=${plateFile ? 'yes' : 'no'} captions=${effectiveLayout.captions}${requested.forced ? ' (manual override)' : ''}`);
 
   // Captions only when the source has speech and does not already carry its own.
@@ -1657,7 +1682,8 @@ try {
     avatar_source_format: '16:9_native',
     avatar_frame: `${AVATAR_W}x${AVATAR_H}`,
     layout: effectiveLayout,
-    layout_source: requested.forced ? 'operator_override' : 'director',
+    layout_source: requested.forced ? 'operator_override' : layoutSafety.changed ? 'director_safety_correction' : 'director',
+    layout_safety: layoutSafety,
     subject_crop: subject,
     captions: captionMeta,
     chroma_key_hex: background.hex,

@@ -5,6 +5,9 @@ on:
     paths:
       - '.github/source-replacement-smoke-kick'
       - 'scripts/reaction/run-v4-hardened.mjs'
+      - 'scripts/reaction/render-v4.mjs'
+      - 'scripts/reaction/layout-safety.mjs'
+      - 'scripts/reaction/layout-safety.test.mjs'
 
 permissions:
   contents: read
@@ -17,4 +20,6 @@ jobs:
       - name: Validate hardened runtime source replacement
         env:
           REACTION_V4_HARDEN_DRY_RUN: '1'
-        run: node scripts/reaction/run-v4-hardened.mjs
+        run: |
+          node --test scripts/reaction/layout-safety.test.mjs
+          node scripts/reaction/run-v4-hardened.mjs

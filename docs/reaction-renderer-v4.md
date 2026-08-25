@@ -256,6 +256,22 @@ He is never mirrored to reach a corner.
 
 Caption clearance reads the shape, not a constant: a band and a corner cut-out are different heights.
 
+### Automatic layouts have a final source-safety gate
+
+The Director reports a coarse 3×3 map, but the scaled corner cut-out is wider
+than one 360 px cell on a 1080 px canvas. A right corner therefore occupies both the
+right cell and a meaningful part of the centre cell (and likewise on the
+left). `layout-safety.mjs` applies that real footprint before captions and
+composition: `top_center` blocks both top corners and `bottom_center` blocks
+both bottom corners.
+
+For automatic plans, the worker first uses another ranked `safe_corners`
+candidate whose full footprint is clear. If none exists it changes to a band,
+where the avatar and source do not overlap. The correction, policy version and
+blocked regions are saved in `render_meta.layout_safety`, and
+`layout_source=director_safety_correction` makes the provenance explicit.
+Operator overrides remain literal.
+
 ### A top corner bands the source
 
 `resolveLayout()` merges the Director's layout with `render_meta.render_request.layout_override`. The override wins, including a top corner with no plate; only a Director-chosen top corner falls back to `bottom_right` when no plate is enabled.

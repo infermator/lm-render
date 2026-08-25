@@ -58,6 +58,7 @@ jobs:
           python3 -c 'import faster_whisper; print("faster-whisper:", faster_whisper.__version__)'
           node --check scripts/reaction/render-v4.mjs
           node --check scripts/reaction/run-v4-hardened.mjs
+          node --test scripts/reaction/layout-safety.test.mjs
 
       - name: Resolve render target
         env:
