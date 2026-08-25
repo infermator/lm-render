@@ -1,141 +1,358 @@
 {
-  "id": "fb46b3cc-c661-4078-9754-1c68653b39d0",
-  "source_url": "https://fyflgsyxlfoygsjrlyyy.supabase.co/storage/v1/object/public/reaction-media/sources/6f59767a-dd65-4bed-8bcc-e70f1193962d/When-Kim-Kardashian-sent-Katy-Perry-sunglasses-and-she-got-scared-by-the-packaging.mp4",
-  "source_path": "sources/6f59767a-dd65-4bed-8bcc-e70f1193962d/When-Kim-Kardashian-sent-Katy-Perry-sunglasses-and-she-got-scared-by-the-packaging.mp4",
-  "source_filename": "When-Kim-Kardashian-sent-Katy-Perry-sunglasses-and-she-got-scared-by-the-packaging.mp4",
-  "source_duration_s": 10.634739,
+  "id": "5ce8d73c-5d52-581f-a730-58a56a344b0f",
+  "source_url": "https://fyflgsyxlfoygsjrlyyy.supabase.co/storage/v1/object/public/reaction-media/sources/pipeline/fdsX5B1FYng/fdsX5B1FYng.mp4",
+  "source_path": "sources/pipeline/fdsX5B1FYng/fdsX5B1FYng.mp4",
+  "source_filename": "fdsX5B1FYng.mp4",
+  "source_duration_s": 28,
   "persona": "default",
   "status": "completed",
-  "attempts": 1,
+  "attempts": 2,
   "transcript": {
-    "text": "",
+    "text": "[SOURCE_METADATA_JSON]\n{\"note\":\"SOURCE METADATA CONTEXT ONLY. This is not a spoken transcript. Use it to understand subject, title, language and engagement; trust the source video for actual visible/audible events.\",\"video_id\":\"fdsX5B1FYng\",\"title\":\"I’m sorry but this is better#katseye #hootiefrutti #fypシ゚viral\",\"description\":\"Enjoy the videos and music you love, upload original content, and share it all with friends, family, and the world on YouTube.\",\"tags\":[],\"categories\":[\"Music\"],\"language\":null,\"duration_seconds\":\"28\",\"channel_name\":\"𝖕𝖆𝖚𝖑𝖆.𝖒𝖔𝖈𝖍𝖎𝖎\",\"channel_handle\":\"@paula.mochii\"}\n[/SOURCE_METADATA_JSON]",
     "words": []
   },
   "analysis_json": {
-    "tone": "curious and surprised",
+    "tone": "entertained and impressed",
     "events": [
       {
         "gaze": "content",
-        "time": 6,
-        "type": "neutral",
-        "reason": "The viewer is simply watching the catalog being flipped through.",
-        "duration": 1,
-        "intensity": 0
+        "time": 9.8,
+        "type": "smirk",
+        "reason": "The beat drops and the group locks into a sharp, energetic chorus routine.",
+        "duration": 2.2,
+        "intensity": 0.6
       },
       {
         "gaze": "content",
-        "time": 9.2,
+        "time": 19.6,
         "type": "surprise",
-        "reason": "The sunglasses are revealed in a very unexpected and slightly unsettling way, resembling eyes.",
-        "duration": 2,
-        "intensity": 0.6
+        "reason": "Center dancer transitions into a sudden, low squat move as the formation spreads.",
+        "duration": 2.1,
+        "intensity": 0.65
+      },
+      {
+        "gaze": "content",
+        "time": 26.8,
+        "type": "smirk",
+        "reason": "The dancers hit a synchronized rhythmic bounce and body wave for the outro.",
+        "duration": 1.9,
+        "intensity": 0.55
       }
     ],
     "layout": {
-      "avatar": "bottom_right",
-      "reason": "The source video has burned-in captions at the bottom, and the top left is where the main action is.",
+      "avatar": "top_right",
+      "reason": "Top right sits in the clear black letterbox space well above the dancers and away from the top-center title.",
       "captions": "none",
-      "source_shift": "none"
+      "safe_corners": [
+        "top_right",
+        "top_left"
+      ],
+      "source_shift": "none",
+      "text_regions": [
+        "top_center"
+      ],
+      "important_regions": [
+        "middle_left",
+        "middle_center",
+        "middle_right",
+        "bottom_left",
+        "bottom_center",
+        "bottom_right"
+      ],
+      "layout_confidence": 0.95
     },
-    "summary": "A person unboxes a pair of sunglasses, revealing a catalog and then the sunglasses themselves, which are presented in a unique way.",
-    "has_speech": true,
-    "has_burned_captions": true
+    "summary": "A dance group performs energetic custom choreography to a catchy pop track.",
+    "has_speech": false,
+    "has_burned_captions": false
   },
   "reaction_plan": {
-    "tone": "curious and surprised",
+    "tone": "entertained and impressed",
     "events": [
       {
         "gaze": "content",
-        "time": 6,
-        "type": "neutral",
-        "reason": "The viewer is simply watching the catalog being flipped through.",
-        "duration": 1,
-        "intensity": 0
+        "time": 9.8,
+        "type": "smirk",
+        "reason": "The beat drops and the group locks into a sharp, energetic chorus routine.",
+        "duration": 2.2,
+        "intensity": 0.6
+      },
+      {
+        "gaze": "content",
+        "time": 19.6,
+        "type": "surprise",
+        "reason": "Center dancer transitions into a sudden, low squat move as the formation spreads.",
+        "duration": 2.1,
+        "intensity": 0.65
+      },
+      {
+        "gaze": "content",
+        "time": 26.8,
+        "type": "smirk",
+        "reason": "The dancers hit a synchronized rhythmic bounce and body wave for the outro.",
+        "duration": 1.9,
+        "intensity": 0.55
       }
     ],
     "layout": {
-      "avatar": "bottom_right",
-      "reason": "The source video has burned-in captions at the bottom, and the top left is where the main action is.",
+      "avatar": "top_right",
+      "reason": "Top right sits in the clear black letterbox space well above the dancers and away from the top-center title.",
       "captions": "none",
+      "safe_corners": [
+        "top_right",
+        "top_left"
+      ],
       "source_shift": "none",
-      "needs_background": false
+      "text_regions": [
+        "top_center"
+      ],
+      "needs_background": true,
+      "important_regions": [
+        "middle_left",
+        "middle_center",
+        "middle_right",
+        "bottom_left",
+        "bottom_center",
+        "bottom_right"
+      ],
+      "layout_confidence": 0.95
     },
-    "summary": "A person unboxes a pair of sunglasses, revealing a catalog and then the sunglasses themselves, which are presented in a unique way.",
-    "has_speech": true,
-    "has_burned_captions": true
+    "summary": "A dance group performs energetic custom choreography to a catchy pop track.",
+    "has_speech": false,
+    "has_burned_captions": false
   },
-  "result_url": "https://fyflgsyxlfoygsjrlyyy.supabase.co/storage/v1/object/public/reaction-media/results/fb46b3cc-c661-4078-9754-1c68653b39d0/1786718669572-bbe06f24.mp4",
-  "result_path": "results/fb46b3cc-c661-4078-9754-1c68653b39d0/1786718669572-bbe06f24.mp4",
+  "result_url": "https://fyflgsyxlfoygsjrlyyy.supabase.co/storage/v1/object/public/reaction-media/results/5ce8d73c-5d52-581f-a730-58a56a344b0f/1787646310502-fd593c2f.mp4",
+  "result_path": "results/5ce8d73c-5d52-581f-a730-58a56a344b0f/1787646310502-fd593c2f.mp4",
   "render_meta": {
     "layout": {
-      "avatar": "bottom_right",
-      "reason": "The source video has burned-in captions at the bottom, and the top left is where the main action is.",
+      "avatar": "top_band",
+      "reason": "Top right sits in the clear black letterbox space well above the dancers and away from the top-center title. Safety correction (reaction-layout-safety-v1): top_right is unsafe because its cut-out spans top_center + top_right and would cover protected top_center; using top_band so the avatar does not cover source text or important content.",
       "captions": "none",
-      "source_shift": "none",
-      "needs_background": false
+      "safe_corners": [
+        "top_right",
+        "top_left"
+      ],
+      "source_shift": "down",
+      "text_regions": [
+        "top_center"
+      ],
+      "needs_background": true,
+      "important_regions": [
+        "middle_left",
+        "middle_center",
+        "middle_right",
+        "bottom_left",
+        "bottom_center",
+        "bottom_right"
+      ],
+      "layout_confidence": 0.95
     },
     "captions": {
       "applied": false,
       "requested": "none"
     },
     "comments": [],
+    "pipeline": {
+      "source_key": "fdsX5B1FYng",
+      "ingest_version": "pipeline-v1",
+      "youtube_video_id": "fdsX5B1FYng",
+      "source_metadata_url": "https://fyflgsyxlfoygsjrlyyy.supabase.co/storage/v1/object/public/reaction-media/sources/pipeline/fdsX5B1FYng/source.json",
+      "source_metadata_path": "sources/pipeline/fdsX5B1FYng/source.json",
+      "source_metadata_summary": {
+        "tags": [],
+        "title": "I’m sorry but this is better#katseye #hootiefrutti #fypシ゚viral",
+        "language": null,
+        "video_id": "fdsX5B1FYng",
+        "channel_id": "UCoOW93gtHtCNmdvqSBifhYQ",
+        "like_count": 134000,
+        "view_count": 2272440,
+        "description": "Enjoy the videos and music you love, upload original content, and share it all with friends, family, and the world on YouTube.",
+        "channel_name": "𝖕𝖆𝖚𝖑𝖆.𝖒𝖔𝖈𝖍𝖎𝖎",
+        "comment_count": 2408,
+        "channel_handle": "@paula.mochii",
+        "duration_seconds": "28",
+        "channel_subscriber_count": 2220
+      }
+    },
     "renderer": "lm-render/github-actions-v4",
     "audio_mix": "measured_voice_ducked_limited_v2",
-    "duration_s": 10.635,
+    "duration_s": 28.181,
     "avatar_mode": "chroma",
-    "event_count": 1,
+    "event_count": 3,
     "frame_count": 14,
     "adapted_plan": {
-      "tone": "curious and surprised",
+      "tone": "entertained and impressed",
       "events": [
         {
           "gaze": "content",
-          "time": 6,
-          "type": "neutral",
-          "reason": "The viewer is simply watching the catalog being flipped through.",
-          "duration": 1,
-          "intensity": 0
+          "time": 9.8,
+          "type": "smirk",
+          "reason": "The beat drops and the group locks into a sharp, energetic chorus routine.",
+          "duration": 2.2,
+          "intensity": 0.6
+        },
+        {
+          "gaze": "content",
+          "time": 19.6,
+          "type": "surprise",
+          "reason": "Center dancer transitions into a sudden, low squat move as the formation spreads.",
+          "duration": 2.1,
+          "intensity": 0.65
+        },
+        {
+          "gaze": "content",
+          "time": 26.8,
+          "type": "smirk",
+          "reason": "The dancers hit a synchronized rhythmic bounce and body wave for the outro.",
+          "duration": 1.9,
+          "intensity": 0.55
         }
       ],
       "layout": {
-        "avatar": "bottom_right",
-        "reason": "The source video has burned-in captions at the bottom, and the top left is where the main action is.",
+        "avatar": "top_right",
+        "reason": "Top right sits in the clear black letterbox space well above the dancers and away from the top-center title.",
         "captions": "none",
+        "safe_corners": [
+          "top_right",
+          "top_left"
+        ],
         "source_shift": "none",
-        "needs_background": false
+        "text_regions": [
+          "top_center"
+        ],
+        "needs_background": true,
+        "important_regions": [
+          "middle_left",
+          "middle_center",
+          "middle_right",
+          "bottom_left",
+          "bottom_center",
+          "bottom_right"
+        ],
+        "layout_confidence": 0.95
       },
-      "summary": "A person unboxes a pair of sunglasses, revealing a catalog and then the sunglasses themselves, which are presented in a unique way.",
-      "has_speech": true,
-      "has_burned_captions": true
+      "summary": "A dance group performs energetic custom choreography to a catchy pop track.",
+      "has_speech": false,
+      "has_burned_captions": false
     },
     "avatar_frame": "772x434",
-    "result_bytes": 3183145,
+    "publish_copy": {
+      "hook": "Wait until you see how clean this group gets once the beat drops!",
+      "tags": [
+        "dance",
+        "choreography",
+        "dance routine",
+        "synchronized dance",
+        "dance reaction",
+        "pop choreography",
+        "dance group",
+        "dance moves"
+      ],
+      "title": "This Dance Crew Completely Took Over The Beat 🔥",
+      "hashtags": [
+        "#DanceRoutine",
+        "#Choreography",
+        "#DanceShorts",
+        "#PopDance",
+        "#Shorts",
+        "#DanceReactions"
+      ],
+      "language": "en",
+      "description": "Reacting to this impressive dance performance! The group's sharp coordination and that unexpected transition in the middle made this custom choreography hit so clean. That synchronized outro was the perfect finish."
+    },
+    "result_bytes": 10379295,
+    "source_guard": {
+      "model": "google/gemini-3.7-flash",
+      "action": "allow",
+      "reason": "guard provider unavailable: The operation was aborted",
+      "checked": true,
+      "language": "unknown",
+      "maskable": false,
+      "checked_at": "2026-08-24T12:40:40.599Z",
+      "audience_fit": "unknown",
+      "reject_reason": null,
+      "policy_version": "source-guard-v5-gemini-37",
+      "recommended_mask": "none",
+      "replacement_rect": null,
+      "crop_top_fraction": null,
+      "source_media_used": false,
+      "english_confidence": 0,
+      "off_target_signals": [],
+      "top_reaction_regions": [],
+      "off_target_confidence": 0,
+      "reactor_is_real_human": false,
+      "top_reaction_confidence": 0,
+      "reactor_is_separate_layer": false,
+      "reactor_identity_consistent": false,
+      "reactor_evidence_frame_count": 0,
+      "top_reaction_overlay_present": false,
+      "top_reaction_persistent_fraction": 0
+    },
     "speech_pad_s": 0.15,
     "subject_crop": {
       "x": 306,
       "width": 436
     },
-    "analysis_only": true,
+    "analysis_only": false,
     "comment_count": 0,
-    "layout_source": "director",
-    "segment_count": 2,
-    "analysis_model": "google/gemini-2.5-flash",
+    "layout_safety": {
+      "to": "top_band",
+      "from": "top_right",
+      "reason": "Safety correction (reaction-layout-safety-v1): top_right is unsafe because its cut-out spans top_center + top_right and would cover protected top_center; using top_band so the avatar does not cover source text or important content.",
+      "changed": true,
+      "policy_version": "reaction-layout-safety-v1",
+      "blocked_regions": [
+        "top_center"
+      ],
+      "safe_corners_considered": [
+        "top_right",
+        "top_left"
+      ]
+    },
+    "layout_source": "director_safety_correction",
+    "publish_error": null,
+    "publish_model": "google/gemini-3.7-flash",
+    "segment_count": 6,
+    "analysis_model": "google/gemini-3.7-flash",
     "chroma_despill": true,
     "chroma_key_hex": "368a34",
     "lipsync_source": null,
+    "render_request": {
+      "avatar_mode": "chroma",
+      "requested_at": "2026-08-24T12:41:05.653Z",
+      "voice_lipsync": false,
+      "reuse_analysis": true,
+      "layout_override": null,
+      "lipsync_provider": "disabled",
+      "renderer_version": "v4",
+      "max_voice_comments": 0,
+      "source_replacement": null,
+      "available_asset_types": [
+        "background",
+        "cringe",
+        "disbelief",
+        "laugh",
+        "neutral",
+        "reference",
+        "smirk",
+        "surprise",
+        "suspicious"
+      ]
+    },
     "timeline_clock": "absolute_preserved_hardcut_v2",
     "transition_mode": "anchor_hard_cut",
-    "visual_sampling": "browser_scene_aware_v1",
+    "visual_sampling": "scene_anchors_v1",
     "final_validation": {
       "width": 1080,
       "height": 1920,
-      "duration_s": 10.635,
+      "duration_s": 28.2,
       "audio_codec": "aac",
       "video_codec": "h264",
-      "audio_duration_s": 10.635
+      "audio_duration_s": 28.181
     },
     "lipsync_provider": null,
+    "publish_json_url": "https://fyflgsyxlfoygsjrlyyy.supabase.co/storage/v1/object/public/reaction-media/sources/pipeline/fdsX5B1FYng/publish.json",
     "chroma_similarity": 0.06,
+    "publish_json_path": "sources/pipeline/fdsX5B1FYng/publish.json",
     "source_media_used": true,
     "voice_target_lufs": -13,
     "chroma_calibration": {
@@ -146,6 +363,7 @@
       "background_alpha": 0.5,
       "background_cells": 1311
     },
+    "source_replacement": null,
     "delivery_video_kbps": 12000,
     "director_vocabulary": [
       "background",
@@ -159,14 +377,15 @@
       "suspicious"
     ],
     "avatar_source_format": "16:9_native",
-    "source_analysis_mode": "source_video_audio_plus_frame_anchors",
+    "source_analysis_mode": "source_video_audio_plus_frame_anchors_plus_source_json",
+    "source_metadata_received": true,
     "used_real_asset_vocabulary": true
   },
   "error": null,
-  "created_at": "2026-08-14T14:17:25.576488+00:00",
-  "updated_at": "2026-08-14T14:44:31.451+00:00",
-  "started_at": "2026-08-14T14:44:00.888+00:00",
-  "completed_at": "2026-08-14T14:44:31.451+00:00",
+  "created_at": "2026-08-24T12:40:24.525+00:00",
+  "updated_at": "2026-08-25T08:25:13.105+00:00",
+  "started_at": "2026-08-25T08:24:17.352+00:00",
+  "completed_at": "2026-08-25T08:25:13.105+00:00",
   "background_id": null,
   "layout_preset": "auto-card",
   "current_stage": "render_complete",
@@ -176,5 +395,5 @@
   "source_height": null,
   "output_width": 1080,
   "output_height": 1920,
-  "captured_at": "2026-08-14T14:44:32.765905+00:00"
+  "captured_at": "2026-08-25T08:25:13.759650+00:00"
 }
