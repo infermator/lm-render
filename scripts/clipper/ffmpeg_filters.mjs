@@ -31,40 +31,47 @@ export function captionPlacementFromStyle(forceStyle) {
 // which fails the whole render. Symmetric profiles therefore carry the peak on
 // a two-stop plateau rather than a single centre stop.
 const MAX_GRADIENT_STOPS = 8;
+// `speed` is a rotation rate and FFmpeg's floor for it is 1e-05, not 0.
+// speed=0 builds on FFmpeg 8 and is REJECTED by the FFmpeg 6 on the Ubuntu
+// runners that render production ("Value 0.000000 for parameter 'speed' out of
+// range [1e-05 - 1]"), which failed both CLIPPER workers. The floor is not
+// perfectly static -- it drifts at most 1 luma step out of 255 across 60s,
+// measured -- so it is the cheapest value that parses everywhere.
+const MIN_GRADIENT_SPEED = 0.00001;
 
 function captionShadowSource(placement, strength) {
   if (strength === 'readable') {
     if (placement === 'middle') {
       return {
-        source: "gradients=s=1080x1040:r=30:speed=0:n=8:c0=black@0.00:c1=black@0.035:c2=black@0.14:c3=black@0.32:c4=black@0.32:c5=black@0.14:c6=black@0.035:c7=black@0.00:x0=0:y0=0:x1=0:y1=1039,format=rgba",
+        source: "gradients=s=1080x1040:r=30:speed=0.00001:n=8:c0=black@0.00:c1=black@0.035:c2=black@0.14:c3=black@0.32:c4=black@0.32:c5=black@0.14:c6=black@0.035:c7=black@0.00:x0=0:y0=0:x1=0:y1=1039,format=rgba",
         overlayY: '(H-h)/2',
       };
     }
     if (placement === 'top') {
       return {
-        source: "gradients=s=1080x1120:r=30:speed=0:n=7:c0=black@0.58:c1=black@0.50:c2=black@0.40:c3=black@0.27:c4=black@0.13:c5=black@0.04:c6=black@0.00:x0=0:y0=0:x1=0:y1=1119,format=rgba",
+        source: "gradients=s=1080x1120:r=30:speed=0.00001:n=7:c0=black@0.58:c1=black@0.50:c2=black@0.40:c3=black@0.27:c4=black@0.13:c5=black@0.04:c6=black@0.00:x0=0:y0=0:x1=0:y1=1119,format=rgba",
         overlayY: '0',
       };
     }
     return {
-      source: "gradients=s=1080x1120:r=30:speed=0:n=7:c0=black@0.00:c1=black@0.04:c2=black@0.13:c3=black@0.27:c4=black@0.40:c5=black@0.50:c6=black@0.58:x0=0:y0=0:x1=0:y1=1119,format=rgba",
+      source: "gradients=s=1080x1120:r=30:speed=0.00001:n=7:c0=black@0.00:c1=black@0.04:c2=black@0.13:c3=black@0.27:c4=black@0.40:c5=black@0.50:c6=black@0.58:x0=0:y0=0:x1=0:y1=1119,format=rgba",
       overlayY: 'H-h',
     };
   }
   if (placement === 'middle') {
     return {
-      source: "gradients=s=1080x880:r=30:speed=0:n=7:c0=black@0.00:c1=black@0.012:c2=black@0.055:c3=black@0.14:c4=black@0.055:c5=black@0.012:c6=black@0.00:x0=0:y0=0:x1=0:y1=879,format=rgba",
+      source: "gradients=s=1080x880:r=30:speed=0.00001:n=7:c0=black@0.00:c1=black@0.012:c2=black@0.055:c3=black@0.14:c4=black@0.055:c5=black@0.012:c6=black@0.00:x0=0:y0=0:x1=0:y1=879,format=rgba",
       overlayY: '(H-h)/2',
     };
   }
   if (placement === 'top') {
     return {
-      source: "gradients=s=1080x720:r=30:speed=0:n=5:c0=black@0.22:c1=black@0.10:c2=black@0.035:c3=black@0.008:c4=black@0.00:x0=0:y0=0:x1=0:y1=719,format=rgba",
+      source: "gradients=s=1080x720:r=30:speed=0.00001:n=5:c0=black@0.22:c1=black@0.10:c2=black@0.035:c3=black@0.008:c4=black@0.00:x0=0:y0=0:x1=0:y1=719,format=rgba",
       overlayY: '0',
     };
   }
   return {
-    source: "gradients=s=1080x720:r=30:speed=0:n=5:c0=black@0.00:c1=black@0.008:c2=black@0.035:c3=black@0.10:c4=black@0.22:x0=0:y0=0:x1=0:y1=719,format=rgba",
+    source: "gradients=s=1080x720:r=30:speed=0.00001:n=5:c0=black@0.00:c1=black@0.008:c2=black@0.035:c3=black@0.10:c4=black@0.22:x0=0:y0=0:x1=0:y1=719,format=rgba",
     overlayY: 'H-h',
   };
 }
@@ -79,6 +86,10 @@ function assertGradientStops(source) {
     throw new Error(
       `Caption shadow declares ${Math.max(declared, highestIndex + 1)} gradient stops; FFmpeg accepts at most ${MAX_GRADIENT_STOPS} (c0..c${MAX_GRADIENT_STOPS - 1})`,
     );
+  }
+  const speed = Number(String(source).match(/(?:^|:)speed=([\d.eE+-]+)/)?.[1] ?? MIN_GRADIENT_SPEED);
+  if (!(speed >= MIN_GRADIENT_SPEED)) {
+    throw new Error(`Caption shadow sets speed=${speed}; FFmpeg's minimum is ${MIN_GRADIENT_SPEED}`);
   }
 }
 
