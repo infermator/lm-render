@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl lsb-release privoxy xvfb
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-inter curl lsb-release privoxy xvfb
           python -m pip install --disable-pip-version-check --no-input 'yt-dlp[default]' 'yt-dlp-getpot-wpc==1.1.2' 'opencv-python-headless==4.11.0.86' 'requests>=2.32,<3'
           python scripts/clipper/patch_wpc_provider.py
           python -c "import cv2; assert callable(getattr(cv2, 'CascadeClassifier', None)), cv2.__version__"

@@ -1,4 +1,4 @@
-export const PODCAST_CAPTION_FORCE_STYLE = 'FontName=DejaVu Sans,FontSize=17,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1,Shadow=0,Alignment=2,MarginV=48';
+export const PODCAST_CAPTION_FORCE_STYLE = 'FontName=Inter,FontSize=15,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1,Shadow=0,Alignment=2,MarginV=48';
 
 export function validatePodcastWindow(startValue, endValue) {
   const start = Number(startValue);

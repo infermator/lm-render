@@ -25,7 +25,25 @@ export function captionPlacementFromStyle(forceStyle) {
   return 'bottom';
 }
 
-function captionShadowSource(placement) {
+function captionShadowSource(placement, strength) {
+  if (strength === 'readable') {
+    if (placement === 'middle') {
+      return {
+        source: "gradients=s=1080x1040:r=30:speed=0:n=9:c0=black@0.00:c1=black@0.025:c2=black@0.10:c3=black@0.23:c4=black@0.34:c5=black@0.23:c6=black@0.10:c7=black@0.025:c8=black@0.00:x0=0:y0=0:x1=0:y1=1039,format=rgba",
+        overlayY: '(H-h)/2',
+      };
+    }
+    if (placement === 'top') {
+      return {
+        source: "gradients=s=1080x1120:r=30:speed=0:n=7:c0=black@0.58:c1=black@0.50:c2=black@0.40:c3=black@0.27:c4=black@0.13:c5=black@0.04:c6=black@0.00:x0=0:y0=0:x1=0:y1=1119,format=rgba",
+        overlayY: '0',
+      };
+    }
+    return {
+      source: "gradients=s=1080x1120:r=30:speed=0:n=7:c0=black@0.00:c1=black@0.04:c2=black@0.13:c3=black@0.27:c4=black@0.40:c5=black@0.50:c6=black@0.58:x0=0:y0=0:x1=0:y1=1119,format=rgba",
+      overlayY: 'H-h',
+    };
+  }
   if (placement === 'middle') {
     return {
       source: "gradients=s=1080x880:r=30:speed=0:n=7:c0=black@0.00:c1=black@0.012:c2=black@0.055:c3=black@0.14:c4=black@0.055:c5=black@0.012:c6=black@0.00:x0=0:y0=0:x1=0:y1=879,format=rgba",
@@ -50,12 +68,16 @@ export function captionCompositeFilter({
   inputLabel = 'caption_base',
   outputLabel = 'v',
   placement = 'auto',
+  strength = 'subtle',
 } = {}) {
   const resolvedPlacement = placement === 'auto' ? captionPlacementFromStyle(forceStyle) : placement;
   if (!['bottom', 'middle', 'top'].includes(resolvedPlacement)) {
     throw new Error(`Unsupported caption placement: ${resolvedPlacement}`);
   }
-  const shadow = captionShadowSource(resolvedPlacement);
+  if (!['subtle', 'readable'].includes(strength)) {
+    throw new Error(`Unsupported caption shadow strength: ${strength}`);
+  }
+  const shadow = captionShadowSource(resolvedPlacement, strength);
   return [
     `${shadow.source}[caption_shadow]`,
     `[${inputLabel}][caption_shadow]overlay=0:${shadow.overlayY}:shortest=1:format=auto[caption_shaded]`,

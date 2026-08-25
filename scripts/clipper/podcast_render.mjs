@@ -437,7 +437,11 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     ? centerCropFilter(layoutOutputLabel)
     : fitBlurFilter(layoutOutputLabel));
   const filter = captionsCreated
-    ? `${layoutFilter};${captionCompositeFilter({ filePath: captionPath, forceStyle: PODCAST_CAPTION_FORCE_STYLE })}`
+    ? `${layoutFilter};${captionCompositeFilter({
+        filePath: captionPath,
+        forceStyle: PODCAST_CAPTION_FORCE_STYLE,
+        strength: 'readable',
+      })}`
     : layoutFilter;
   await progress(render.id, 'composing', `Rendering 1080x1920 podcast edit (${actualLayout})`);
   const output = path.join(work, 'video.mp4');

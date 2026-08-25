@@ -44,3 +44,25 @@ test('middle captions receive a smooth centered reverse vignette', () => {
   assert.match(filter, /n=7:c0=black@0\.00:c1=black@0\.012:c2=black@0\.055:c3=black@0\.14:c4=black@0\.055:c5=black@0\.012:c6=black@0\.00/);
   assert.match(filter, /overlay=0:\(H-h\)\/2:shortest=1/);
 });
+
+test('readable bottom captions receive a wider, stronger fade behind the text lane', () => {
+  const filter = captionCompositeFilter({
+    filePath: '/tmp/captions.srt',
+    forceStyle: 'Alignment=2,MarginV=48',
+    strength: 'readable',
+  });
+  assert.match(filter, /s=1080x1120/);
+  assert.match(filter, /n=7:c0=black@0\.00:c1=black@0\.04:c2=black@0\.13:c3=black@0\.27:c4=black@0\.40:c5=black@0\.50:c6=black@0\.58/);
+  assert.match(filter, /overlay=0:H-h:shortest=1/);
+});
+
+test('caption shadows reject unknown strength profiles', () => {
+  assert.throws(
+    () => captionCompositeFilter({
+      filePath: '/tmp/captions.srt',
+      forceStyle: 'Alignment=2',
+      strength: 'opaque',
+    }),
+    /Unsupported caption shadow strength/,
+  );
+});

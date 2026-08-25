@@ -43,6 +43,8 @@ test('captions reuse absolute transcript word timings and shift them to the cut'
 });
 
 test('Podcast captions use a lower face-safe lane and restrained outline', () => {
+  assert.match(PODCAST_CAPTION_FORCE_STYLE, /FontName=Inter/);
+  assert.match(PODCAST_CAPTION_FORCE_STYLE, /FontSize=15(?:,|$)/);
   assert.match(PODCAST_CAPTION_FORCE_STYLE, /Outline=1(?:,|$)/);
   assert.match(PODCAST_CAPTION_FORCE_STYLE, /Alignment=2/);
   assert.match(PODCAST_CAPTION_FORCE_STYLE, /MarginV=48/);
@@ -249,5 +251,6 @@ test('both CLIPPER tracks add caption shadows after their existing layout compos
     assert.match(worker, /layoutFilter/);
   }
   assert.match(podcastWorker, /PODCAST_CAPTION_FORCE_STYLE/);
+  assert.match(podcastWorker, /strength: 'readable'/);
   assert.match(streamWorker, /creatorGameplayFilter\(facecam, layoutOutputLabel\)/);
 });
