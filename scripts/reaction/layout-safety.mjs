@@ -103,3 +103,43 @@ export function protectSourceLayout(layout, { backgroundAvailable = false } = {}
     reason,
   };
 }
+
+// The 3x3 contract above protects the source's CONTENT regions, but a source is
+// routinely a re-upload that carries its own baked-in letterbox. The Director
+// calls such a corner clear because it is clear — what neither it nor the grid
+// can see is that the empty band is 420px tall while the avatar frame is 434,
+// which is exactly how a persona ends up sitting 14px inside the video.
+export const CONTENT_BAND_MIN_RATIO = 0.6;
+
+/**
+ * Shrink a corner cut-out so it stays inside the source's empty band.
+ *
+ * Scaling, not cropping: the persona is bottom-anchored in his own frame, so
+ * trimming the overrun would cut his feet off — which is the very artefact this
+ * exists to remove. A band far shorter than the frame is left alone instead of
+ * shrinking him into illegibility; that case is a layout problem, not a fit one.
+ */
+export function fitAvatarToContentBand({
+  placement,
+  cutWidth,
+  avatarHeight,
+  canvasHeight,
+  contentBand,
+  minBandRatio = CONTENT_BAND_MIN_RATIO,
+} = {}) {
+  const unchanged = { width: cutWidth, height: avatarHeight, clamped: false, band: null };
+  const top = Number(contentBand?.top);
+  const bottom = Number(contentBand?.bottom);
+  if (!Number.isFinite(top) || !Number.isFinite(bottom)) return unchanged;
+
+  const band = String(placement).startsWith('top_') ? top : canvasHeight - 1 - bottom;
+  // No letterbox at that edge, or the frame already fits inside it.
+  if (!Number.isFinite(band) || band <= 0 || band >= avatarHeight) return { ...unchanged, band: Math.max(0, band) };
+  if (band < avatarHeight * minBandRatio) {
+    return { ...unchanged, band, skipped: 'band_shorter_than_usable_avatar' };
+  }
+
+  const height = Math.max(2, Math.floor(band / 2) * 2);
+  const width = Math.max(2, Math.round((cutWidth * height) / avatarHeight / 2) * 2);
+  return { width, height, clamped: true, band };
+}

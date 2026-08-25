@@ -15,6 +15,7 @@ const GUARANTEES = [
   { label: 'anchor hard cuts', needle: "transition_mode: 'anchor_hard_cut'", why: 'dissolving between anchor-identical clips double-exposes the face' },
   { label: 'word-level caption timings', needle: 'transcribeLocally', why: 'model-guessed segment timings put captions seconds away from the words they transcribe' },
   { label: 'source-text layout safety', needle: 'protectSourceLayout', why: 'a wide corner cut-out must not cover text in the neighbouring centre region' },
+  { label: 'source letterbox fit', needle: 'fitAvatarToContentBand', why: 'a corner cut-out taller than the source\'s own empty band sits on the picture' },
 ];
 
 function replaceExactlyOnce(source, needle, replacement, label) {
@@ -38,11 +39,11 @@ function patchSourceReplacement(canonicalSource) {
 
   source = replaceExactlyOnce(
     source,
-`  const geometry = layoutGeometry(placement, shift, cut);
+`  const geometry = layoutGeometry(placement, shift, cut, contentBand);
   const banded = geometry.banded;
   const srcY = geometry.sourceY;
   const pos = { x: geometry.avatarX, y: geometry.avatarY };`,
-`  const geometry = layoutGeometry(placement, shift, cut);
+`  const geometry = layoutGeometry(placement, shift, cut, contentBand);
   const replacementMode = String(sourceReplacement?.mode || '');
   const rawRect = sourceReplacement?.rect || null;
   const localReplacement = replacementMode === 'rect_overlay' && rawRect;

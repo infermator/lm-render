@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  fitAvatarToContentBand,
   LAYOUT_SAFETY_POLICY_VERSION,
   protectSourceLayout,
 } from './layout-safety.mjs';
@@ -85,4 +86,78 @@ test('a band is already non-overlapping and remains unchanged', () => {
 
   assert.equal(result.changed, false);
   assert.equal(result.layout, original);
+});
+
+test('a corner cut-out is scaled to fit the source\'s own letterbox band', () => {
+  // The measured regression: a 434px avatar frame over a 420px band put the
+  // persona 14px inside the picture.
+  const fit = fitAvatarToContentBand({
+    placement: 'top_right',
+    cutWidth: 434,
+    avatarHeight: 434,
+    canvasHeight: 1920,
+    contentBand: { top: 420, bottom: 1499 },
+  });
+  assert.equal(fit.clamped, true);
+  assert.equal(fit.band, 420);
+  assert.equal(fit.height, 420);
+  assert.ok(fit.height <= 420, 'must not reach into the painted rows');
+  assert.equal(fit.width % 2, 0);
+  assert.equal(fit.height % 2, 0);
+});
+
+test('a bottom corner is measured against the bottom band, not the top one', () => {
+  const fit = fitAvatarToContentBand({
+    placement: 'bottom_right',
+    cutWidth: 434,
+    avatarHeight: 434,
+    canvasHeight: 1920,
+    contentBand: { top: 0, bottom: 1499 },
+  });
+  assert.equal(fit.band, 420);
+  assert.equal(fit.clamped, true);
+});
+
+test('a source that paints the whole canvas leaves the avatar frame alone', () => {
+  const fit = fitAvatarToContentBand({
+    placement: 'top_right',
+    cutWidth: 434,
+    avatarHeight: 434,
+    canvasHeight: 1920,
+    contentBand: { top: 0, bottom: 1919 },
+  });
+  assert.equal(fit.clamped, false);
+  assert.equal(fit.height, 434);
+});
+
+test('a band taller than the avatar frame changes nothing', () => {
+  const fit = fitAvatarToContentBand({
+    placement: 'top_right',
+    cutWidth: 434,
+    avatarHeight: 434,
+    canvasHeight: 1920,
+    contentBand: { top: 600, bottom: 1400 },
+  });
+  assert.equal(fit.clamped, false);
+  assert.equal(fit.height, 434);
+});
+
+test('a band far shorter than the frame is reported rather than shrinking him into nothing', () => {
+  const fit = fitAvatarToContentBand({
+    placement: 'top_right',
+    cutWidth: 434,
+    avatarHeight: 434,
+    canvasHeight: 1920,
+    contentBand: { top: 80, bottom: 1900 },
+  });
+  assert.equal(fit.clamped, false);
+  assert.equal(fit.skipped, 'band_shorter_than_usable_avatar');
+});
+
+test('a missing measurement is not treated as a zero-height band', () => {
+  const fit = fitAvatarToContentBand({
+    placement: 'top_right', cutWidth: 434, avatarHeight: 434, canvasHeight: 1920, contentBand: null,
+  });
+  assert.equal(fit.clamped, false);
+  assert.equal(fit.height, 434);
 });

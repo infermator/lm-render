@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   LAYOUT_SAFETY_POLICY_VERSION,
+  fitAvatarToContentBand,
   protectSourceLayout,
 } from './layout-safety.mjs';
 
@@ -353,6 +354,10 @@ function backgroundPlate(assets) {
 // just under a third of the canvas, and the source keeps the rest.
 const BAND_H = Math.round((OUT_W * AVATAR_H) / AVATAR_W / 2) * 2;
 
+// composeFinal runs long after render_meta's scope opens; this carries the
+// measured fit back out to it without threading a return shape through.
+let lastContentFit = null;
+
 const AVATAR_CORNERS = ['bottom_right', 'bottom_left', 'top_right', 'top_left', 'top_band', 'bottom_band'];
 
 function isBandPlacement(placement) {
@@ -402,7 +407,7 @@ function resolveLayout(directorLayout, override) {
 // Two shapes, not one. A band is the whole 16:9 avatar frame across the full
 // width — the classic reaction layout, where the source keeps the rest of the
 // canvas. A corner is a cut-out of him alone, sitting on top of the source.
-function layoutGeometry(placement, shift, cut) {
+function layoutGeometry(placement, shift, cut, contentBand) {
   if (isBandPlacement(placement)) {
     const atTop = placement === 'top_band';
     return {
@@ -425,17 +430,30 @@ function layoutGeometry(placement, shift, cut) {
   // hanging in mid-air. A bottom corner hides that cut under the canvas edge;
   // a top corner hides nothing, which is why this is not optional there.
   const banded = shift === 'down' || shift === 'up';
-  const position = avatarPosition(placement, cut.width);
+  // A shifted source has already vacated a strip for him, so there is no source
+  // content under the corner to stay clear of. An unshifted corner sits on the
+  // picture, and only the source's own empty band is safe to occupy.
+  const fit = banded
+    ? { width: cut.width, height: AVATAR_H, clamped: false, band: null }
+    : fitAvatarToContentBand({
+      placement,
+      cutWidth: cut.width,
+      avatarHeight: AVATAR_H,
+      canvasHeight: OUT_H,
+      contentBand,
+    });
+  const position = avatarPosition(placement, fit.width, fit.height);
   return {
     banded,
-    avatarFilter: `crop=${cut.width}:${AVATAR_H}:${cut.x}:0`,
+    contentFit: fit,
+    avatarFilter: `crop=${cut.width}:${AVATAR_H}:${cut.x}:0${fit.clamped ? `,scale=${fit.width}:${fit.height}` : ''}`,
     avatarX: position.x,
     avatarY: position.y,
     sourceHeight: OUT_H - AVATAR_H,
     sourceY: banded ? (shift === 'down' ? `${AVATAR_H}` : '0') : '(H-h)/2',
     plateHeight: AVATAR_H,
     plateY: shift === 'up' ? OUT_H - AVATAR_H : 0,
-    avatarHeight: AVATAR_H,
+    avatarHeight: fit.height,
   };
 }
 
@@ -445,9 +463,9 @@ function layoutGeometry(placement, shift, cut) {
 // `width` is the cut-out after cropping away the empty plate, not the full
 // avatar frame. Placing the whole frame in a left corner would leave the
 // subject near the middle, because he sits on the right of his own frame.
-function avatarPosition(corner, width) {
+function avatarPosition(corner, width, height = AVATAR_H) {
   const right = `${OUT_W - width}`;
-  const bottom = `${OUT_H - AVATAR_H}`;
+  const bottom = `${OUT_H - height}`;
   switch (corner) {
     case 'bottom_left': return { x: '0', y: bottom };
     case 'top_right': return { x: right, y: '0' };
@@ -1369,6 +1387,58 @@ async function buildSubtitles(transcript, layout) {
   return file;
 }
 
+// How much of the canvas the source actually PAINTS, in output rows.
+//
+// A corner overlay is only safe over pixels the source is not using, and a
+// re-uploaded Short carries its own baked-in letterbox that no amount of layout
+// reasoning can see: the band reads as empty to the Director because it is
+// empty, yet it can be shorter than the avatar frame. Measured, not assumed,
+// because the bands differ per source. Sampled across the clip and unioned, so
+// one dark frame cannot shrink the content and push him onto the picture.
+const CONTENT_BAND_COLS = 4;
+const CONTENT_BAND_SAMPLES = 8;
+const CONTENT_BAND_LUMA = 8;
+
+async function sourceContentBand(file) {
+  const raw = path.join(workDir, `band-${crypto.randomBytes(3).toString('hex')}.raw`);
+  const fit = `scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease`;
+  try {
+    await run('ffmpeg', ['-y', '-i', file, '-vf',
+      `fps=1,${fit},pad=${OUT_W}:${OUT_H}:(ow-iw)/2:(oh-ih)/2:black,scale=${CONTENT_BAND_COLS}:${OUT_H}:flags=area,format=gray`,
+      '-frames:v', String(CONTENT_BAND_SAMPLES), '-pix_fmt', 'gray', '-f', 'rawvideo', raw]);
+  } catch (error) {
+    log(`Content band: probe failed (${error instanceof Error ? error.message : error}); leaving the avatar frame at full height`);
+    return null;
+  }
+
+  let bytes;
+  try { bytes = await fs.readFile(raw); } catch { return null; }
+  await fs.rm(raw, { force: true });
+
+  const frameSize = CONTENT_BAND_COLS * OUT_H;
+  const frames = Math.floor(bytes.length / frameSize);
+  if (!frames) return null;
+
+  let top = OUT_H;
+  let bottom = -1;
+  for (let f = 0; f < frames; f++) {
+    const base = f * frameSize;
+    for (let y = 0; y < OUT_H; y++) {
+      let peak = 0;
+      for (let x = 0; x < CONTENT_BAND_COLS; x++) {
+        const value = bytes[base + y * CONTENT_BAND_COLS + x];
+        if (value > peak) peak = value;
+      }
+      if (peak > CONTENT_BAND_LUMA) {
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+  }
+  if (bottom < 0 || top > bottom) return null;
+  return { top, bottom, frames };
+}
+
 async function composeFinal(source, avatarTrack, comments, totalDuration, sourceHasAudio, despillAvailable, layout, plateFile, subtitleFile, subject) {
   const out = path.join(workDir, 'final.mp4');
   const args = ['-y', '-i', source, '-i', avatarTrack];
@@ -1389,10 +1459,20 @@ async function composeFinal(source, avatarTrack, comments, totalDuration, source
   const placement = String(layout?.avatar || 'bottom_right');
   const cut = subject || { x: 0, width: AVATAR_W };
   const shift = String(layout?.source_shift || 'none');
-  const geometry = layoutGeometry(placement, shift, cut);
+  const overlaysSource = !isBandPlacement(placement) && shift !== 'down' && shift !== 'up';
+  const contentBand = overlaysSource ? await sourceContentBand(source) : null;
+  // Keep these four lines contiguous: run-v4-hardened.mjs patches them verbatim
+  // to graft in localized source replacement, and it fails closed on a miss.
+  const geometry = layoutGeometry(placement, shift, cut, contentBand);
   const banded = geometry.banded;
   const srcY = geometry.sourceY;
   const pos = { x: geometry.avatarX, y: geometry.avatarY };
+  lastContentFit = { ...(geometry.contentFit || {}), content_band: contentBand };
+  if (geometry.contentFit?.clamped) {
+    log(`Content band: source paints rows ${contentBand.top}..${contentBand.bottom}; the ${AVATAR_H}px avatar frame does not fit the ${geometry.contentFit.band}px band, scaled to ${geometry.contentFit.width}x${geometry.contentFit.height}`);
+  } else if (contentBand) {
+    log(`Content band: source paints rows ${contentBand.top}..${contentBand.bottom}; avatar frame fits${geometry.contentFit?.skipped ? ` (${geometry.contentFit.skipped})` : ''}`);
+  }
 
   // Banded: fill the strip edge to edge, trimming the source vertically rather
   // than letterboxing it into a thin band. Unbanded: the whole canvas.
@@ -1684,6 +1764,7 @@ try {
     layout: effectiveLayout,
     layout_source: requested.forced ? 'operator_override' : layoutSafety.changed ? 'director_safety_correction' : 'director',
     layout_safety: layoutSafety,
+    content_fit: lastContentFit,
     subject_crop: subject,
     captions: captionMeta,
     chroma_key_hex: background.hex,
