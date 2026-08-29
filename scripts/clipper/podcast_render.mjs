@@ -9,16 +9,19 @@ import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { captionCompositeFilter } from './ffmpeg_filters.mjs';
 import {
-  PODCAST_CAPTION_FORCE_STYLE,
   activeSpeakerCropFilter,
-  buildTranscriptSrt,
+  buildTranscriptAss,
+  chooseCaptionAccent,
   normalizedSpeakerCenters,
+  podcastSoundtrackAudioFilter,
   refinePodcastSpeechWindow,
   resolvePodcastFraming,
   speakerAt,
   speakerIntervalsForWindow,
+  soundtrackStartOffset,
   validateAlignmentArtifactMetadata,
   validatePodcastWindow,
+  validateSoundtrackPlan,
   wordsForWindow,
 } from './podcast_media.mjs';
 
@@ -101,6 +104,15 @@ function runCapture(command, args, options = {}) {
   return result.stdout || '';
 }
 
+function runCaptureBuffer(command, args, options = {}) {
+  const result = spawnSync(command, args, { encoding: null, maxBuffer: 10 * 1024 * 1024, ...options });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`${command} exited ${result.status}: ${Buffer.from(result.stderr || '').toString('utf8').slice(-1600)}`);
+  }
+  return Buffer.from(result.stdout || []);
+}
+
 function findDownloadedFile(dir) {
   const preferred = ['batch.mp4', 'batch.mkv', 'batch.webm', 'batch.mov'];
   for (const name of preferred) {
@@ -179,6 +191,44 @@ function uploadObject(localPath, objectPath, contentType, { upsert = false } = {
   ], { stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`storage upload exited ${result.status}`);
+}
+
+async function downloadSoundtrack(soundtrack, root) {
+  const response = await fetch(storageObjectUrl(soundtrack.bucket, soundtrack.path), {
+    headers: { Authorization: `Bearer ${STORAGE_KEY}`, apikey: STORAGE_KEY },
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!response.ok) throw new Error(`Soundtrack download HTTP ${response.status}`);
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  if (contentLength && contentLength !== soundtrack.bytes) {
+    throw new Error(`Soundtrack Content-Length mismatch (${contentLength} != ${soundtrack.bytes})`);
+  }
+  const payload = Buffer.from(await response.arrayBuffer());
+  if (payload.length !== soundtrack.bytes) {
+    throw new Error(`Soundtrack size mismatch (${payload.length} != ${soundtrack.bytes})`);
+  }
+  const extension = path.extname(soundtrack.path).toLowerCase().replace(/[^.a-z0-9]/g, '').slice(0, 8) || '.audio';
+  const target = path.join(root, `soundtrack${extension}`);
+  fs.writeFileSync(target, payload);
+  return target;
+}
+
+function captionLaneSamples(source, duration) {
+  const samples = [];
+  for (const fraction of [0.12, 0.3, 0.5, 0.7, 0.88]) {
+    const at = Math.max(0.05, Math.min(Math.max(0.05, duration - 0.05), duration * fraction));
+    try {
+      const rgb = runCaptureBuffer('ffmpeg', [
+        '-hide_banner', '-loglevel', 'error', '-ss', at.toFixed(3), '-i', source,
+        '-vf', 'crop=iw:ih*0.42:0:ih*0.58,scale=1:1,format=rgb24',
+        '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
+      ]);
+      if (rgb.length >= 3) samples.push([rgb[0], rgb[1], rgb[2]]);
+    } catch (error) {
+      console.warn(`[podcast-render] caption palette sample failed at ${at.toFixed(2)}s: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return samples;
 }
 
 function probe(file) {
@@ -416,15 +466,32 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   });
   const centers = framing.centers;
   const layout = chooseLayout(plan, visualConfirmation, framing);
-  const captionPath = path.join(work, 'captions.srt');
+  const captionPath = path.join(work, 'captions.ass');
   const captionWords = plan?.output?.captions === false ? [] : wordsForWindow(artifact, start, end);
-  const srt = buildTranscriptSrt(captionWords);
-  if (srt.trim()) fs.writeFileSync(captionPath, srt, 'utf8');
-  const captionsCreated = Boolean(srt.trim());
+  const captionAccent = chooseCaptionAccent(captionLaneSamples(source, duration));
+  const ass = buildTranscriptAss(captionWords, captionAccent);
+  if (captionWords.length) fs.writeFileSync(captionPath, ass, 'utf8');
+  const captionsCreated = captionWords.length > 0;
   const layoutOutputLabel = captionsCreated ? 'caption_base' : 'v';
 
   const sourceProbe = probe(source);
   const sourceVideo = (sourceProbe.streams || []).find(stream => stream.codec_type === 'video') || {};
+  const sourceHasAudio = (sourceProbe.streams || []).some(stream => stream.codec_type === 'audio');
+  const soundtrack = validateSoundtrackPlan(plan?.output?.soundtrack);
+  let soundtrackFile = null;
+  let soundtrackProbe = null;
+  let soundtrackOffset = 0;
+  if (soundtrack) {
+    await progress(render.id, 'soundtrack_preparing', `Preparing ${soundtrack.title || 'vibe-matched soundtrack'} and speech ducking`);
+    soundtrackFile = await downloadSoundtrack(soundtrack, work);
+    soundtrackProbe = probe(soundtrackFile);
+    const audioStream = (soundtrackProbe.streams || []).find(stream => stream.codec_type === 'audio');
+    const soundtrackDuration = Number(soundtrackProbe.format?.duration || audioStream?.duration || 0);
+    if (!audioStream || !Number.isFinite(soundtrackDuration) || soundtrackDuration <= 0) {
+      throw new Error('Soundtrack object has no decodable audio stream');
+    }
+    soundtrackOffset = soundtrackStartOffset(soundtrackDuration, duration, `${candidate.id}:${render.id}`);
+  }
   const activeFilter = layout === 'active_speaker' ? activeSpeakerCropFilter({
     width: sourceVideo.width,
     height: sourceVideo.height,
@@ -439,21 +506,26 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const filter = captionsCreated
     ? `${layoutFilter};${captionCompositeFilter({
         filePath: captionPath,
-        forceStyle: PODCAST_CAPTION_FORCE_STYLE,
+        forceStyle: '',
         strength: 'readable',
       })}`
     : layoutFilter;
   await progress(render.id, 'composing', `Rendering 1080x1920 podcast edit (${actualLayout})`);
   const output = path.join(work, 'video.mp4');
+  const ffmpegInputs = ['-i', source];
+  if (soundtrackFile) ffmpegInputs.push('-stream_loop', '-1', '-ss', soundtrackOffset.toFixed(3), '-i', soundtrackFile);
+  const audioFilter = soundtrack ? podcastSoundtrackAudioFilter({ duration, gainDb: soundtrack.gain_db, sourceHasAudio }) : null;
+  const fullFilter = audioFilter ? `${filter};${audioFilter}` : filter;
   run('ffmpeg', [
-    '-hide_banner', '-loglevel', 'error', '-y', '-i', source, '-filter_complex', filter,
-    '-map', '[v]', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
+    '-hide_banner', '-loglevel', 'error', '-y', ...ffmpegInputs, '-filter_complex', fullFilter,
+    '-map', '[v]', '-map', soundtrack ? '[a]' : '0:a?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-r', String(Number(plan?.output?.fps || 30)),
-    '-movflags', '+faststart', output,
+    '-t', duration.toFixed(3), '-movflags', '+faststart', output,
   ]);
 
   const resultProbe = probe(output);
   const resultVideo = (resultProbe.streams || []).find(stream => stream.codec_type === 'video') || {};
+  const resultAudio = (resultProbe.streams || []).find(stream => stream.codec_type === 'audio') || null;
   const outputDuration = Number(resultProbe.format?.duration || 0);
   if (Number(resultVideo.width) !== 1080 || Number(resultVideo.height) !== 1920) {
     throw new Error(`Unexpected podcast output geometry ${resultVideo.width}x${resultVideo.height}`);
@@ -461,6 +533,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   if (!Number.isFinite(outputDuration) || Math.abs(outputDuration - duration) > 1.5) {
     throw new Error(`Unexpected podcast output duration ${outputDuration.toFixed(2)}s for ${duration.toFixed(2)}s plan`);
   }
+  if (soundtrack && !resultAudio) throw new Error('Soundtrack render completed without an audio stream');
 
   const lease = await progress(render.id, 'uploading', 'Uploading immutable podcast render');
   if (!lease || lease.ignored) throw new Error('stale_worker_run: Podcast render lease changed before upload');
@@ -493,8 +566,26 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
         storage_path: vod.transcript_storage_path,
         sha256: vod.transcript_sha256,
         word_count: captionWords.length,
-        captions_created: Boolean(srt.trim()),
+        captions_created: captionsCreated,
+        caption_format: captionsCreated ? 'ass-word-highlight-v1' : null,
+        caption_accent: captionsCreated ? captionAccent : null,
       },
+      soundtrack: soundtrack ? {
+        track_id: soundtrack.id,
+        title: soundtrack.title,
+        artist: soundtrack.artist,
+        selection: soundtrack.selection,
+        match_score: soundtrack.match_score,
+        gain_db: soundtrack.gain_db,
+        start_offset_s: soundtrackOffset,
+        license_type: soundtrack.license_type,
+        attribution: soundtrack.attribution,
+        ducking: 'source-sidechain-v1',
+        fade_in_s: 0.45,
+        fade_out_s: Math.min(1.2, Math.max(0.25, duration / 8)),
+        source_has_audio: sourceHasAudio,
+        ffprobe: soundtrackProbe,
+      } : { enabled: false, reason: String(plan?.output?.soundtrack?.selection || 'not_selected') },
       speaker_framing: {
         intervals: intervals.length,
         centers,
@@ -514,7 +605,12 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       width: Number(resultVideo.width),
       height: Number(resultVideo.height),
       duration_s: outputDuration,
-      transcript_captions: Boolean(srt.trim()),
+      transcript_captions: captionsCreated,
+      word_highlight_captions: captionsCreated,
+      caption_accent: captionsCreated ? captionAccent.name : null,
+      soundtrack_mixed: Boolean(soundtrack),
+      soundtrack_track_id: soundtrack?.id || null,
+      audio_stream: Boolean(resultAudio),
       natural_speech_tail: refinedWindow.reason,
       visual_confirmation: Boolean(visualConfirmation),
     },

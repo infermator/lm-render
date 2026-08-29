@@ -4,13 +4,18 @@ import test from 'node:test';
 import {
   PODCAST_CAPTION_FORCE_STYLE,
   activeSpeakerCropFilter,
+  buildTranscriptAss,
   buildTranscriptSrt,
+  chooseCaptionAccent,
+  podcastSoundtrackAudioFilter,
   refinePodcastSpeechWindow,
   resolvePodcastFraming,
   speakerAt,
   speakerIntervalsForWindow,
+  soundtrackStartOffset,
   validateAlignmentArtifactMetadata,
   validatePodcastWindow,
+  validateSoundtrackPlan,
   wordsForWindow,
 } from './podcast_media.mjs';
 
@@ -49,6 +54,73 @@ test('Podcast captions use a lower face-safe lane and restrained outline', () =>
   assert.match(PODCAST_CAPTION_FORCE_STYLE, /Alignment=2/);
   assert.match(PODCAST_CAPTION_FORCE_STYLE, /MarginV=48/);
   assert.doesNotMatch(PODCAST_CAPTION_FORCE_STYLE, /Outline=3/);
+});
+
+test('Podcast ASS captions highlight only the currently spoken word', () => {
+  const words = wordsForWindow(artifact, 99.5, 103);
+  const ass = buildTranscriptAss(words, {
+    name: 'yellow', rgb: [255, 215, 62], ass_bgr: '3ED7FF', text_ass_bgr: '000000', contrast_score: 9,
+  });
+  assert.match(ass, /Fontname, Fontsize/);
+  assert.match(ass, /Style: PodcastCaption,Inter,15/);
+  assert.match(ass, /Dialogue: 0,0:00:00\.50,0:00:01\.50/);
+  assert.match(ass, /\\1c&H00000000&\\3c&H003ED7FF&/);
+  assert.match(ass, /Hello\{\\rPodcastCaption\} world\./);
+  assert.match(ass, /Hello \{\\1c&H00000000&[^}]+\}world\.\{\\rPodcastCaption\}/);
+});
+
+test('caption accent selection is deterministic and keeps active text readable', () => {
+  const one = chooseCaptionAccent([[220, 180, 30], [210, 170, 20]]);
+  const two = chooseCaptionAccent([{ r: 220, g: 180, b: 30 }, { r: 210, g: 170, b: 20 }]);
+  assert.deepEqual(one, two);
+  assert.match(one.ass_bgr, /^[0-9A-F]{6}$/);
+  assert.match(one.text_ass_bgr, /^(000000|FFFFFF)$/);
+  assert.ok(one.contrast_score > 1);
+});
+
+test('soundtrack plans accept only private library objects with bounded gain', () => {
+  const id = '77777777-7777-4777-8777-777777777777';
+  const valid = validateSoundtrackPlan({
+    schema_version: 'clipper-soundtrack-v1',
+    enabled: true,
+    track_id: id,
+    storage_bucket: 'clipper-media',
+    storage_path: `music/${id}/track.mp3`,
+    bytes: 12345,
+    content_type: 'audio/mpeg',
+    mix_gain_db: -14,
+    selection: 'vibe_matched',
+  });
+  assert.equal(valid.id, id);
+  assert.equal(valid.gain_db, -14);
+  assert.throws(() => validateSoundtrackPlan({
+    ...valid,
+    schema_version: 'clipper-soundtrack-v1',
+    enabled: true,
+    track_id: id,
+    storage_bucket: 'clipper-media',
+    storage_path: 'renders/not-music.mp3',
+    bytes: 123,
+    content_type: 'audio/mpeg',
+    mix_gain_db: -14,
+  }), /storage identity/);
+});
+
+test('soundtrack offsets are deterministic and remain inside the non-looping headroom', () => {
+  const first = soundtrackStartOffset(240, 60, 'candidate-a');
+  assert.equal(first, soundtrackStartOffset(240, 60, 'candidate-a'));
+  assert.ok(first >= 0 && first <= 180);
+  assert.equal(soundtrackStartOffset(30, 60, 'candidate-a'), 0);
+});
+
+test('soundtrack filter normalizes, ducks, fades and limits beneath speech', () => {
+  const filter = podcastSoundtrackAudioFilter({ duration: 60, gainDb: -14, sourceHasAudio: true });
+  assert.match(filter, /loudnorm=I=-18/);
+  assert.match(filter, /volume=-14\.00dB/);
+  assert.match(filter, /apad=whole_dur=60\.000/);
+  assert.match(filter, /sidechaincompress=/);
+  assert.match(filter, /afade=t=out:st=58\.800:d=1\.200/);
+  assert.match(filter, /alimiter=limit=0\.95/);
 });
 
 test('Podcast cuts extend through the next sentence and keep a natural tail', () => {
@@ -250,7 +322,17 @@ test('both CLIPPER tracks add caption shadows after their existing layout compos
     assert.match(worker, /captionCompositeFilter\(/);
     assert.match(worker, /layoutFilter/);
   }
-  assert.match(podcastWorker, /PODCAST_CAPTION_FORCE_STYLE/);
+  assert.match(podcastWorker, /buildTranscriptAss/);
+  assert.match(podcastWorker, /forceStyle: ''/);
   assert.match(podcastWorker, /strength: 'readable'/);
   assert.match(streamWorker, /creatorGameplayFilter\(facecam, layoutOutputLabel\)/);
+});
+
+test('Podcast V3 mixes only validated library music and leaves Stream V2 unchanged', () => {
+  const podcastWorker = fs.readFileSync(new URL('./podcast_render.mjs', import.meta.url), 'utf8');
+  const streamWorker = fs.readFileSync(new URL('./render.mjs', import.meta.url), 'utf8');
+  assert.match(podcastWorker, /validateSoundtrackPlan\(plan\?\.output\?\.soundtrack\)/);
+  assert.match(podcastWorker, /podcastSoundtrackAudioFilter/);
+  assert.match(podcastWorker, /soundtrack_mixed: Boolean\(soundtrack\)/);
+  assert.doesNotMatch(streamWorker, /clipper-soundtrack-v1|podcastSoundtrackAudioFilter/);
 });

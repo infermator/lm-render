@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { captionCompositeFilter } from './ffmpeg_filters.mjs';
+import { buildTranscriptAss, podcastSoundtrackAudioFilter } from './podcast_media.mjs';
 
 const ALIGNMENTS = { bottom: 2, top: 6, middle: 10 };
 const STRENGTHS = ['subtle', 'readable'];
@@ -62,4 +63,33 @@ test('the caption graph actually encodes a frame at the production podcast profi
   ], { encoding: 'utf8' });
   assert.equal(result.status, 0, String(result.stderr || '').split('\n').slice(-6).join('\n'));
   assert.ok(fs.statSync(output).size > 0, 'expected a non-empty encode');
+});
+
+test('libass renders the production word-highlight caption file', { skip: subtitlesAvailable ? false : 'ffmpeg subtitles/libass is not installed' }, () => {
+  const assPath = path.join(path.dirname(captionPath), 'captions.ass');
+  fs.writeFileSync(assPath, buildTranscriptAss([
+    { start: 0, end: 0.45, text: 'Current', speaker: 'SPEAKER_00' },
+    { start: 0.45, end: 0.9, text: 'word', speaker: 'SPEAKER_00' },
+  ], { name: 'yellow', rgb: [255, 215, 62], ass_bgr: '3ED7FF', text_ass_bgr: '000000', contrast_score: 9 }));
+  const composite = captionCompositeFilter({ filePath: assPath, forceStyle: '', strength: 'readable' });
+  const output = path.join(path.dirname(captionPath), 'ass-frame.mp4');
+  const result = spawnSync('ffmpeg', [
+    '-hide_banner', '-nostdin', '-y',
+    '-f', 'lavfi', '-i', 'testsrc2=size=1080x1920:rate=30:duration=1',
+    '-filter_complex', `[0:v]null[caption_base];${composite}`,
+    '-map', '[v]', '-frames:v', '3', '-c:v', 'libx264', '-preset', 'ultrafast', output,
+  ], { encoding: 'utf8' });
+  assert.equal(result.status, 0, String(result.stderr || '').split('\n').slice(-8).join('\n'));
+  assert.ok(fs.statSync(output).size > 0, 'expected a non-empty ASS encode');
+});
+
+test('FFmpeg builds the V3 normalized and speech-ducked soundtrack graph', { skip: ffmpegAvailable ? false : 'ffmpeg is not installed' }, () => {
+  const result = spawnSync('ffmpeg', [
+    '-hide_banner', '-nostdin', '-y',
+    '-f', 'lavfi', '-i', 'sine=frequency=220:sample_rate=48000:duration=1',
+    '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=1',
+    '-filter_complex', podcastSoundtrackAudioFilter({ duration: 1, gainDb: -14, sourceHasAudio: true }),
+    '-map', '[a]', '-t', '1', '-f', 'null', '-',
+  ], { encoding: 'utf8' });
+  assert.equal(result.status, 0, String(result.stderr || '').split('\n').slice(-8).join('\n'));
 });

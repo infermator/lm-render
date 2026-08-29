@@ -20,6 +20,13 @@ test('subtitle filters escape Windows drive separators and quotes', () => {
   );
 });
 
+test('embedded ASS styles can render without an SRT force-style override', () => {
+  assert.equal(
+    subtitleFilterSuffix('/tmp/clipper/captions.ass', ''),
+    ",subtitles=filename='/tmp/clipper/captions.ass'",
+  );
+});
+
 test('caption placement follows ASS alignment without changing typography', () => {
   assert.equal(captionPlacementFromStyle('Alignment=2,MarginV=48'), 'bottom');
   assert.equal(captionPlacementFromStyle('Alignment=6,MarginV=48'), 'top');
