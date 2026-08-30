@@ -176,7 +176,7 @@ test('Podcast cuts ignore punctuation when the same thought immediately continue
   assert.equal(refined.extension_s, 3.95);
 });
 
-test('Podcast cuts preserve an existing sentence ending and reject unverifiable tails', () => {
+test('Podcast cuts prefer a real sentence ending and fall back to the widest gap', () => {
   const complete = {
     transcript: { segments: [{ words: [{ start_s: 120, end_s: 126.5, text: 'Done.' }] }] },
   };
@@ -190,6 +190,7 @@ test('Podcast cuts preserve an existing sentence ending and reject unverifiable 
       extension_s: 0,
       changed: false,
       verified: true,
+      usable: true,
       reason: 'existing_natural_tail',
     },
   );
@@ -205,10 +206,15 @@ test('Podcast cuts preserve an existing sentence ending and reject unverifiable 
       }],
     },
   };
+  // Run-on speech still fails verification - we did not find a real ending and
+  // must not pretend otherwise - but it no longer aborts the render. Refusing
+  // outright threw away otherwise valid clips whose only fault was that the
+  // speaker did not pause within the search window.
   const unsafe = refinePodcastSpeechWindow(runOn, 100, 128, { maxExtensionSeconds: 5 });
   assert.equal(unsafe.verified, false);
-  assert.equal(unsafe.reason, 'no_safe_boundary');
-  assert.equal(unsafe.end, 128);
+  assert.equal(unsafe.usable, true);
+  assert.equal(unsafe.reason, 'widest_word_gap');
+  assert.ok(unsafe.end >= 128, 'the ending never moves earlier than planned');
 });
 
 test('diarization supplies stable framing and eased multi-speaker crop switching', () => {
@@ -419,4 +425,31 @@ test('the longest turn of each speaker is sampled first', () => {
   ], 90);
   assert.equal(samples[0].time_s, 20);
   assert.equal(samples[1].time_s, 50);
+});
+
+
+test('continuous speech ends on the widest gap instead of killing the render', () => {
+  // Reported as a hard failure: "natural_end_unverified: no sentence ending or
+  // speech pause found within 2187.40-2199.40s". A clip whose ending is merely
+  // imperfect should not throw away an otherwise valid render.
+  // Unpunctuated, tightly packed speech that keeps going past the search limit.
+  // It has to run past the limit: reaching the end of the transcript counts as
+  // a pause, which would verify the window for the wrong reason.
+  const words = [];
+  for (let index = 0; index < 90; index += 1) {
+    const start = 100 + index * 0.5;
+    words.push({ text: 'and', start_s: start, end_s: start + 0.42 });
+  }
+  const artifact = { transcript: { segments: [{ speaker: 'SPEAKER_00', words }] } };
+  const refined = refinePodcastSpeechWindow(artifact, 100, 122);
+  assert.equal(refined.verified, false, 'it must not claim a natural ending it did not find');
+  assert.equal(refined.usable, true, 'but the render must still be allowed to proceed');
+  assert.equal(refined.reason, 'widest_word_gap');
+  assert.ok(refined.end >= 122, 'the ending never moves earlier than planned');
+});
+
+test('a window with no transcript behind it is still refused', () => {
+  const refined = refinePodcastSpeechWindow({ transcript: { segments: [] } }, 100, 122);
+  assert.equal(refined.usable, false);
+  assert.equal(refined.reason, 'no_transcript_words');
 });

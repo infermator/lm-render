@@ -220,6 +220,7 @@ export function refinePodcastSpeechWindow(artifact, startValue, endValue, option
       extension_s: 0,
       changed: false,
       verified: false,
+      usable: false,
       reason: 'no_transcript_words',
     };
   }
@@ -235,6 +236,7 @@ export function refinePodcastSpeechWindow(artifact, startValue, endValue, option
       extension_s: 0,
       changed: false,
       verified: true,
+      usable: true,
       reason: 'existing_natural_tail',
     };
   }
@@ -244,6 +246,11 @@ export function refinePodcastSpeechWindow(artifact, startValue, endValue, option
     && lastAtPlan.end >= original.end - 0.2
     && existingPause;
   let pauseFound = false;
+  // The widest breath in the window, kept as a last resort. Continuous speech
+  // with no punctuation and no full pause used to abort the whole render; this
+  // is what lets it end on the best break available instead.
+  let widestGapWord = null;
+  let widestGap = 0;
   for (let index = lastIndex; index < words.length && !terminalFound && !pauseFound; index += 1) {
     const word = words[index];
     if (word.start >= maximumEnd) break;
@@ -257,7 +264,12 @@ export function refinePodcastSpeechWindow(artifact, startValue, endValue, option
     }
     chosen = word;
     const next = words[index + 1] || null;
-    const hasPauseAfter = !next || next.start - word.end >= pauseSeconds;
+    const gapAfter = next ? next.start - word.end : Number.POSITIVE_INFINITY;
+    if (word.end >= original.end - 0.2 && gapAfter > widestGap) {
+      widestGap = gapAfter;
+      widestGapWord = word;
+    }
+    const hasPauseAfter = !next || gapAfter >= pauseSeconds;
     if (word.end >= original.end - 0.2 && sentenceTerminal(word.text) && hasPauseAfter) {
       terminalFound = true;
       break;
@@ -268,8 +280,14 @@ export function refinePodcastSpeechWindow(artifact, startValue, endValue, option
   }
 
   const verified = terminalFound || pauseFound;
-  const refinedEnd = verified
-    ? Math.max(original.end, Math.min(maximumEnd, chosen.end + tailSeconds))
+  // No sentence end and no full pause: cut on the widest gap between words
+  // rather than abandoning the clip. The ending is worse than a real boundary,
+  // but it still lands between words instead of through one, and the caller is
+  // told which of the three it got.
+  const fellBack = !verified && Boolean(widestGapWord);
+  const endWord = verified ? chosen : (widestGapWord || chosen);
+  const refinedEnd = verified || fellBack
+    ? Math.max(original.end, Math.min(maximumEnd, endWord.end + tailSeconds))
     : original.end;
   return {
     start: original.start,
@@ -279,7 +297,14 @@ export function refinePodcastSpeechWindow(artifact, startValue, endValue, option
     extension_s: Number((refinedEnd - original.end).toFixed(3)),
     changed: refinedEnd > original.end + 0.05,
     verified,
-    reason: terminalFound ? 'sentence_terminal' : pauseFound ? 'speech_pause' : 'no_safe_boundary',
+    // Whether the render may proceed at all. Only a window with no transcript
+    // words behind it has nothing safe to cut on.
+    usable: verified || fellBack,
+    widest_gap_s: fellBack ? Number(widestGap.toFixed(3)) : null,
+    reason: terminalFound ? 'sentence_terminal'
+      : pauseFound ? 'speech_pause'
+      : fellBack ? 'widest_word_gap'
+      : 'no_safe_boundary',
   };
 }
 

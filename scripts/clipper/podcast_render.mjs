@@ -390,8 +390,13 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     maxExtensionSeconds: 12,
     tailSeconds: 0.55,
   });
+  if (!refinedWindow.usable) {
+    throw new Error(`natural_end_unverified: no transcript words behind ${refinedWindow.original_end_s.toFixed(2)}s, so there is nothing safe to cut on`);
+  }
   if (!refinedWindow.verified) {
-    throw new Error(`natural_end_unverified: no sentence ending or speech pause found within ${refinedWindow.original_end_s.toFixed(2)}-${(refinedWindow.original_end_s + 12).toFixed(2)}s`);
+    console.warn(`[podcast-render] ${render.id}: no sentence ending or full pause within `
+      + `${refinedWindow.original_end_s.toFixed(2)}-${(refinedWindow.original_end_s + 12).toFixed(2)}s; `
+      + `ending on the widest word gap (${refinedWindow.widest_gap_s}s)`);
   }
   const { start, end, duration } = validatePodcastWindow(refinedWindow.start, refinedWindow.end);
   const work = path.join(root, String(render.id));
