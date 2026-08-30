@@ -108,6 +108,18 @@ export function soundtrackStartOffset(trackDurationValue, clipDurationValue, see
   return Number((((hash >>> 0) / 0xffffffff) * maxOffset).toFixed(3));
 }
 
+// Final programme trim, applied after the mix and before the limiter.
+//
+// The reference render measured -15.2 LUFS integrated, which was asked to come
+// down slightly. This is a fixed offset rather than a loudnorm pass on purpose:
+// it lowers the programme without touching dynamics or re-levelling speech that
+// the source already balanced.
+//
+// Worth knowing before lowering it further: YouTube only turns loud uploads
+// down, never quiet ones up, so anything under about -14 LUFS simply plays
+// quieter than the videos around it.
+const PROGRAMME_TRIM_DB = -1.5;
+
 export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: gainValue, sourceHasAudio = true }) {
   const duration = Number(durationValue);
   const gainDb = Number(gainValue);
@@ -116,7 +128,7 @@ export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: 
   const fadeOutDuration = Math.min(1.2, Math.max(0.25, duration / 8));
   const fadeOutStart = Math.max(0, duration - fadeOutDuration);
   const music = `[1:a]aformat=sample_rates=48000:channel_layouts=stereo,loudnorm=I=-18:LRA=7:TP=-2,volume=${gainDb.toFixed(2)}dB,atrim=0:${duration.toFixed(3)},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.45,afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOutDuration.toFixed(3)}[music_pre]`;
-  if (!sourceHasAudio) return `${music};[music_pre]alimiter=limit=0.95:attack=5:release=50[a]`;
+  if (!sourceHasAudio) return `${music};[music_pre]volume=${PROGRAMME_TRIM_DB.toFixed(2)}dB,alimiter=limit=0.95:attack=5:release=50[a]`;
   return [
     music,
     `[0:a]aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)},asplit=2[source_mix][speech_key]`,
@@ -125,7 +137,7 @@ export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: 
     // reference clip, which was functionally dry. This gentler detector keeps
     // speech about 16 dB forward while preserving the track's rhythm.
     '[music_pre][speech_key]sidechaincompress=threshold=0.06:ratio=4:attack=20:release=450:makeup=1[ducked_music]',
-    '[source_mix][ducked_music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:attack=5:release=50[a]',
+    `[source_mix][ducked_music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,volume=${PROGRAMME_TRIM_DB.toFixed(2)}dB,alimiter=limit=0.95:attack=5:release=50[a]`,
   ].join(';');
 }
 
@@ -439,9 +451,14 @@ export function resolvePodcastFraming({ localCenters, speakerPositions, interval
     if (position === 'right') centers[speaker] = 0.75;
   }
 
-  const activeSpeakers = [...new Set((intervals || [])
+  // Everyone diarization heard, before dropping the ones we could not place.
+  // Keeping the two counts apart is the whole point: a speaker with no measured
+  // centre used to vanish here, so "two people talk but we located one" became
+  // indistinguishable from "one person talks".
+  const heardSpeakers = [...new Set((intervals || [])
     .map(interval => String(interval?.speaker || ''))
-    .filter(speaker => speaker && Number.isFinite(Number(centers[speaker]))))];
+    .filter(Boolean))];
+  const activeSpeakers = heardSpeakers.filter(speaker => Number.isFinite(Number(centers[speaker])));
   if (!activeSpeakers.length) {
     return { mode: 'fit_blur', reason: 'no_positioned_speaker', centers, raw_centers: rawCenters };
   }
@@ -449,6 +466,21 @@ export function resolvePodcastFraming({ localCenters, speakerPositions, interval
   const activeCenters = activeSpeakers.map(speaker => Number(centers[speaker]));
   const spread = Math.max(...activeCenters) - Math.min(...activeCenters);
   if (activeSpeakers.length === 1) {
+    if (heardSpeakers.length > 1) {
+      // Someone else speaks in this window and we do not know where they are.
+      // Cropping is the worst option here, not the safe one: it commits the
+      // frame to the one person we happened to locate, so every line the other
+      // speaker says is delivered by someone sitting silent on screen. Showing
+      // the whole frame keeps whoever is talking visible.
+      return {
+        mode: 'fit_blur',
+        reason: 'unlocalized_speakers',
+        centers,
+        raw_centers: rawCenters,
+        heard_speakers: heardSpeakers.length,
+        located_speakers: activeSpeakers.length,
+      };
+    }
     centers[activeSpeakers[0]] = 0.5;
     return { mode: 'center_crop', reason: 'single_speaker_stable', centers, raw_centers: rawCenters };
   }

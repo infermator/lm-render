@@ -338,3 +338,48 @@ test('Podcast V3 mixes only validated library music and leaves Stream V2 unchang
   assert.match(podcastWorker, /soundtrack_mixed: Boolean\(soundtrack\)/);
   assert.doesNotMatch(streamWorker, /clipper-soundtrack-v1|podcastSoundtrackAudioFilter/);
 });
+
+test('a second speaker we cannot place stops the crop committing to the first', () => {
+  // The reported failure: 30 diarization intervals, but frame analysis located
+  // only SPEAKER_00, so framing reported "single_speaker_stable" and hard-cropped
+  // the whole clip onto one person. Every line the other host spoke was then
+  // delivered by someone sitting silent on screen.
+  const framing = resolvePodcastFraming({
+    localCenters: { SPEAKER_00: 0.5665 },
+    speakerPositions: { SPEAKER_00: 'left' },
+    intervals: [
+      { speaker: 'SPEAKER_00', start: 0, end: 4 },
+      { speaker: 'SPEAKER_01', start: 4, end: 9 },
+      { speaker: 'SPEAKER_00', start: 9, end: 14 },
+    ],
+  });
+  assert.equal(framing.mode, 'fit_blur');
+  assert.equal(framing.reason, 'unlocalized_speakers');
+  assert.equal(framing.heard_speakers, 2);
+  assert.equal(framing.located_speakers, 1);
+});
+
+test('a genuinely single-speaker window still centre-crops', () => {
+  const framing = resolvePodcastFraming({
+    localCenters: { SPEAKER_00: 0.5665 },
+    speakerPositions: { SPEAKER_00: 'left' },
+    intervals: [
+      { speaker: 'SPEAKER_00', start: 0, end: 4 },
+      { speaker: 'SPEAKER_00', start: 4, end: 9 },
+    ],
+  });
+  assert.equal(framing.mode, 'center_crop');
+  assert.equal(framing.reason, 'single_speaker_stable');
+});
+
+test('two located speakers far apart still track the active one', () => {
+  const framing = resolvePodcastFraming({
+    localCenters: { SPEAKER_00: 0.25, SPEAKER_01: 0.75 },
+    speakerPositions: { SPEAKER_00: 'left', SPEAKER_01: 'right' },
+    intervals: [
+      { speaker: 'SPEAKER_00', start: 0, end: 4 },
+      { speaker: 'SPEAKER_01', start: 4, end: 9 },
+    ],
+  });
+  assert.equal(framing.mode, 'active_speaker');
+});
