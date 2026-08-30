@@ -567,7 +567,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
         sha256: vod.transcript_sha256,
         word_count: captionWords.length,
         captions_created: captionsCreated,
-        caption_format: captionsCreated ? 'ass-word-highlight-v1' : null,
+        caption_format: captionsCreated ? 'ass-word-chip-v2' : null,
         caption_accent: captionsCreated ? captionAccent : null,
       },
       soundtrack: soundtrack ? {

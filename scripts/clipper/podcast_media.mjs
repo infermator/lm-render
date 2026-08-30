@@ -1,4 +1,9 @@
-export const PODCAST_CAPTION_FORCE_STYLE = 'FontName=Inter,FontSize=15,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1,Shadow=0,Alignment=2,MarginV=48';
+// ASS uses the explicit 324x576 script canvas below. MarginV=96 therefore
+// preserves the visual lane of the older SRT profile (MarginV=48 on libass's
+// implicit 288-line canvas) instead of dropping captions against the UI-safe
+// bottom edge.
+export const PODCAST_CAPTION_MARGIN_V = 96;
+export const PODCAST_CAPTION_FORCE_STYLE = `FontName=Inter,FontSize=15,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1,Shadow=0,Alignment=2,MarginV=${PODCAST_CAPTION_MARGIN_V}`;
 
 const CAPTION_ACCENTS = [
   { name: 'lime', rgb: [174, 255, 70] },
@@ -334,10 +339,10 @@ function captionLine(items, activeIndex, accent) {
   return items.map((item, index) => {
     const text = escapeAssText(String(item.text || '').trim());
     if (index !== activeIndex) return text;
-    // A thick, fully opaque accent outline behaves like a compact marker
-    // behind only the currently spoken word. Text flips black/white according
-    // to the accent's measured contrast, then \r restores the restrained base.
-    return `{\\1c&H00${accent.text_ass_bgr}&\\3c&H00${accent.ass_bgr}&\\3a&H00&\\xbord4\\ybord3\\blur0.45}${text}{\\rPodcastCaption}`;
+    // BorderStyle=3 is a real opaque rectangular word chip. Resetting to this
+    // style for only the active token avoids the glyph-shaped coloured halo
+    // produced by xbord/ybord while keeping the rest of the phrase stable.
+    return `{\\rActiveWord}${text}{\\rPodcastCaption}`;
   }).filter(Boolean).join(' ').replace(/\s+([,.;!?])/g, '$1');
 }
 
@@ -352,7 +357,8 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: PodcastCaption,Inter,15,&H00FFFFFF,&H00FFFFFF,&H00000000,&H70000000,-1,0,0,0,100,100,0,0,1,0.8,0,2,18,18,14,1
+Style: PodcastCaption,Inter,15,&H00FFFFFF,&H00FFFFFF,&H00000000,&H70000000,-1,0,0,0,100,100,0,0,1,0.8,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
+Style: ActiveWord,Inter,15,&H00${accent.text_ass_bgr},&H00${accent.text_ass_bgr},&H00${accent.ass_bgr},&H00${accent.ass_bgr},-1,0,0,0,100,100,0,0,3,1.8,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`;

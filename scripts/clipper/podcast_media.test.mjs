@@ -47,12 +47,12 @@ test('captions reuse absolute transcript word timings and shift them to the cut'
   assert.match(srt, /Hello world\./);
 });
 
-test('Podcast captions use a lower face-safe lane and restrained outline', () => {
+test('Podcast captions preserve the established face-safe lane and restrained outline', () => {
   assert.match(PODCAST_CAPTION_FORCE_STYLE, /FontName=Inter/);
   assert.match(PODCAST_CAPTION_FORCE_STYLE, /FontSize=15(?:,|$)/);
   assert.match(PODCAST_CAPTION_FORCE_STYLE, /Outline=1(?:,|$)/);
   assert.match(PODCAST_CAPTION_FORCE_STYLE, /Alignment=2/);
-  assert.match(PODCAST_CAPTION_FORCE_STYLE, /MarginV=48/);
+  assert.match(PODCAST_CAPTION_FORCE_STYLE, /MarginV=96/);
   assert.doesNotMatch(PODCAST_CAPTION_FORCE_STYLE, /Outline=3/);
 });
 
@@ -63,10 +63,12 @@ test('Podcast ASS captions highlight only the currently spoken word', () => {
   });
   assert.match(ass, /Fontname, Fontsize/);
   assert.match(ass, /Style: PodcastCaption,Inter,15/);
+  assert.match(ass, /Style: ActiveWord,Inter,15,[^\n]+,3,1\.8,0,2,18,18,96,1/);
   assert.match(ass, /Dialogue: 0,0:00:00\.50,0:00:01\.50/);
-  assert.match(ass, /\\1c&H00000000&\\3c&H003ED7FF&/);
-  assert.match(ass, /Hello\{\\rPodcastCaption\} world\./);
-  assert.match(ass, /Hello \{\\1c&H00000000&[^}]+\}world\.\{\\rPodcastCaption\}/);
+  assert.match(ass, /Style: ActiveWord,Inter,15,&H00000000,[^\n]+&H003ED7FF,&H003ED7FF/);
+  assert.doesNotMatch(ass, /\\x?bord|\\ybord|\\blur/);
+  assert.match(ass, /\{\\rActiveWord\}Hello\{\\rPodcastCaption\} world\./);
+  assert.match(ass, /Hello \{\\rActiveWord\}world\.\{\\rPodcastCaption\}/);
 });
 
 test('caption accent selection is deterministic and keeps active text readable', () => {
