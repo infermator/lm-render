@@ -90,11 +90,11 @@ test('soundtrack plans accept only private library objects with bounded gain', (
     storage_path: `music/${id}/track.mp3`,
     bytes: 12345,
     content_type: 'audio/mpeg',
-    mix_gain_db: -14,
+    mix_gain_db: -8,
     selection: 'vibe_matched',
   });
   assert.equal(valid.id, id);
-  assert.equal(valid.gain_db, -14);
+  assert.equal(valid.gain_db, -8);
   assert.throws(() => validateSoundtrackPlan({
     ...valid,
     schema_version: 'clipper-soundtrack-v1',
@@ -104,7 +104,7 @@ test('soundtrack plans accept only private library objects with bounded gain', (
     storage_path: 'renders/not-music.mp3',
     bytes: 123,
     content_type: 'audio/mpeg',
-    mix_gain_db: -14,
+    mix_gain_db: -8,
   }), /storage identity/);
 });
 
@@ -116,11 +116,11 @@ test('soundtrack offsets are deterministic and remain inside the non-looping hea
 });
 
 test('soundtrack filter normalizes, ducks, fades and limits beneath speech', () => {
-  const filter = podcastSoundtrackAudioFilter({ duration: 60, gainDb: -14, sourceHasAudio: true });
+  const filter = podcastSoundtrackAudioFilter({ duration: 60, gainDb: -8, sourceHasAudio: true });
   assert.match(filter, /loudnorm=I=-18/);
-  assert.match(filter, /volume=-14\.00dB/);
+  assert.match(filter, /volume=-8\.00dB/);
   assert.match(filter, /apad=whole_dur=60\.000/);
-  assert.match(filter, /sidechaincompress=/);
+  assert.match(filter, /sidechaincompress=threshold=0\.06:ratio=4/);
   assert.match(filter, /afade=t=out:st=58\.800:d=1\.200/);
   assert.match(filter, /alimiter=limit=0\.95/);
 });

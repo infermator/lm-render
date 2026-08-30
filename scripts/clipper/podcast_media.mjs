@@ -68,7 +68,7 @@ export function validateSoundtrackPlan(raw) {
   const objectPath = String(raw.storage_path || '');
   const bytes = Math.floor(Number(raw.bytes || 0));
   const contentType = String(raw.content_type || '').toLowerCase();
-  const gainDb = Number(raw.mix_gain_db ?? -14);
+  const gainDb = Number(raw.mix_gain_db ?? -8);
   if (raw.schema_version !== 'clipper-soundtrack-v1') throw new Error('Soundtrack plan schema is invalid');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) {
     throw new Error('Soundtrack track ID is invalid');
@@ -120,7 +120,11 @@ export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: 
   return [
     music,
     `[0:a]aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)},asplit=2[source_mix][speech_key]`,
-    '[music_pre][speech_key]sidechaincompress=threshold=0.03:ratio=10:attack=20:release=450:makeup=1[ducked_music]',
+    // Keep the bed audible beneath a podcast voice. The previous 0.03/10:1
+    // contract pushed a normalized -14 dB bed to roughly -42 LUFS on the
+    // reference clip, which was functionally dry. This gentler detector keeps
+    // speech about 16 dB forward while preserving the track's rhythm.
+    '[music_pre][speech_key]sidechaincompress=threshold=0.06:ratio=4:attack=20:release=450:makeup=1[ducked_music]',
     '[source_mix][ducked_music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:attack=5:release=50[a]',
   ].join(';');
 }

@@ -88,7 +88,7 @@ test('FFmpeg builds the V3 normalized and speech-ducked soundtrack graph', { ski
     '-hide_banner', '-nostdin', '-y',
     '-f', 'lavfi', '-i', 'sine=frequency=220:sample_rate=48000:duration=1',
     '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=1',
-    '-filter_complex', podcastSoundtrackAudioFilter({ duration: 1, gainDb: -14, sourceHasAudio: true }),
+    '-filter_complex', podcastSoundtrackAudioFilter({ duration: 1, gainDb: -8, sourceHasAudio: true }),
     '-map', '[a]', '-t', '1', '-f', 'null', '-',
   ], { encoding: 'utf8' });
   assert.equal(result.status, 0, String(result.stderr || '').split('\n').slice(-8).join('\n'));
