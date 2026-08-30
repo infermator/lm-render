@@ -556,3 +556,58 @@ export function activeSpeakerCropFilter({ width, height, centers, intervals, cap
   }
   return `[0:v]crop=${cropWidth}:${cropHeight}:x='${xExpression}':y=${defaultY},scale=1080:1920${captionSuffix}[${outputLabel}]`;
 }
+
+const SPEAKER_SAMPLE_BUDGET = 24;
+
+export function sampleTimes(intervals, duration) {
+  // Share the sample budget between speakers instead of spending it in time
+  // order.
+  //
+  // Walking the intervals and stopping at the budget gave every sample to
+  // whoever spoke first. On a clip where one host tells a long story, the
+  // budget was exhausted before the other host's turns were reached, so he was
+  // never located, and framing could only fall back to showing the whole 16:9
+  // frame inside the 9:16 output. Locating both is what makes an actual
+  // speaker-following zoom possible.
+  //
+  // Within each speaker the longest turns go first: a long turn is far more
+  // likely to catch a mouth mid-sentence than a one-word interjection.
+  const bySpeaker = new Map();
+  for (const interval of intervals) {
+    const midpoint = Math.max(0.15, Math.min(duration - 0.15, (Number(interval.start) + Number(interval.end)) / 2));
+    if (!Number.isFinite(midpoint)) continue;
+    const speaker = interval.speaker;
+    if (!bySpeaker.has(speaker)) bySpeaker.set(speaker, []);
+    bySpeaker.get(speaker).push({
+      time_s: Number(midpoint.toFixed(3)),
+      speaker,
+      length: Number(interval.end) - Number(interval.start),
+    });
+  }
+  for (const turns of bySpeaker.values()) turns.sort((left, right) => right.length - left.length);
+
+  const samples = [];
+  const seen = new Set();
+  let progressed = true;
+  while (samples.length < SPEAKER_SAMPLE_BUDGET && progressed) {
+    progressed = false;
+    for (const turns of bySpeaker.values()) {
+      if (samples.length >= SPEAKER_SAMPLE_BUDGET) break;
+      const next = turns.shift();
+      if (!next) continue;
+      progressed = true;
+      const key = `${next.speaker}:${next.time_s.toFixed(1)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      samples.push({ time_s: next.time_s, speaker: next.speaker });
+    }
+  }
+
+  if (samples.length < 4) {
+    for (const fraction of [0.18, 0.4, 0.62, 0.84]) {
+      const time = Math.max(0.15, Math.min(duration - 0.15, duration * fraction));
+      samples.push({ time_s: Number(time.toFixed(3)), speaker: null });
+    }
+  }
+  return samples.slice(0, SPEAKER_SAMPLE_BUDGET);
+}

@@ -10,6 +10,7 @@ import { gunzipSync } from 'node:zlib';
 import { captionCompositeFilter } from './ffmpeg_filters.mjs';
 import {
   activeSpeakerCropFilter,
+  sampleTimes,
   buildTranscriptAss,
   chooseCaptionAccent,
   normalizedSpeakerCenters,
@@ -241,27 +242,6 @@ function fitBlurFilter(outputLabel = 'v') {
 
 function centerCropFilter(outputLabel = 'v') {
   return `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[${outputLabel}]`;
-}
-
-function sampleTimes(intervals, duration) {
-  const samples = [];
-  const seen = new Set();
-  for (const interval of intervals) {
-    const midpoint = Math.max(0.15, Math.min(duration - 0.15, (Number(interval.start) + Number(interval.end)) / 2));
-    const key = `${interval.speaker}:${midpoint.toFixed(1)}`;
-    if (!seen.has(key) && Number.isFinite(midpoint)) {
-      seen.add(key);
-      samples.push({ time_s: Number(midpoint.toFixed(3)), speaker: interval.speaker });
-    }
-    if (samples.length >= 24) break;
-  }
-  if (samples.length < 4) {
-    for (const fraction of [0.18, 0.4, 0.62, 0.84]) {
-      const time = Math.max(0.15, Math.min(duration - 0.15, duration * fraction));
-      samples.push({ time_s: Number(time.toFixed(3)), speaker: null });
-    }
-  }
-  return samples.slice(0, 24);
 }
 
 function estimateSpeakerCenters(source, intervals, duration, work) {

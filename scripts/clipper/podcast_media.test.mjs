@@ -10,6 +10,7 @@ import {
   podcastSoundtrackAudioFilter,
   refinePodcastSpeechWindow,
   resolvePodcastFraming,
+  sampleTimes,
   speakerAt,
   speakerIntervalsForWindow,
   soundtrackStartOffset,
@@ -382,4 +383,40 @@ test('two located speakers far apart still track the active one', () => {
     ],
   });
   assert.equal(framing.mode, 'active_speaker');
+});
+
+
+test('the sample budget is shared between speakers, not spent in time order', () => {
+  // The reported failure: one host told a long story, the budget was exhausted
+  // walking intervals in time order, and the other host was never sampled - so
+  // he could never be located and framing had to show the whole 16:9 frame
+  // inside the 9:16 output instead of following whoever was speaking.
+  const intervals = [];
+  for (let index = 0; index < 24; index += 1) {
+    intervals.push({ speaker: 'SPEAKER_00', start: index * 4, end: index * 4 + 3.5 });
+  }
+  for (let index = 0; index < 6; index += 1) {
+    intervals.push({ speaker: 'SPEAKER_01', start: 96 + index * 4, end: 96 + index * 4 + 3.5 });
+  }
+  const samples = sampleTimes(intervals, 140);
+  const perSpeaker = samples.reduce((counts, sample) => {
+    counts[sample.speaker] = (counts[sample.speaker] || 0) + 1;
+    return counts;
+  }, {});
+  assert.ok(perSpeaker.SPEAKER_01 >= 6, 'the quieter speaker must still be sampled');
+  assert.ok(perSpeaker.SPEAKER_00 > 0);
+  assert.equal(samples.length, 24, 'the budget is still respected');
+});
+
+test('the longest turn of each speaker is sampled first', () => {
+  // A one-word interjection rarely catches a mouth mid-sentence; a long turn
+  // usually does.
+  const samples = sampleTimes([
+    { speaker: 'SPEAKER_00', start: 0, end: 0.4 },
+    { speaker: 'SPEAKER_00', start: 10, end: 30 },
+    { speaker: 'SPEAKER_01', start: 40, end: 60 },
+    { speaker: 'SPEAKER_01', start: 70, end: 70.4 },
+  ], 90);
+  assert.equal(samples[0].time_s, 20);
+  assert.equal(samples[1].time_s, 50);
 });
