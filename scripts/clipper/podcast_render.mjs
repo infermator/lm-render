@@ -487,7 +487,15 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   // A static crop is only correct when the camera is. If the measured face
   // positions move across the clip, the source is a multicam edit and the crop
   // has to follow the subject through the cuts instead of holding one centre.
-  const shotTracking = layout === 'center_crop' ? shotTrackedFraming(speakerEstimate.samples) : null;
+  // Off by default. Tracking is only as good as the thing it tracks, and the
+  // Haar cascade cannot be trusted on this footage: on the reference set it
+  // reports a taxidermy lion on the back wall as a face. A static crop merely
+  // framed that clip poorly; following the detector actively walked the frame
+  // onto the lion, which is worse. Re-enable once detection is replaced with a
+  // real face model rather than a cascade that matches animal heads.
+  const shotTracking = process.env.CLIPPER_SHOT_TRACKING === '1' && layout === 'center_crop'
+    ? shotTrackedFraming(speakerEstimate.samples)
+    : null;
   const activeFilter = layout === 'active_speaker' ? activeSpeakerCropFilter({
     width: sourceVideo.width,
     height: sourceVideo.height,
@@ -591,6 +599,11 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
         ffprobe: soundtrackProbe,
       } : { enabled: false, reason: String(plan?.output?.soundtrack?.selection || 'not_selected') },
       shot_tracking: shotTracking ? { shots: shotTracking.shots, spread: shotTracking.spread } : null,
+      // What the frame analysis actually measured, time by time. Without this
+      // every framing question has to be answered by inferring backwards from
+      // the finished crop, which is how four separate causes were each found
+      // one render at a time.
+      frame_samples: (speakerEstimate.samples || []).slice(0, 50),
       speaker_framing: {
         intervals: intervals.length,
         centers,
