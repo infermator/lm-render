@@ -10,6 +10,7 @@ import {
   podcastSoundtrackAudioFilter,
   refinePodcastSpeechWindow,
   resolvePodcastFraming,
+  analysisSamples,
   sampleTimes,
   shotTrackedFraming,
   speakerAt,
@@ -498,4 +499,27 @@ test('detector jitter never moves the frame on its own', () => {
 test('too few samples cannot claim to know the shots', () => {
   assert.equal(shotTrackedFraming([{ time_s: 2, center_x: 0.2 }, { time_s: 8, center_x: 0.8 }]), null);
   assert.equal(shotTrackedFraming([]), null);
+});
+
+
+test('shot sampling covers the clip evenly, not just at speaker turns', () => {
+  // 16 turns over 72s put speech samples ~4.5s apart and bunched at turn
+  // boundaries, so most camera cuts had no measurement near them and the crop
+  // held the previous framing straight through.
+  const intervals = [];
+  for (let index = 0; index < 16; index += 1) {
+    intervals.push({ speaker: 'SPEAKER_00', start: index * 4.5, end: index * 4.5 + 4 });
+  }
+  const samples = analysisSamples(intervals, 72);
+  const gaps = samples.slice(1).map((sample, index) => sample.time_s - samples[index].time_s);
+  assert.ok(Math.max(...gaps) <= 2.6, `no cut should sit more than ~2s from a sample (worst ${Math.max(...gaps)})`);
+  assert.ok(samples.some(sample => sample.speaker === 'SPEAKER_00'), 'speech samples survive for speaker identity');
+  assert.ok(samples.some(sample => sample.speaker === null), 'grid samples are added for shot tracking');
+});
+
+test('the analysis sample budget is bounded', () => {
+  const intervals = Array.from({ length: 200 }, (_, index) => ({
+    speaker: `SPEAKER_0${index % 2}`, start: index * 3, end: index * 3 + 2.5,
+  }));
+  assert.ok(analysisSamples(intervals, 600).length <= 44);
 });

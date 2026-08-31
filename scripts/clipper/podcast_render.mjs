@@ -10,7 +10,7 @@ import { gunzipSync } from 'node:zlib';
 import { captionCompositeFilter } from './ffmpeg_filters.mjs';
 import {
   activeSpeakerCropFilter,
-  sampleTimes,
+  analysisSamples,
   shotTrackedFraming,
   buildTranscriptAss,
   chooseCaptionAccent,
@@ -248,7 +248,7 @@ function centerCropFilter(outputLabel = 'v') {
 function estimateSpeakerCenters(source, intervals, duration, work) {
   try {
     const samplesPath = path.join(work, 'speaker-samples.json');
-    const samples = sampleTimes(intervals, duration);
+    const samples = analysisSamples(intervals, duration);
     fs.writeFileSync(samplesPath, JSON.stringify(samples), 'utf8');
     const raw = runCapture('python3', [path.join(CLIPPER_SCRIPT_DIR, 'podcast_speaker_frames.py'), source, samplesPath]);
     const analysis = JSON.parse(raw);

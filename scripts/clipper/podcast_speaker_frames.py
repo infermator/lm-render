@@ -70,11 +70,11 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
     evidence: dict[str, list[dict[str, float]]] = {}
     inspected: list[dict[str, Any]] = []
 
-    for sample in samples[:48]:
+    for sample in samples[:64]:
         seconds = max(0.0, float(sample.get("time_s") or 0.0))
+        # A sample with no speaker is a shot-tracking probe: it still reports
+        # where the face is, it just does not vote on who sits where.
         speaker = str(sample.get("speaker") or "").strip()
-        if not speaker:
-            continue
         before = frame_at(capture, max(0.0, seconds - 0.14))
         center = frame_at(capture, seconds)
         after = frame_at(capture, seconds + 0.14)
@@ -110,7 +110,8 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
         largest_area = max(item["area"] for item in scored)
         scored = [item for item in scored if item["area"] >= largest_area * 0.25]
         chosen = max(scored, key=lambda item: (item["motion"], item["area"]))
-        evidence.setdefault(speaker, []).append(chosen)
+        if speaker:
+            evidence.setdefault(speaker, []).append(chosen)
         inspected.append({
             "time_s": round(seconds, 3), "speaker": speaker, "faces": len(scored),
             "chosen_center_x": round(chosen["center_x"], 4), "mouth_motion": round(chosen["motion"], 3),

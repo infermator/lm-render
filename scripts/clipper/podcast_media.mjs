@@ -682,3 +682,44 @@ export function shotTrackedFraming(samples) {
   if (intervals.length < 2) return null;
   return { centers, intervals, spread: Number(spread.toFixed(4)), shots: intervals.length };
 }
+
+// Camera cuts do not wait for speaker turns.
+//
+// Speech midpoints are the right places to ask "who is this", but they are the
+// wrong places to ask "where is the shot". On the reference clip 16 turns over
+// 72s put samples ~4.5s apart and clustered around turn boundaries, so the crop
+// had no measurement anywhere near most cuts and simply held the previous
+// framing through them. Shot tracking needs an even grid over the clip.
+export const SHOT_SAMPLE_INTERVAL_S = 2;
+export const MAX_ANALYSIS_SAMPLES = 44;
+
+export function shotSampleTimes(duration) {
+  const total = Number(duration);
+  if (!Number.isFinite(total) || total <= 1) return [];
+  const step = Math.max(SHOT_SAMPLE_INTERVAL_S, total / MAX_ANALYSIS_SAMPLES);
+  const times = [];
+  for (let time = 0.3; time < total - 0.2; time += step) {
+    times.push(Number(time.toFixed(3)));
+  }
+  return times;
+}
+
+/**
+ * Everything the frame analysis should look at: speech midpoints so speakers
+ * can be identified, plus an even grid so camera cuts are caught wherever they
+ * fall. Grid samples carry no speaker and never vote on who sits where.
+ */
+export function analysisSamples(intervals, duration) {
+  const speech = sampleTimes(intervals, duration);
+  const seen = new Set(speech.map(sample => sample.time_s.toFixed(1)));
+  const merged = [...speech];
+  for (const time of shotSampleTimes(duration)) {
+    const key = time.toFixed(1);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push({ time_s: time, speaker: null });
+  }
+  return merged
+    .sort((left, right) => left.time_s - right.time_s)
+    .slice(0, MAX_ANALYSIS_SAMPLES);
+}
