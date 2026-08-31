@@ -247,7 +247,8 @@ test('diarization supplies stable framing and eased multi-speaker crop switching
   assert.equal(moving.reason, 'separated_multi_speaker');
   const filter = activeSpeakerCropFilter({ width: 1920, height: 1080, centers: moving.centers, intervals: movingIntervals });
   assert.match(filter, /lt\(t,2\.000\)/);
-  assert.match(filter, /lt\(t,2\.350\)/);
+  // The move should read as a cut, not a drift the eye follows.
+  assert.match(filter, /lt\(t,2\.160\)/);
   assert.doesNotMatch(filter, /between\(/);
   assert.match(filter, /scale=1080:1920/);
 });

@@ -573,7 +573,10 @@ export function activeSpeakerCropFilter({ width, height, centers, intervals, cap
   let previousX = positions[0].x;
   for (const position of positions.slice(1)) {
     const transitionStart = Math.max(0, position.start);
-    const transitionDuration = 0.35;
+    // Short enough to read as a cut rather than a drift. At 0.35s the move was
+    // slow enough to be watched happening, which draws the eye to the reframing
+    // instead of to whoever started talking.
+    const transitionDuration = 0.16;
     const transitionEnd = transitionStart + transitionDuration;
     const delta = position.x - previousX;
     xExpression = `if(lt(t,${transitionStart.toFixed(3)}),${xExpression},if(lt(t,${transitionEnd.toFixed(3)}),${previousX}+(${delta})*(t-${transitionStart.toFixed(3)})/${transitionDuration.toFixed(3)},${position.x}))`;
