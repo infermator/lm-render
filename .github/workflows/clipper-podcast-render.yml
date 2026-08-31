@@ -22,11 +22,16 @@ on:
 permissions:
   contents: read
 
-# One job drains clustered batches so every group is materialized exactly once.
-# Workflow-level concurrency prevents overlapping dispatches for the same VOD;
-# row-level conditional claims remain the final ownership lock.
+# Row-level conditional claims are the real ownership lock - two runners cannot
+# take the same render - so workflow concurrency is not needed to prevent double
+# work, and grouping explicit dispatches together actively destroyed it: a
+# source-block retry dispatches a worker, and that dispatch landed in the same
+# group as the run already materializing the source, cancelling it mid-render
+# after ten minutes of downloading. Explicit dispatches therefore get a group of
+# their own and never collide. Scheduled runs still share one group so an idle
+# queue cannot pile up unattended crons.
 concurrency:
-  group: clipper-podcast-render-${{ inputs.vod_id || 'queue' }}
+  group: clipper-podcast-render-${{ inputs.vod_id && github.run_id || 'queue' }}
   cancel-in-progress: false
 
 jobs:
