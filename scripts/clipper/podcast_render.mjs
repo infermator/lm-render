@@ -487,16 +487,14 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   // A static crop is only correct when the camera is. If the measured face
   // positions move across the clip, the source is a multicam edit and the crop
   // has to follow the subject through the cuts instead of holding one centre.
-  // Off. Measured frame by frame across the whole clip, tracking trades one
-  // set of bad moments for another: choosing the largest face fixed the wide
-  // two-shots and the second host's close-up, and moved the crop off Ben onto
-  // the lion during his own close-ups, which the static crop had right.
-  //
-  // Both versions were compared as contact sheets over the same clip. The
-  // static crop is correct in eight frames of twelve, tracking in six. It stays
-  // off until a shot can be classified, so a close-up can be cropped tight and
-  // a wide shot shown whole instead of both being pushed through one rule.
-  const shotTracking = process.env.CLIPPER_SHOT_TRACKING === '1' && layout === 'center_crop'
+  // On. The version that lost 6/12 on the contact-sheet comparison moved to
+  // every sample that differed enough from the last committed position, so one
+  // wrong reading (the lion, once) was treated exactly like a real cut. A cut
+  // now needs a second sample to confirm it before the crop moves, and each
+  // shot's position is the median of its own samples - which is what stopped a
+  // lone bad reading from dragging Ben's close-ups away while still catching
+  // the real, sustained cut to the second host.
+  const shotTracking = process.env.CLIPPER_SHOT_TRACKING !== '0' && layout === 'center_crop'
     ? shotTrackedFraming(speakerEstimate.samples)
     : null;
   const activeFilter = layout === 'active_speaker' ? activeSpeakerCropFilter({

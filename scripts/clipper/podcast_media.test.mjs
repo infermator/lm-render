@@ -502,6 +502,40 @@ test('too few samples cannot claim to know the shots', () => {
   assert.equal(shotTrackedFraming([]), null);
 });
 
+test('one wrong detection inside a real shot does not move the crop', () => {
+  // Measured on the reference clip: a close-up of one host, correctly read at
+  // ~0.49 by every sample, except one frame where the taxidermy lion measured
+  // larger than his face. The previous version treated that single reading
+  // exactly like a real cut and dragged the crop onto it. It must not form its
+  // own shot, or even pull the shot\'s centre off the real position.
+  const tracked = shotTrackedFraming([
+    { time_s: 50.3, center_x: 0.2115 }, { time_s: 52.3, center_x: 0.4927 },
+    { time_s: 54.3, center_x: 0.4973 }, { time_s: 56.3, center_x: 0.3384 },
+    { time_s: 58.3, center_x: 0.4786 }, { time_s: 58.5, center_x: 0.4949 },
+  ]);
+  // Splitting the run into two nearly-identical positions is harmless - the
+  // crop barely moves either way. What must never happen is either outlier
+  // (0.21, 0.34) winning a shot on its own and dragging the crop there.
+  for (const center of Object.values(tracked.centers)) {
+    assert.ok(Math.abs(center - 0.49) < 0.03, `every shot must stay near the real position, got ${center}`);
+  }
+});
+
+test('a real cut to the second host is confirmed and taken', () => {
+  // The reported gap: at a genuine camera cut to the other host, the crop
+  // stayed on the first speaker\'s position instead of following the cut.
+  // Two samples landing together on the new position must be enough to move.
+  const tracked = shotTrackedFraming([
+    { time_s: 0.3, center_x: 0.50 }, { time_s: 2.3, center_x: 0.49 }, { time_s: 4.3, center_x: 0.51 },
+    { time_s: 16.3, center_x: 0.72 }, { time_s: 18.3, center_x: 0.70 }, { time_s: 20.3, center_x: 0.71 },
+    { time_s: 24.3, center_x: 0.50 }, { time_s: 26.3, center_x: 0.49 }, { time_s: 28.3, center_x: 0.50 },
+  ]);
+  assert.equal(tracked.shots, 3, 'out, to the other host, and back');
+  const cutShot = tracked.intervals.find(interval => interval.start === 16.3);
+  assert.ok(cutShot, 'the cut at 16.3s must be its own shot rather than folded into a neighbour');
+  assert.ok(tracked.centers[cutShot.speaker] > 0.65, 'and framed on the host it cut to, not the midpoint');
+});
+
 
 test('shot sampling covers the clip evenly, not just at speaker turns', () => {
   // 16 turns over 72s put speech samples ~4.5s apart and bunched at turn

@@ -651,8 +651,32 @@ export function sampleTimes(intervals, duration) {
 //
 // When the measured face positions move across the clip, the crop follows them.
 export const SHOT_TRACKING_MIN_SPREAD = 0.12;
-const SHOT_TRACKING_MIN_STEP = 0.04;
+// How far a sample has to land from the current shot before it is even a
+// candidate for a cut, and how close the confirming sample has to land to it.
+const SHOT_TRACKING_MIN_STEP = 0.08;
 
+function median(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * Group measured face positions into shots, and require a cut to prove itself
+ * before the crop moves to it.
+ *
+ * The previous version moved the crop to every sample that differed enough
+ * from the last one it had committed to. That reacted to a single wrong
+ * detection exactly like a real cut: on the reference clip one frame reading
+ * the taxidermy lion as the biggest face was enough to drag the crop off a
+ * correctly-framed close-up, because nothing distinguished "this measurement
+ * is wrong" from "the camera cut". A real cut is confirmed by what the camera
+ * shows next; a bad detection is not - the sample right after it typically
+ * lands back where the shot actually was. So a candidate cut is only taken
+ * once a second sample lands near it too, and each shot's crop position is the
+ * median of every sample inside it, which outvotes the rare bad reading that
+ * does make it into a confirmed shot.
+ */
 export function shotTrackedFraming(samples) {
   const usable = (samples || [])
     .map(sample => ({ time_s: Number(sample?.time_s), center_x: Number(sample?.center_x) }))
@@ -666,23 +690,55 @@ export function shotTrackedFraming(samples) {
   // there would only chase face-detection noise, so leave it a static crop.
   if (spread < SHOT_TRACKING_MIN_SPREAD) return null;
 
+  // First pass: group into shots, but a run of just one sample that nothing
+  // afterwards confirms is dropped rather than trusted.
+  const rawGroups = [[usable[0]]];
+  for (const sample of usable.slice(1)) {
+    const currentGroup = rawGroups[rawGroups.length - 1];
+    const groupMedian = median(currentGroup.map(item => item.center_x));
+    if (Math.abs(sample.center_x - groupMedian) < SHOT_TRACKING_MIN_STEP) {
+      currentGroup.push(sample);
+    } else {
+      rawGroups.push([sample]);
+    }
+  }
+  const confirmedGroups = [];
+  for (const group of rawGroups) {
+    if (group.length >= 2) {
+      confirmedGroups.push(group);
+      continue;
+    }
+    // An unconfirmed single sample merges into whichever confirmed neighbour
+    // is closer, rather than forming - or breaking - a shot on its own.
+    const solo = group[0];
+    const previous = confirmedGroups[confirmedGroups.length - 1];
+    const previousDistance = previous
+      ? Math.abs(solo.center_x - median(previous.map(item => item.center_x)))
+      : Infinity;
+    if (previous && previousDistance < SHOT_TRACKING_MIN_STEP * 2) {
+      previous.push(solo);
+    } else {
+      // No confirmed shot to fold into yet (or it is genuinely far from both
+      // neighbours): keep it, but it still needs another sample later to
+      // become a shot boundary, which the merge above handles on the next
+      // pass if one arrives.
+      confirmedGroups.push(group);
+    }
+  }
+  const shots = confirmedGroups.filter(group => group.length >= 2);
+  if (shots.length < 2) return null;
+
   const centers = {};
   const intervals = [];
-  let lastEmitted = null;
-  usable.forEach((sample, index) => {
-    // Ignore drift smaller than the detector's own jitter; only real shot
-    // changes should move the frame.
-    if (lastEmitted !== null && Math.abs(sample.center_x - lastEmitted) < SHOT_TRACKING_MIN_STEP) return;
+  shots.forEach((group, index) => {
     const key = `shot_${index}`;
-    centers[key] = sample.center_x;
+    centers[key] = Number(median(group.map(item => item.center_x)).toFixed(4));
     intervals.push({
       speaker: key,
-      start: index === 0 ? 0 : sample.time_s,
-      end: usable[index + 1]?.time_s ?? sample.time_s,
+      start: index === 0 ? 0 : group[0].time_s,
+      end: shots[index + 1]?.[0]?.time_s ?? group[group.length - 1].time_s,
     });
-    lastEmitted = sample.center_x;
   });
-  if (intervals.length < 2) return null;
   return { centers, intervals, spread: Number(spread.toFixed(4)), shots: intervals.length };
 }
 
