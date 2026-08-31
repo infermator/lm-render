@@ -103,11 +103,17 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
         if not scored:
             inspected.append({"time_s": seconds, "speaker": speaker, "faces": 0})
             continue
-        # No size filter here on purpose. Discarding small detections was a
-        # workaround for the cascade reporting wall decoration as a face; with a
-        # model that does not do that, the same rule would throw away a real
-        # second person who simply sits further from the camera.
-        chosen = max(scored, key=lambda item: (item["motion"], item["area"]))
+        # Size first, motion only to break ties.
+        #
+        # Ranking on motion picked whichever face happened to change most
+        # between three frames, which is how a picture on the back wall won
+        # every time the speaker turned his head: a still face in a still frame
+        # still registers noise, and the person had stopped moving his mouth.
+        #
+        # The subject of a shot is the biggest face in it. A person in frame is
+        # far larger than a face inside a picture on the wall behind them, in
+        # close-ups and in wide two-shots alike.
+        chosen = max(scored, key=lambda item: (item["area"], item["motion"]))
         if speaker:
             evidence.setdefault(speaker, []).append(chosen)
         inspected.append({

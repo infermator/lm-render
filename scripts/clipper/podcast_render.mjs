@@ -487,21 +487,13 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   // A static crop is only correct when the camera is. If the measured face
   // positions move across the clip, the source is a multicam edit and the crop
   // has to follow the subject through the cuts instead of holding one centre.
-  // Off, because measured against the thing it replaced it loses.
+  // Follows the largest face in each shot.
   //
-  // On the reference clip the static crop framed the speaker correctly at 0:40
-  // and 0:51; tracking moved the frame onto a picture on the back wall at both,
-  // showing a shoulder and the set dressing. The detector reports that painting
-  // as a face at cx~0.20 repeatedly and confidently - six samples over thirty
-  // seconds - so it is not noise a smoothing filter would remove, and when the
-  // real speaker is turned away it is the only candidate left.
-  //
-  // A static crop is wrong only when the subject sits away from centre in a
-  // wide shot. Tracking is wrong whenever the set contains a face that is not a
-  // person, which on this set is most of the wide shots. Until a shot can be
-  // classified as close-up or wide - and the wide ones shown whole rather than
-  // cropped at all - holding still is the better of the two.
-  const shotTracking = process.env.CLIPPER_SHOT_TRACKING === '1' && layout === 'center_crop'
+  // This was off while selection ranked faces by motion, which handed the frame
+  // to a picture on the back wall whenever the speaker turned his head. Faces
+  // are now chosen by size, and a person in shot is far bigger than a face
+  // inside a picture behind them, so the thing being followed is the subject.
+  const shotTracking = process.env.CLIPPER_SHOT_TRACKING !== '0' && layout === 'center_crop'
     ? shotTrackedFraming(speakerEstimate.samples)
     : null;
   const activeFilter = layout === 'active_speaker' ? activeSpeakerCropFilter({
