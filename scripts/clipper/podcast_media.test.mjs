@@ -11,6 +11,7 @@ import {
   refinePodcastSpeechWindow,
   resolvePodcastFraming,
   sampleTimes,
+  shotTrackedFraming,
   speakerAt,
   speakerIntervalsForWindow,
   soundtrackStartOffset,
@@ -452,4 +453,49 @@ test('a window with no transcript behind it is still refused', () => {
   const refined = refinePodcastSpeechWindow({ transcript: { segments: [] } }, 100, 122);
   assert.equal(refined.usable, false);
   assert.equal(refined.reason, 'no_transcript_words');
+});
+
+
+test('a multicam edit tracks the subject through the camera cuts', () => {
+  // The reported frame: the second host jammed against the right edge, half out
+  // of frame, because one centre was held across shots that place him in
+  // completely different parts of the picture.
+  const tracked = shotTrackedFraming([
+    { time_s: 2, center_x: 0.5 },
+    { time_s: 20, center_x: 0.5 },
+    { time_s: 40, center_x: 0.82 },
+    { time_s: 60, center_x: 0.8 },
+  ]);
+  assert.ok(tracked, 'moving face positions must produce a tracked crop');
+  assert.ok(tracked.shots >= 2);
+  assert.equal(tracked.intervals[0].start, 0, 'the first shot owns the clip from its very beginning');
+  assert.ok(Object.values(tracked.centers).some(center => center > 0.7), 'it must reach the off-centre shot');
+});
+
+test('a locked-off camera is left as a static crop', () => {
+  // Tracking a camera that never moves would only chase detector jitter.
+  assert.equal(shotTrackedFraming([
+    { time_s: 2, center_x: 0.50 },
+    { time_s: 20, center_x: 0.52 },
+    { time_s: 40, center_x: 0.49 },
+    { time_s: 60, center_x: 0.51 },
+  ]), null);
+});
+
+test('detector jitter never moves the frame on its own', () => {
+  // One genuine shot change, with noise around it: the noise must not each
+  // become its own crop position.
+  const tracked = shotTrackedFraming([
+    { time_s: 2, center_x: 0.30 },
+    { time_s: 10, center_x: 0.31 },
+    { time_s: 18, center_x: 0.302 },
+    { time_s: 26, center_x: 0.75 },
+    { time_s: 34, center_x: 0.757 },
+  ]);
+  assert.equal(tracked.shots, 2, 'one move, not five');
+});
+
+test('too few samples cannot claim to know the shots', () => {
+  assert.equal(shotTrackedFraming([{ time_s: 2, center_x: 0.2 }, { time_s: 8, center_x: 0.8 }]), null);
+  assert.equal(shotTrackedFraming([]), null);
 });

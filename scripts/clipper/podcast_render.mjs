@@ -11,6 +11,7 @@ import { captionCompositeFilter } from './ffmpeg_filters.mjs';
 import {
   activeSpeakerCropFilter,
   sampleTimes,
+  shotTrackedFraming,
   buildTranscriptAss,
   chooseCaptionAccent,
   normalizedSpeakerCenters,
@@ -259,10 +260,16 @@ function estimateSpeakerCenters(source, intervals, duration, work) {
         speaker_evidence_count: analysis?.speaker_evidence_count || {},
         samples_inspected: Array.isArray(analysis?.samples) ? analysis.samples.length : 0,
       },
+      // Where the speaking face actually was, sample by sample. The aggregate
+      // centre alone cannot tell a locked-off camera from a multicam edit.
+      samples: (Array.isArray(analysis?.samples) ? analysis.samples : [])
+        .filter(sample => Number.isFinite(Number(sample?.chosen_center_x)))
+        .map(sample => ({ time_s: Number(sample.time_s), center_x: Number(sample.chosen_center_x) })),
     };
   } catch (error) {
     return {
       centers: {},
+      samples: [],
       analysis: { error: error instanceof Error ? error.message : String(error) },
     };
   }
@@ -477,14 +484,26 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     }
     soundtrackOffset = soundtrackStartOffset(soundtrackDuration, duration, `${candidate.id}:${render.id}`);
   }
+  // A static crop is only correct when the camera is. If the measured face
+  // positions move across the clip, the source is a multicam edit and the crop
+  // has to follow the subject through the cuts instead of holding one centre.
+  const shotTracking = layout === 'center_crop' ? shotTrackedFraming(speakerEstimate.samples) : null;
   const activeFilter = layout === 'active_speaker' ? activeSpeakerCropFilter({
     width: sourceVideo.width,
     height: sourceVideo.height,
     centers,
     intervals,
     outputLabel: layoutOutputLabel,
+  }) : shotTracking ? activeSpeakerCropFilter({
+    width: sourceVideo.width,
+    height: sourceVideo.height,
+    centers: shotTracking.centers,
+    intervals: shotTracking.intervals,
+    outputLabel: layoutOutputLabel,
   }) : null;
-  const actualLayout = activeFilter ? 'active_speaker' : layout === 'center_crop' ? 'center_crop' : 'fit_blur';
+  const actualLayout = activeFilter
+    ? (layout === 'active_speaker' ? 'active_speaker' : 'shot_tracked')
+    : layout === 'center_crop' ? 'center_crop' : 'fit_blur';
   const layoutFilter = activeFilter || (actualLayout === 'center_crop'
     ? centerCropFilter(layoutOutputLabel)
     : fitBlurFilter(layoutOutputLabel));
@@ -571,6 +590,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
         source_has_audio: sourceHasAudio,
         ffprobe: soundtrackProbe,
       } : { enabled: false, reason: String(plan?.output?.soundtrack?.selection || 'not_selected') },
+      shot_tracking: shotTracking ? { shots: shotTracking.shots, spread: shotTracking.spread } : null,
       speaker_framing: {
         intervals: intervals.length,
         centers,

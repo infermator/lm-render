@@ -636,3 +636,49 @@ export function sampleTimes(intervals, duration) {
   }
   return samples.slice(0, SPEAKER_SAMPLE_BUDGET);
 }
+
+// A crop only needs to sit still when the camera does.
+//
+// The single-speaker path deliberately held one centre "instead of fighting the
+// source camera cuts". That is right for a locked-off camera and wrong for a
+// multicam edit: the same speaker sits in a different part of the frame in each
+// shot, so one centre chosen from the median of all shots points between them -
+// at the table rather than at anyone - and a subject framed at the edge of a
+// wide shot gets cropped in half.
+//
+// When the measured face positions move across the clip, the crop follows them.
+export const SHOT_TRACKING_MIN_SPREAD = 0.12;
+const SHOT_TRACKING_MIN_STEP = 0.04;
+
+export function shotTrackedFraming(samples) {
+  const usable = (samples || [])
+    .map(sample => ({ time_s: Number(sample?.time_s), center_x: Number(sample?.center_x) }))
+    .filter(sample => Number.isFinite(sample.time_s) && Number.isFinite(sample.center_x))
+    .sort((left, right) => left.time_s - right.time_s);
+  if (usable.length < 3) return null;
+
+  const positions = usable.map(sample => sample.center_x);
+  const spread = Math.max(...positions) - Math.min(...positions);
+  // A locked-off camera keeps every measurement in the same place. Tracking
+  // there would only chase face-detection noise, so leave it a static crop.
+  if (spread < SHOT_TRACKING_MIN_SPREAD) return null;
+
+  const centers = {};
+  const intervals = [];
+  let lastEmitted = null;
+  usable.forEach((sample, index) => {
+    // Ignore drift smaller than the detector's own jitter; only real shot
+    // changes should move the frame.
+    if (lastEmitted !== null && Math.abs(sample.center_x - lastEmitted) < SHOT_TRACKING_MIN_STEP) return;
+    const key = `shot_${index}`;
+    centers[key] = sample.center_x;
+    intervals.push({
+      speaker: key,
+      start: index === 0 ? 0 : sample.time_s,
+      end: usable[index + 1]?.time_s ?? sample.time_s,
+    });
+    lastEmitted = sample.center_x;
+  });
+  if (intervals.length < 2) return null;
+  return { centers, intervals, spread: Number(spread.toFixed(4)), shots: intervals.length };
+}
