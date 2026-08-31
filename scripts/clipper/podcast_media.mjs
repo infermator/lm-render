@@ -691,7 +691,10 @@ export function shotTrackedFraming(samples) {
 // had no measurement anywhere near most cuts and simply held the previous
 // framing through them. Shot tracking needs an even grid over the clip.
 export const SHOT_SAMPLE_INTERVAL_S = 2;
-export const MAX_ANALYSIS_SAMPLES = 44;
+// Sized so a normal clip never needs thinning at all: a 72s clip produces ~36
+// grid samples plus its speech midpoints and still fits. The frame analysis
+// accepts up to 64.
+export const MAX_ANALYSIS_SAMPLES = 60;
 
 export function shotSampleTimes(duration) {
   const total = Number(duration);
@@ -719,7 +722,17 @@ export function analysisSamples(intervals, duration) {
     seen.add(key);
     merged.push({ time_s: time, speaker: null });
   }
-  return merged
-    .sort((left, right) => left.time_s - right.time_s)
-    .slice(0, MAX_ANALYSIS_SAMPLES);
+  merged.sort((left, right) => left.time_s - right.time_s);
+  if (merged.length <= MAX_ANALYSIS_SAMPLES) return merged;
+  // Thin the list evenly instead of truncating it. Sorting by time and then
+  // slicing the first N silently drops the END of the clip: on a 72s clip the
+  // last measurement landed at 58.5s, so the final fourteen seconds had nothing
+  // to aim at and the crop held its last position straight through them - which
+  // is exactly where the framing was reported wrong.
+  const step = merged.length / MAX_ANALYSIS_SAMPLES;
+  const thinned = [];
+  for (let index = 0; index < MAX_ANALYSIS_SAMPLES; index += 1) {
+    thinned.push(merged[Math.min(merged.length - 1, Math.floor(index * step))]);
+  }
+  return thinned;
 }

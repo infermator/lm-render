@@ -521,5 +521,19 @@ test('the analysis sample budget is bounded', () => {
   const intervals = Array.from({ length: 200 }, (_, index) => ({
     speaker: `SPEAKER_0${index % 2}`, start: index * 3, end: index * 3 + 2.5,
   }));
-  assert.ok(analysisSamples(intervals, 600).length <= 44);
+  assert.ok(analysisSamples(intervals, 600).length <= 60);
+});
+
+
+test('thinning samples keeps the end of the clip', () => {
+  // Slicing the sorted list dropped the tail: on a 72s clip the last sample
+  // landed at 58.5s, leaving the final fourteen seconds unmeasured and the crop
+  // frozen on its previous position through them.
+  const intervals = Array.from({ length: 40 }, (_, index) => ({
+    speaker: 'SPEAKER_00', start: index * 1.8, end: index * 1.8 + 1.5,
+  }));
+  const samples = analysisSamples(intervals, 72.27);
+  const last = samples[samples.length - 1].time_s;
+  assert.ok(samples.length <= 60);
+  assert.ok(last > 66, `the last sample must be near the end of the clip, got ${last}`);
 });
