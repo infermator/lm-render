@@ -33,25 +33,40 @@ def mouth_motion(before: np.ndarray, center: np.ndarray, after: np.ndarray, face
     return float((np.mean(cv2.absdiff(regions[0], regions[1])) + np.mean(cv2.absdiff(regions[1], regions[2]))) / 2.0)
 
 
-def _deduplicate_faces(faces: list) -> list:
-    """Drop boxes the cascades both found, keeping the larger one.
+MODEL_PATH = Path(__file__).with_name("models") / "face_detection_yunet_2023mar.onnx"
+#: Below this YuNet is guessing. A wrong face moves the crop onto the wrong
+#: thing, which is worse than not moving it, so low-confidence hits are dropped.
+MIN_FACE_CONFIDENCE = 0.75
 
-    Frontal and profile detectors overlap on three-quarter views, and counting
-    the same face twice would let one person outvote a real second face.
+
+def _face_detector(width: int, height: int):
+    """YuNet, run locally on CPU.
+
+    Replaces the Haar cascade, which matched a taxidermy lion on a podcast set
+    as a face while missing the host beside it because he had turned his head.
+    Cascades also return no confidence, so there was no way to tell a certain
+    detection from a guess before aiming a crop at it.
     """
-    kept: list[tuple[int, int, int, int]] = []
-    for face in sorted((tuple(int(v) for v in f) for f in faces), key=lambda f: f[2] * f[3], reverse=True):
-        x, y, width, height = face
-        overlapped = False
-        for kx, ky, kwidth, kheight in kept:
-            overlap_x = max(0, min(x + width, kx + kwidth) - max(x, kx))
-            overlap_y = max(0, min(y + height, ky + kheight) - max(y, ky))
-            if overlap_x * overlap_y > 0.4 * min(width * height, kwidth * kheight):
-                overlapped = True
-                break
-        if not overlapped:
-            kept.append(face)
-    return kept
+    if not MODEL_PATH.exists():
+        raise RuntimeError(f"face detection model is missing at {MODEL_PATH}")
+    return cv2.FaceDetectorYN.create(
+        str(MODEL_PATH), "", (max(32, width), max(32, height)), MIN_FACE_CONFIDENCE, 0.3, 5000
+    )
+
+
+def _detect_faces(detector, frame) -> list:
+    """Return [((x, y, w, h), confidence)] for faces the model is sure about."""
+    height, width = frame.shape[:2]
+    detector.setInputSize((width, height))
+    _, raw = detector.detect(frame)
+    faces = []
+    for row in raw if raw is not None else []:
+        x, y, box_width, box_height = (int(round(float(value))) for value in row[:4])
+        confidence = float(row[-1])
+        if box_width < 8 or box_height < 8 or confidence < MIN_FACE_CONFIDENCE:
+            continue
+        faces.append(((max(0, x), max(0, y), box_width, box_height), confidence))
+    return faces
 
 
 def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -60,13 +75,7 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
         raise RuntimeError("video could not be opened")
     source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    # Frontal detection alone is not enough on a podcast set. A host turned
-    # towards the person they are answering is a profile, which the frontal
-    # cascade does not see - and on the reference clip it instead locked onto a
-    # taxidermy lion on the back wall, framing the shot on the wall decoration
-    # while the speaking host sat off-crop at the edge.
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
+    detector = _face_detector(source_width, source_height)
     evidence: dict[str, list[dict[str, float]]] = {}
     inspected: list[dict[str, Any]] = []
 
@@ -80,41 +89,31 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
         after = frame_at(capture, seconds + 0.14)
         if before is None or center is None or after is None:
             continue
-        gray = cv2.cvtColor(center, cv2.COLOR_BGR2GRAY)
-        min_face = max(32, int(min(source_width, source_height) * 0.055))
-        faces = list(cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=5, minSize=(min_face, min_face)))
-        # The profile cascade only matches one direction, so the mirrored frame
-        # covers faces turned the other way; its x is mapped back to the source.
-        faces.extend(profile_cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=5, minSize=(min_face, min_face)))
-        flipped = cv2.flip(gray, 1)
-        for fx, fy, fwidth, fheight in profile_cascade.detectMultiScale(
-            flipped, scaleFactor=1.08, minNeighbors=5, minSize=(min_face, min_face)
-        ):
-            faces.append((source_width - fx - fwidth, fy, fwidth, fheight))
-        faces = _deduplicate_faces(faces)
+        faces = _detect_faces(detector, center)
         scored = []
-        for face_raw in faces:
-            face = tuple(int(value) for value in face_raw)
+        for face, confidence in faces:
             x, _, width, _ = face
             motion = mouth_motion(before, center, after, face)
-            area_weight = (width * face[3]) / max(1, source_width * source_height)
-            scored.append({"center_x": (x + width / 2) / max(1, source_width), "motion": motion, "area": area_weight})
+            scored.append({
+                "center_x": (x + width / 2) / max(1, source_width),
+                "motion": motion,
+                "area": width * face[3],
+                "confidence": confidence,
+            })
         if not scored:
             inspected.append({"time_s": seconds, "speaker": speaker, "faces": 0})
             continue
-        # Ranking on motion alone lets a small background detection outvote the
-        # person on camera whenever it happens to flicker. On the reference clip
-        # a taxidermy lion's face was detected at a thirteenth of the speaker's
-        # area; anything that far below the largest face in frame is set
-        # dressing, not the subject, so it is dropped before ranking.
-        largest_area = max(item["area"] for item in scored)
-        scored = [item for item in scored if item["area"] >= largest_area * 0.25]
+        # No size filter here on purpose. Discarding small detections was a
+        # workaround for the cascade reporting wall decoration as a face; with a
+        # model that does not do that, the same rule would throw away a real
+        # second person who simply sits further from the camera.
         chosen = max(scored, key=lambda item: (item["motion"], item["area"]))
         if speaker:
             evidence.setdefault(speaker, []).append(chosen)
         inspected.append({
             "time_s": round(seconds, 3), "speaker": speaker, "faces": len(scored),
             "chosen_center_x": round(chosen["center_x"], 4), "mouth_motion": round(chosen["motion"], 3),
+            "confidence": round(chosen["confidence"], 3),
         })
 
     capture.release()
@@ -124,7 +123,7 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
     return {
         "ok": True,
-        "method": "haar-mouth-motion-v1",
+        "method": "yunet-mouth-motion-v1",
         "source": {"width": source_width, "height": source_height},
         "speaker_centers": centers,
         "speaker_evidence_count": {speaker: len(items) for speaker, items in evidence.items()},

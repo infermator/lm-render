@@ -487,13 +487,13 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   // A static crop is only correct when the camera is. If the measured face
   // positions move across the clip, the source is a multicam edit and the crop
   // has to follow the subject through the cuts instead of holding one centre.
-  // Off by default. Tracking is only as good as the thing it tracks, and the
-  // Haar cascade cannot be trusted on this footage: on the reference set it
-  // reports a taxidermy lion on the back wall as a face. A static crop merely
-  // framed that clip poorly; following the detector actively walked the frame
-  // onto the lion, which is worse. Re-enable once detection is replaced with a
-  // real face model rather than a cascade that matches animal heads.
-  const shotTracking = process.env.CLIPPER_SHOT_TRACKING === '1' && layout === 'center_crop'
+  // Tracking is only as good as the thing it tracks. It was held off while
+  // detection was a Haar cascade that reported a taxidermy lion as a face -
+  // following that actively walked the frame onto the wall decoration, which is
+  // worse than holding still. Detection is now a face model that finds the
+  // turned-away host at 0.93 confidence and does not see the lion at all, so
+  // the crop follows it again.
+  const shotTracking = process.env.CLIPPER_SHOT_TRACKING !== '0' && layout === 'center_crop'
     ? shotTrackedFraming(speakerEstimate.samples)
     : null;
   const activeFilter = layout === 'active_speaker' ? activeSpeakerCropFilter({
