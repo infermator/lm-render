@@ -694,30 +694,19 @@ export function shotTrackedFraming(samples) {
   // there would only chase face-detection noise, so leave it a static crop.
   if (spread < SHOT_TRACKING_MIN_SPREAD) return null;
 
-  // Smooth the series before reading shots out of it.
+  // No smoothing pass here.
   //
-  // Requiring a second sample to agree is not enough on its own, because a
-  // false detection off a fixed prop is perfectly stable: the taxidermy lion
-  // measured 0.3775 and 0.3773 on two consecutive samples, which agree far
-  // better than two readings of a real moving person would. Meanwhile samples
-  // 80ms either side of them read the actual speaker at ~0.49 - and a camera
-  // cannot cut and cut back inside 80ms, so those readings cannot all be
-  // right.
+  // A rolling median lived here to stop a false detection off a fixed prop
+  // defining a shot, back when detection was a Haar cascade that read a
+  // taxidermy lion as a face. The face model does not report that prop at all,
+  // so the filter had nothing left to remove and was instead erasing real
+  // cuts: the pan to the second host lasted two samples, which a five-wide
+  // median flattened into the surrounding close-up, leaving him framed hard
+  // left with a painting filling the rest of the shot.
   //
-  // A rolling median lets the surrounding majority overrule a minority of
-  // wrong readings however tightly they agree, while leaving a genuinely
-  // sustained shot - which is the majority inside its own window - untouched.
-  // Only smooth when there are enough samples for a median to mean anything.
-  // A five-wide window over a handful of samples flattens the whole clip into
-  // one value and reports no shots at all; a real clip carries forty or more.
-  const smoothingWindow = usable.length >= SHOT_TRACKING_MIN_SAMPLES_TO_SMOOTH
-    ? SHOT_TRACKING_MEDIAN_WINDOW
-    : 1;
-  const smoothed = usable.map((sample, index) => {
-    const from = Math.max(0, index - Math.floor(smoothingWindow / 2));
-    const window = usable.slice(from, from + smoothingWindow);
-    return { time_s: sample.time_s, center_x: median(window.map(item => item.center_x)) };
-  });
+  // Requiring two samples to agree is enough on its own now that the readings
+  // being agreed on are real faces.
+  const smoothed = usable;
 
   // Group into shots, but a run of just one sample that nothing afterwards
   // confirms is dropped rather than trusted.

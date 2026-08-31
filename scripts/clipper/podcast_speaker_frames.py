@@ -103,17 +103,19 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
         if not scored:
             inspected.append({"time_s": seconds, "speaker": speaker, "faces": 0})
             continue
-        # Size first, motion only to break ties.
+        # Motion first, size only to break ties.
         #
-        # Ranking on motion picked whichever face happened to change most
-        # between three frames, which is how a picture on the back wall won
-        # every time the speaker turned his head: a still face in a still frame
-        # still registers noise, and the person had stopped moving his mouth.
+        # When two people are on screen the frame belongs to whichever one is
+        # talking, and a moving mouth is the only per-shot evidence of that -
+        # diarization reports a single speaker across this whole window, so it
+        # cannot tell them apart. Ranking on size instead centres whoever
+        # happens to sit closer to the camera, which is how the listening host
+        # ended up holding the frame while the other one spoke.
         #
-        # The subject of a shot is the biggest face in it. A person in frame is
-        # far larger than a face inside a picture on the wall behind them, in
-        # close-ups and in wide two-shots alike.
-        chosen = max(scored, key=lambda item: (item["area"], item["motion"]))
+        # Size led briefly because motion handed the frame to a picture on the
+        # back wall. That was the cascade inventing a face there; the face model
+        # does not report it, so motion is safe to rank on again.
+        chosen = max(scored, key=lambda item: (item["motion"], item["area"]))
         if speaker:
             evidence.setdefault(speaker, []).append(chosen)
         inspected.append({

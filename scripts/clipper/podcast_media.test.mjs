@@ -573,13 +573,12 @@ test('thinning samples keeps the end of the clip', () => {
   assert.ok(last > 66, `the last sample must be near the end of the clip, got ${last}`);
 });
 
-test('a stable false detection cannot outvote the surrounding shot', () => {
-  // Measured on the reference render at 0:20, where the crop panned to the
-  // wrong place. The taxidermy lion read 0.3775 and 0.3773 on two consecutive
-  // samples - agreeing more tightly than two readings of a real person would,
-  // so "confirmed by a second sample" accepted it as a cut. But samples 80ms
-  // either side read the actual speaker at ~0.49, and no camera cuts and cuts
-  // back inside 80ms.
+test('a short cut to the other host is kept, not smoothed away', () => {
+  // Measured on the reference render across 0:20. The two samples at ~0.377
+  // are the second host, who asks a question there - the frames confirm it.
+  // An earlier version read them as a false detection off a prop and filtered
+  // them out, which left him framed hard left with a painting filling the rest
+  // of the shot while he was the one speaking.
   const measured = [
     { time_s: 10.3, center_x: 0.5082 }, { time_s: 12.3, center_x: 0.5066 },
     { time_s: 13.89, center_x: 0.4982 }, { time_s: 14.3, center_x: 0.4979 },
@@ -591,14 +590,16 @@ test('a stable false detection cannot outvote the surrounding shot', () => {
     { time_s: 28.29, center_x: 0.3638 }, { time_s: 30.3, center_x: 0.4689 },
   ];
   const tracked = shotTrackedFraming(measured);
-  // Either no shots at all, or shots that stay on the speaker - never a shot
-  // built on the prop.
-  for (const center of Object.values(tracked?.centers ?? {})) {
-    assert.ok(Math.abs(center - 0.49) < 0.05, `no shot may sit on the prop, got ${center}`);
-  }
+  assert.ok(tracked, 'the cut must produce shots');
+  const centers = Object.values(tracked.centers);
+  assert.ok(
+    centers.some(center => Math.abs(center - 0.377) < 0.03),
+    `a shot must land on the second host at ~0.377, got ${JSON.stringify(centers)}`,
+  );
+  assert.ok(centers.some(center => Math.abs(center - 0.49) < 0.04), 'and the main speaker keeps his own');
 });
 
-test('a sustained cut still survives the smoothing', () => {
+test('a sustained cut is framed on the person it cut to', () => {
   // The filter that suppresses a two-sample false positive must not also
   // suppress a real cut the camera holds for several seconds.
   const tracked = shotTrackedFraming([
