@@ -572,3 +572,46 @@ test('thinning samples keeps the end of the clip', () => {
   assert.ok(samples.length <= 60);
   assert.ok(last > 66, `the last sample must be near the end of the clip, got ${last}`);
 });
+
+test('a stable false detection cannot outvote the surrounding shot', () => {
+  // Measured on the reference render at 0:20, where the crop panned to the
+  // wrong place. The taxidermy lion read 0.3775 and 0.3773 on two consecutive
+  // samples - agreeing more tightly than two readings of a real person would,
+  // so "confirmed by a second sample" accepted it as a cut. But samples 80ms
+  // either side read the actual speaker at ~0.49, and no camera cuts and cuts
+  // back inside 80ms.
+  const measured = [
+    { time_s: 10.3, center_x: 0.5082 }, { time_s: 12.3, center_x: 0.5066 },
+    { time_s: 13.89, center_x: 0.4982 }, { time_s: 14.3, center_x: 0.4979 },
+    { time_s: 15.46, center_x: 0.4695 }, { time_s: 16.3, center_x: 0.4719 },
+    { time_s: 17.16, center_x: 0.4908 }, { time_s: 18.3, center_x: 0.4592 },
+    { time_s: 20.22, center_x: 0.4947 }, { time_s: 20.3, center_x: 0.3775 },
+    { time_s: 22.3, center_x: 0.3773 }, { time_s: 23.26, center_x: 0.4911 },
+    { time_s: 24.3, center_x: 0.4977 }, { time_s: 26.3, center_x: 0.4939 },
+    { time_s: 28.29, center_x: 0.3638 }, { time_s: 30.3, center_x: 0.4689 },
+  ];
+  const tracked = shotTrackedFraming(measured);
+  // Either no shots at all, or shots that stay on the speaker - never a shot
+  // built on the prop.
+  for (const center of Object.values(tracked?.centers ?? {})) {
+    assert.ok(Math.abs(center - 0.49) < 0.05, `no shot may sit on the prop, got ${center}`);
+  }
+});
+
+test('a sustained cut still survives the smoothing', () => {
+  // The filter that suppresses a two-sample false positive must not also
+  // suppress a real cut the camera holds for several seconds.
+  const tracked = shotTrackedFraming([
+    { time_s: 0.3, center_x: 0.50 }, { time_s: 2.3, center_x: 0.49 }, { time_s: 4.3, center_x: 0.51 },
+    { time_s: 6.3, center_x: 0.50 }, { time_s: 8.3, center_x: 0.49 },
+    { time_s: 16.3, center_x: 0.72 }, { time_s: 18.3, center_x: 0.70 },
+    { time_s: 20.3, center_x: 0.71 }, { time_s: 22.3, center_x: 0.72 },
+    { time_s: 24.3, center_x: 0.50 }, { time_s: 26.3, center_x: 0.49 },
+    { time_s: 28.3, center_x: 0.50 }, { time_s: 30.3, center_x: 0.51 },
+  ]);
+  assert.ok(tracked, 'a real cut must still produce shots');
+  assert.ok(
+    Object.values(tracked.centers).some(center => center > 0.65),
+    'and must actually frame the person it cut to',
+  );
+});
