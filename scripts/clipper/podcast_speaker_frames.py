@@ -103,19 +103,25 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
         if not scored:
             inspected.append({"time_s": seconds, "speaker": speaker, "faces": 0})
             continue
-        # Motion first, size only to break ties.
+        # Motion and size together, not one then the other.
         #
-        # When two people are on screen the frame belongs to whichever one is
-        # talking, and a moving mouth is the only per-shot evidence of that -
-        # diarization reports a single speaker across this whole window, so it
-        # cannot tell them apart. Ranking on size instead centres whoever
-        # happens to sit closer to the camera, which is how the listening host
-        # ended up holding the frame while the other one spoke.
+        # Each alone picks the wrong face on this footage. Ranking purely by
+        # size centres whoever sits closest to the camera even while the other
+        # person is talking. Ranking purely by motion hands the frame to a
+        # small listener across the room who shifts in his seat during a pause
+        # in the speaker's sentence - mouth motion is measured over a third of
+        # a second, which is easily shorter than the gap between two words.
         #
-        # Size led briefly because motion handed the frame to a picture on the
-        # back wall. That was the cascade inventing a face there; the face model
-        # does not report it, so motion is safe to rank on again.
-        chosen = max(scored, key=lambda item: (item["motion"], item["area"]))
+        # Multiplying them asks for the face that is both prominent and moving,
+        # which is what a person mid-sentence looks like. A distant listener
+        # cannot outscore them on motion alone, and a closer listener cannot
+        # outscore them while silent.
+        #
+        # If nothing in frame is moving at all - everyone listening to someone
+        # off-camera - the product is zero for every face and size decides,
+        # which keeps the frame on the most prominent person rather than an
+        # arbitrary one.
+        chosen = max(scored, key=lambda item: (item["motion"] * item["area"], item["area"]))
         if speaker:
             evidence.setdefault(speaker, []).append(chosen)
         inspected.append({

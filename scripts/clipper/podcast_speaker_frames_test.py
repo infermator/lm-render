@@ -39,3 +39,34 @@ class FaceDetectorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FaceRankingTest(unittest.TestCase):
+    """The rule that decides which detected face the crop is aimed at."""
+
+    @staticmethod
+    def _pick(*faces):
+        return max(faces, key=lambda item: (item["motion"] * item["area"], item["area"]))
+
+    def test_speaker_beats_a_fidgeting_listener_across_the_room(self):
+        # Pure motion ranking put the crop on the statue end of the room at
+        # 0:39, because a distant listener shifting in his seat out-moved the
+        # speaker during a pause between two words.
+        speaker = {"motion": 3.0, "area": 60000}
+        listener = {"motion": 9.0, "area": 4000}
+        self.assertIs(self._pick(speaker, listener), speaker)
+
+    def test_talking_host_beats_a_silent_one_sitting_closer(self):
+        # Pure size ranking held the frame on whoever sat nearest the camera
+        # while the other host asked the question.
+        silent_and_close = {"motion": 0.3, "area": 60000}
+        talking_further = {"motion": 6.0, "area": 20000}
+        self.assertIs(self._pick(silent_and_close, talking_further), talking_further)
+
+    def test_a_still_room_falls_back_to_the_most_prominent_face(self):
+        # Everyone listening to someone off-camera: the product is zero for all
+        # of them, and the frame should sit on the main subject rather than an
+        # arbitrary face.
+        main = {"motion": 0.0, "area": 50000}
+        bystander = {"motion": 0.0, "area": 9000}
+        self.assertIs(self._pick(main, bystander), main)
