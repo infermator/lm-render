@@ -12,6 +12,7 @@ import {
   activeSpeakerCropFilter,
   analysisSamples,
   shotTrackedFraming,
+  shotAwareFramingFilter,
   buildTranscriptAss,
   chooseCaptionAccent,
   normalizedSpeakerCenters,
@@ -259,17 +260,30 @@ function estimateSpeakerCenters(source, intervals, duration, work) {
         source: analysis?.source || null,
         speaker_evidence_count: analysis?.speaker_evidence_count || {},
         samples_inspected: Array.isArray(analysis?.samples) ? analysis.samples.length : 0,
+        timeline: analysis?.timeline || null,
       },
+      framingSegments: (Array.isArray(analysis?.framing_segments) ? analysis.framing_segments : [])
+        .filter(segment => Number.isFinite(Number(segment?.start_s))
+          && Number.isFinite(Number(segment?.end_s)) && Number(segment.end_s) > Number(segment.start_s)
+          && (segment?.layout === 'crop' || segment?.layout === 'fit_blur')),
       // Where the speaking face actually was, sample by sample. The aggregate
       // centre alone cannot tell a locked-off camera from a multicam edit.
       samples: (Array.isArray(analysis?.samples) ? analysis.samples : [])
         .filter(sample => Number.isFinite(Number(sample?.chosen_center_x)))
-        .map(sample => ({ time_s: Number(sample.time_s), center_x: Number(sample.chosen_center_x) })),
+        .map(sample => ({
+          time_s: Number(sample.time_s),
+          center_x: Number(sample.chosen_center_x),
+          confidence: Number(sample.confidence),
+          layout: sample.layout || null,
+          reason: sample.reason || null,
+          shot_index: Number.isFinite(Number(sample.shot_index)) ? Number(sample.shot_index) : null,
+        })),
     };
   } catch (error) {
     return {
       centers: {},
       samples: [],
+      framingSegments: [],
       analysis: { error: error instanceof Error ? error.message : String(error) },
     };
   }
@@ -484,20 +498,24 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     }
     soundtrackOffset = soundtrackStartOffset(soundtrackDuration, duration, `${candidate.id}:${render.id}`);
   }
-  // A static crop is only correct when the camera is. If the measured face
-  // positions move across the clip, the source is a multicam edit and the crop
-  // has to follow the subject through the cuts instead of holding one centre.
-  // On. The version that lost 6/12 on the contact-sheet comparison moved to
-  // every sample that differed enough from the last committed position, so one
-  // wrong reading (the lion, once) was treated exactly like a real cut. A cut
-  // now needs a second sample to confirm it before the crop moves, and each
-  // shot's position is the median of its own samples - which is what stopped a
-  // lone bad reading from dragging Ben's close-ups away while still catching
-  // the real, sustained cut to the second host.
-  const shotTracking = process.env.CLIPPER_SHOT_TRACKING !== '0' && layout === 'center_crop'
+  // The local analyzer now owns the timeline: it detects the edit boundaries,
+  // holds one identity inside each shot, follows only sustained mouth activity,
+  // and preserves the complete frame when a multi-person shot is ambiguous.
+  // The older sparse-sample tracker remains a compatibility fallback for an
+  // analyzer result produced before framing_segments existed.
+  const shotAwareFilter = process.env.CLIPPER_SHOT_TRACKING !== '0'
+    && (layout === 'center_crop' || layout === 'active_speaker')
+    ? shotAwareFramingFilter({
+      width: sourceVideo.width,
+      height: sourceVideo.height,
+      segments: speakerEstimate.framingSegments,
+      outputLabel: layoutOutputLabel,
+    })
+    : null;
+  const shotTracking = !shotAwareFilter && process.env.CLIPPER_SHOT_TRACKING !== '0' && layout === 'center_crop'
     ? shotTrackedFraming(speakerEstimate.samples)
     : null;
-  const activeFilter = layout === 'active_speaker' ? activeSpeakerCropFilter({
+  const activeFilter = shotAwareFilter || (layout === 'active_speaker' ? activeSpeakerCropFilter({
     width: sourceVideo.width,
     height: sourceVideo.height,
     centers,
@@ -509,9 +527,9 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     centers: shotTracking.centers,
     intervals: shotTracking.intervals,
     outputLabel: layoutOutputLabel,
-  }) : null;
+  }) : null);
   const actualLayout = activeFilter
-    ? (layout === 'active_speaker' ? 'active_speaker' : 'shot_tracked')
+    ? (shotAwareFilter ? 'shot_aware' : layout === 'active_speaker' ? 'active_speaker' : 'shot_tracked')
     : layout === 'center_crop' ? 'center_crop' : 'fit_blur';
   const layoutFilter = activeFilter || (actualLayout === 'center_crop'
     ? centerCropFilter(layoutOutputLabel)
@@ -599,12 +617,18 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
         source_has_audio: sourceHasAudio,
         ffprobe: soundtrackProbe,
       } : { enabled: false, reason: String(plan?.output?.soundtrack?.selection || 'not_selected') },
-      shot_tracking: shotTracking ? { shots: shotTracking.shots, spread: shotTracking.spread } : null,
+      shot_tracking: shotAwareFilter ? {
+        mode: 'shot_aware_active_speaker_v2',
+        shots: speakerEstimate.analysis?.timeline?.shot_count ?? null,
+        segments: speakerEstimate.framingSegments.length,
+        ambiguous_segments: speakerEstimate.framingSegments.filter(segment => segment.layout === 'fit_blur').length,
+      } : shotTracking ? { mode: 'legacy_sparse_samples', shots: shotTracking.shots, spread: shotTracking.spread } : null,
+      framing_segments: speakerEstimate.framingSegments,
       // What the frame analysis actually measured, time by time. Without this
       // every framing question has to be answered by inferring backwards from
       // the finished crop, which is how four separate causes were each found
       // one render at a time.
-      frame_samples: (speakerEstimate.samples || []).slice(0, 50),
+      frame_samples: (speakerEstimate.samples || []).slice(0, 64),
       speaker_framing: {
         intervals: intervals.length,
         centers,

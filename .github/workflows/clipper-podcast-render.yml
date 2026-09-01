@@ -73,6 +73,7 @@ jobs:
           python scripts/clipper/patch_wpc_provider_test.py
           python scripts/clipper/podcast_audio_source_test.py
           python scripts/clipper/podcast_audio_align_test.py
+          python scripts/clipper/podcast_speaker_frames_test.py
           python -m py_compile scripts/clipper/podcast_audio_source.py
           python -m py_compile scripts/clipper/podcast_audio_align.py
           python -m py_compile scripts/clipper/podcast_speaker_frames.py

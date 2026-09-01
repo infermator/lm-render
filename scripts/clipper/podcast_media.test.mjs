@@ -12,6 +12,7 @@ import {
   resolvePodcastFraming,
   analysisSamples,
   sampleTimes,
+  shotAwareFramingFilter,
   shotTrackedFraming,
   speakerAt,
   speakerIntervalsForWindow,
@@ -266,6 +267,42 @@ test('nearby multi-speaker positions do not create fake camera motion', () => {
   assert.equal(framing.reason, 'measured_positions_not_separated');
   assert.deepEqual(framing.centers, { SPEAKER_00: 0.5, SPEAKER_01: 0.5 });
   assert.equal(framing.raw_spread, 0.09);
+});
+
+test('shot-aware framing cuts on measured edit boundaries and preserves ambiguous wide shots', () => {
+  const filter = shotAwareFramingFilter({
+    width: 1920,
+    height: 1080,
+    outputLabel: 'shot_out',
+    segments: [
+      { start_s: 0, end_s: 2.069, layout: 'crop', center_x: 0.25 },
+      { start_s: 2.069, end_s: 7.341, layout: 'fit_blur', center_x: null },
+    ],
+  });
+  assert.match(filter, /split=2\[shot_source_0\]\[shot_source_1\]/);
+  assert.match(filter, /trim=start=0\.000:end=2\.069/);
+  assert.match(filter, /crop=608:1080:x=176:y=0/);
+  assert.match(filter, /trim=start=2\.069:end=7\.341/);
+  assert.match(filter, /gblur=sigma=28/);
+  assert.match(filter, /concat=n=2:v=1:a=0\[shot_out\]/);
+  assert.doesNotMatch(filter, /lt\(t,/, 'camera cuts must not arrive late through an eased crop');
+});
+
+test('shot-aware framing rejects an unusable plan', () => {
+  assert.equal(shotAwareFramingFilter({ width: 1920, height: 1080, segments: [] }), null);
+  assert.equal(shotAwareFramingFilter({
+    width: 1920,
+    height: 1080,
+    segments: [{ start_s: 0, end_s: 2, layout: 'crop', center_x: null }],
+  }), null);
+  assert.equal(shotAwareFramingFilter({
+    width: 1920,
+    height: 1080,
+    segments: [
+      { start_s: 0, end_s: 2, layout: 'crop', center_x: 0.5 },
+      { start_s: 2.2, end_s: 4, layout: 'crop', center_x: 0.5 },
+    ],
+  }), null);
 });
 
 test('alignment proxy metadata is content-addressed and bounded', () => {

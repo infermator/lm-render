@@ -37,36 +37,92 @@ class FaceDetectorTest(unittest.TestCase):
             self.assertGreaterEqual(confidence, frames.MIN_FACE_CONFIDENCE)
 
 
+class ShotAwarePlannerTest(unittest.TestCase):
+    @staticmethod
+    def _face(center_x, activity, area=0.02):
+        return {
+            "center_x": center_x,
+            "area": area,
+            "confidence": 0.95,
+            "mouth_motion": activity + 2,
+            "upper_motion": 2,
+            "speech_activity": activity,
+        }
+
+    def _observations(self, rows):
+        return [
+            {"time_s": time_s, "faces": [self._face(*face) for face in faces]}
+            for time_s, faces in rows
+        ]
+
+    def test_detection_resolution_is_bounded_for_4k_sources(self):
+        self.assertEqual(frames._analysis_size(3840, 2160), (960, 540))
+        self.assertEqual(frames._analysis_size(640, 360), (640, 360))
+
+    def test_hard_cut_score_separates_an_edit_from_small_motion(self):
+        black = np.zeros((108, 192, 3), dtype=np.uint8)
+        almost_black = np.full((108, 192, 3), 2, dtype=np.uint8)
+        white = np.full((108, 192, 3), 255, dtype=np.uint8)
+        self.assertLess(frames._scene_change_score(black, almost_black), frames.SCENE_CHANGE_THRESHOLD)
+        self.assertGreater(frames._scene_change_score(black, white), frames.SCENE_CHANGE_THRESHOLD)
+
+    def test_single_face_is_held_for_the_whole_camera_shot(self):
+        observations = self._observations([
+            (0.2, [(0.48, 0.0)]),
+            (0.6, [(0.50, 0.0)]),
+            (1.0, [(0.49, 0.0)]),
+        ])
+        planned = frames._plan_shot_segments(0.0, 1.2, observations)
+        self.assertEqual(len(planned), 1)
+        self.assertEqual(planned[0]["layout"], "crop")
+        self.assertAlmostEqual(planned[0]["center_x"], 0.49, places=2)
+
+    def test_sustained_speaker_wins_without_being_the_largest_face(self):
+        observations = self._observations([
+            (time_s, [(0.22, 0.6, 0.04), (0.76, 9.0, 0.018)])
+            for time_s in (0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6)
+        ])
+        planned = frames._plan_shot_segments(0.0, 2.8, observations)
+        self.assertEqual(len(planned), 1)
+        self.assertEqual(planned[0]["layout"], "crop")
+        self.assertGreater(planned[0]["center_x"], 0.7)
+
+    def test_one_listener_motion_spike_cannot_take_the_crop(self):
+        rows = []
+        for index, time_s in enumerate((0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6)):
+            listener = 30.0 if index == 3 else 0.2
+            rows.append((time_s, [(0.22, listener, 0.04), (0.76, 8.0, 0.018)]))
+        planned = frames._plan_shot_segments(0.0, 2.8, self._observations(rows))
+        self.assertEqual(len(planned), 1)
+        self.assertEqual(planned[0]["layout"], "crop")
+        self.assertGreater(planned[0]["center_x"], 0.7)
+
+    def test_ambiguous_multiple_faces_preserve_the_whole_shot(self):
+        observations = self._observations([
+            (time_s, [(0.22, 1.0), (0.76, 1.1)])
+            for time_s in (0.2, 0.6, 1.0, 1.4, 1.8, 2.2)
+        ])
+        planned = frames._plan_shot_segments(0.0, 2.4, observations)
+        self.assertEqual(planned, [{
+            "start_s": 0.0,
+            "end_s": 2.4,
+            "layout": "fit_blur",
+            "center_x": None,
+            "reason": "ambiguous_multiple_faces",
+            "confidence": 0.0,
+            "face_count": 2,
+        }])
+
+    def test_camera_cut_boundaries_are_used_exactly(self):
+        observations = self._observations([
+            (0.2, [(0.25, 0.0)]), (0.6, [(0.25, 0.0)]),
+            (2.2, [(0.75, 0.0)]), (2.6, [(0.75, 0.0)]),
+        ])
+        planned = frames._framing_plan(4.0, [0.0, 2.0, 4.0], observations)
+        self.assertEqual([item["start_s"] for item in planned], [0.0, 2.0])
+        self.assertEqual([item["center_x"] for item in planned], [0.25, 0.75])
+        self.assertTrue(all(item["transition"] == "shot_cut" for item in planned))
+
+
 if __name__ == "__main__":
     unittest.main()
-
-
-class FaceRankingTest(unittest.TestCase):
-    """The rule that decides which detected face the crop is aimed at."""
-
-    @staticmethod
-    def _pick(*faces):
-        return max(faces, key=lambda item: (item["motion"] * item["area"], item["area"]))
-
-    def test_speaker_beats_a_fidgeting_listener_across_the_room(self):
-        # Pure motion ranking put the crop on the statue end of the room at
-        # 0:39, because a distant listener shifting in his seat out-moved the
-        # speaker during a pause between two words.
-        speaker = {"motion": 3.0, "area": 60000}
-        listener = {"motion": 9.0, "area": 4000}
-        self.assertIs(self._pick(speaker, listener), speaker)
-
-    def test_talking_host_beats_a_silent_one_sitting_closer(self):
-        # Pure size ranking held the frame on whoever sat nearest the camera
-        # while the other host asked the question.
-        silent_and_close = {"motion": 0.3, "area": 60000}
-        talking_further = {"motion": 6.0, "area": 20000}
-        self.assertIs(self._pick(silent_and_close, talking_further), talking_further)
-
-    def test_a_still_room_falls_back_to_the_most_prominent_face(self):
-        # Everyone listening to someone off-camera: the product is zero for all
-        # of them, and the frame should sit on the main subject rather than an
-        # arbitrary face.
-        main = {"motion": 0.0, "area": 50000}
-        bystander = {"motion": 0.0, "area": 9000}
-        self.assertIs(self._pick(main, bystander), main)
