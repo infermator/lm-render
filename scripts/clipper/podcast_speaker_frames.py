@@ -113,7 +113,7 @@ def _face_observations(detector, before: np.ndarray, center: np.ndarray, after: 
     frame_height, frame_width = center.shape[:2]
     observations = []
     for face, confidence in _detect_faces(detector, center):
-        x, _, width, height = face
+        x, y, width, height = face
         mouth = _region_motion(before, center, after, face, (0.50, 0.92))
         upper = _region_motion(before, center, after, face, (0.08, 0.43))
         # Head turns and camera motion move the entire face. Subtracting the
@@ -121,6 +121,13 @@ def _face_observations(detector, before: np.ndarray, center: np.ndarray, after: 
         activity = max(0.0, mouth - upper * 0.65)
         observations.append({
             "center_x": (x + width / 2) / max(1, frame_width),
+            # Vertical position and apparent size, both normalised. Without
+            # these the crop can only slide sideways across a full-height slice
+            # of the source, which leaves a seated speaker's head jammed at the
+            # top of the output with his chest filling the lower half, and
+            # renders anyone in a wide shot too small to see.
+            "center_y": (y + height / 2) / max(1, frame_height),
+            "face_h": height / max(1, frame_height),
             "area": (width * height) / max(1, frame_width * frame_height),
             "confidence": confidence,
             "mouth_motion": mouth,
@@ -262,6 +269,21 @@ def _track_center(track: dict[str, Any]) -> float:
     return _median([item["center_x"] for item in track["items"]])
 
 
+def _track_vertical(track: dict[str, Any], items: list[dict[str, Any]] | None = None) -> tuple[float, float]:
+    """Median vertical centre and apparent face height for a track.
+
+    Medians rather than means: one frame where the detector clips a face to the
+    eyebrows would otherwise pull the whole shot's framing upward.
+    """
+    source = items or track["items"]
+    centers = [item.get("center_y") for item in source if item.get("center_y") is not None]
+    heights = [item.get("face_h") for item in source if item.get("face_h") is not None]
+    return (
+        _median(centers) if centers else 0.5,
+        _median(heights) if heights else 0.0,
+    )
+
+
 def _fallback_track(tracks: list[dict[str, Any]], previous_center: float) -> dict[str, Any]:
     """Choose one stable subject when local speech evidence is uncertain.
 
@@ -371,6 +393,7 @@ def _plan_shot_segments(
         return [{
             "start_s": start, "end_s": end, "layout": "crop",
             "center_x": round(max(0.0, min(1.0, previous_center)), 4),
+            "center_y": 0.5, "face_h": 0.0,
             "reason": "no_stable_face_hold", "confidence": 0.0, "face_count": 0,
         }]
     if len(visible_tracks) == 1:
@@ -378,6 +401,8 @@ def _plan_shot_segments(
         return [{
             "start_s": start, "end_s": end, "layout": "crop",
             "center_x": round(_track_center(track), 4),
+            "center_y": round(_track_vertical(track)[0], 4),
+            "face_h": round(_track_vertical(track)[1], 4),
             "reason": "single_visible_face", "confidence": 1.0, "face_count": 1,
         }]
 
@@ -410,6 +435,8 @@ def _plan_shot_segments(
         return [{
             "start_s": start, "end_s": end, "layout": "crop",
             "center_x": round(_track_center(fallback), 4),
+            "center_y": round(_track_vertical(fallback)[0], 4),
+            "face_h": round(_track_vertical(fallback)[1], 4),
             "reason": "ambiguous_stable_subject", "confidence": 0.0,
             "face_count": len(visible_tracks),
         }]
@@ -434,10 +461,17 @@ def _plan_shot_segments(
             item["center_x"] for item in track["items"]
             if segment_start - ACTIVE_SPEAKER_WINDOW_S <= item["time_s"] <= segment_end + ACTIVE_SPEAKER_WINDOW_S
         ]
+        nearby_items = [
+            item for item in track["items"]
+            if segment_start - ACTIVE_SPEAKER_WINDOW_S <= item["time_s"] <= segment_end + ACTIVE_SPEAKER_WINDOW_S
+        ]
         center_x = round(_median(nearby_centers or [item["center_x"] for item in track["items"]]), 4)
+        center_y, face_h = _track_vertical(track, nearby_items)
         candidate = {
             "start_s": segment_start, "end_s": segment_end, "layout": layout,
-            "center_x": center_x, "reason": reason, "confidence": round(confidence, 3),
+            "center_x": center_x,
+            "center_y": round(center_y, 4), "face_h": round(face_h, 4),
+            "reason": reason, "confidence": round(confidence, 3),
             "face_count": len(visible_tracks),
         }
         if segments and segments[-1]["layout"] == candidate["layout"]:
@@ -464,6 +498,7 @@ def _framing_plan(duration: float, cuts: list[float], observations: list[dict[st
     if not segments:
         return [{
             "start_s": 0.0, "end_s": duration, "layout": "crop", "center_x": 0.5,
+            "center_y": 0.5, "face_h": 0.0,
             "reason": "no_timeline_evidence_center", "confidence": 0.0, "face_count": 0,
             "shot_index": 0, "transition": "shot_cut",
         }]

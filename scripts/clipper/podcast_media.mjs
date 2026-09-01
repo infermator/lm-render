@@ -622,6 +622,8 @@ export function shotAwareFramingFilter({ width, height, segments, outputLabel = 
       end: segment?.end_s == null ? Number.NaN : Number(segment.end_s),
       layout: segment?.layout === 'crop' ? 'crop' : null,
       center: segment?.center_x == null ? Number.NaN : Number(segment.center_x),
+      centerY: segment?.center_y == null ? Number.NaN : Number(segment.center_y),
+      faceHeight: segment?.face_h == null ? Number.NaN : Number(segment.face_h),
       transition: segment?.transition === 'speaker_switch' ? 'speaker_switch' : 'shot_cut',
     }))
     .filter(segment => Number.isFinite(segment.start) && Number.isFinite(segment.end)
@@ -636,36 +638,93 @@ export function shotAwareFramingFilter({ width, height, segments, outputLabel = 
     if (Math.abs(usable[index].start - usable[index - 1].end) > 0.05) return null;
   }
 
-  let cropWidth = Math.min(sourceWidth, Math.round(sourceHeight * 9 / 16));
+  // Choose one zoom level for the whole clip, then pan and tilt within it.
+  //
+  // ffmpeg's crop must emit constant dimensions, so the zoom cannot follow each
+  // shot. It is sized from the median face across the plan: a full-height slice
+  // of a 16:9 source leaves a seated speaker's head against the top edge with
+  // his chest filling the lower half of a 9:16 frame, and shrinks anyone in a
+  // wide shot to nothing. Sizing to the faces that are actually present frames
+  // people instead of the room.
+  const faceHeights = usable
+    .map(segment => Number(segment.faceHeight))
+    .filter(value => Number.isFinite(value) && value > 0.01)
+    .sort((left, right) => left - right);
+  const medianFaceHeight = faceHeights.length
+    ? faceHeights[Math.floor(faceHeights.length / 2)]
+    : 0;
+
   let cropHeight = sourceHeight;
-  if (cropWidth >= sourceWidth) {
-    cropWidth = sourceWidth;
-    cropHeight = Math.min(sourceHeight, Math.round(sourceWidth * 16 / 9));
+  if (medianFaceHeight > 0) {
+    cropHeight = Math.round((medianFaceHeight * sourceHeight) / TARGET_FACE_FRACTION);
   }
-  const defaultY = Math.max(0, Math.round((sourceHeight - cropHeight) / 2));
+  // Never upscale past the point where the crop stops carrying 1080-wide
+  // detail, and never ask for more source than exists.
+  const minCropHeight = Math.min(sourceHeight, Math.round(OUTPUT_HEIGHT * MAX_UPSCALE_RECIPROCAL));
+  cropHeight = Math.max(minCropHeight, Math.min(sourceHeight, cropHeight));
+  let cropWidth = Math.round((cropHeight * 9) / 16);
+  if (cropWidth > sourceWidth) {
+    cropWidth = sourceWidth;
+    cropHeight = Math.min(sourceHeight, Math.round((cropWidth * 16) / 9));
+  }
+  // Even dimensions keep libx264 from silently resampling chroma.
+  cropWidth -= cropWidth % 2;
+  cropHeight -= cropHeight % 2;
+
   const xFor = segment => Math.max(0, Math.min(
     sourceWidth - cropWidth,
     Math.round((Math.max(0, Math.min(1, segment.center)) * sourceWidth) - (cropWidth / 2)),
   ));
-  let previousX = xFor(usable[0]);
-  let xExpression = String(previousX);
-  for (const segment of usable.slice(1)) {
-    const nextX = xFor(segment);
-    if (nextX === previousX) continue;
-    const at = Math.max(0, segment.start);
-    if (segment.transition === 'speaker_switch') {
-      const duration = 0.20;
-      const end = at + duration;
-      const progress = `(t-${at.toFixed(3)})/${duration.toFixed(3)}`;
-      const eased = `(${progress})*(${progress})*(3-2*(${progress}))`;
-      xExpression = `if(lt(t,${at.toFixed(3)}),${xExpression},if(lt(t,${end.toFixed(3)}),${previousX}+(${nextX - previousX})*${eased},${nextX}))`;
-    } else {
-      xExpression = `if(lt(t,${at.toFixed(3)}),${xExpression},${nextX})`;
+  // Put the face on the upper third rather than dead centre, which is where a
+  // face reads naturally in a vertical frame and leaves the mouth clear of the
+  // caption lane.
+  const yFor = (segment) => {
+    const centerY = Number(segment.centerY);
+    if (!Number.isFinite(centerY) || centerY <= 0 || centerY >= 1) {
+      return Math.max(0, Math.round((sourceHeight - cropHeight) / 2));
     }
-    previousX = nextX;
-  }
-  return `[0:v]crop=${cropWidth}:${cropHeight}:x='${xExpression}':y=${defaultY},scale=1080:1920,setsar=1[${outputLabel}]`;
+    return Math.max(0, Math.min(
+      sourceHeight - cropHeight,
+      Math.round((centerY * sourceHeight) - (cropHeight * FACE_VERTICAL_ANCHOR)),
+    ));
+  };
+
+  const axis = (valueFor, initial) => {
+    let previous = initial;
+    let expression = String(previous);
+    for (const segment of usable.slice(1)) {
+      const next = valueFor(segment);
+      if (next === previous) continue;
+      const at = Math.max(0, segment.start);
+      if (segment.transition === 'speaker_switch') {
+        const duration = 0.20;
+        const end = at + duration;
+        const progress = `(t-${at.toFixed(3)})/${duration.toFixed(3)}`;
+        const eased = `(${progress})*(${progress})*(3-2*(${progress}))`;
+        expression = `if(lt(t,${at.toFixed(3)}),${expression},if(lt(t,${end.toFixed(3)}),${previous}+(${next - previous})*${eased},${next}))`;
+      } else {
+        expression = `if(lt(t,${at.toFixed(3)}),${expression},${next})`;
+      }
+      previous = next;
+    }
+    return expression;
+  };
+
+  const xExpression = axis(xFor, xFor(usable[0]));
+  const yExpression = axis(yFor, yFor(usable[0]));
+  return `[0:v]crop=${cropWidth}:${cropHeight}:x='${xExpression}':y='${yExpression}',scale=1080:1920,setsar=1[${outputLabel}]`;
 }
+
+// A face this tall relative to the output reads as a portrait rather than a
+// security-camera view of a room.
+const TARGET_FACE_FRACTION = 0.30;
+// Eyes near the upper third; the exact figure places the face centre there once
+// the crop height is applied.
+const FACE_VERTICAL_ANCHOR = 0.42;
+const OUTPUT_HEIGHT = 1920;
+// Allow a modest upscale so a wide shot can still be brought in, but not so
+// much that the output turns soft.
+const MAX_UPSCALE_RECIPROCAL = 0.72;
 
 const SPEAKER_SAMPLE_BUDGET = 24;
 

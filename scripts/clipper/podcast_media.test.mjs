@@ -294,7 +294,7 @@ test('shot-aware framing preserves the source timeline and never emits a 16:9 in
       { start_s: 2.069, end_s: 7.341, layout: 'crop', center_x: 0.75, transition: 'shot_cut' },
     ],
   });
-  assert.match(filter, /crop=608:1080:x='[^']*176[^']*':y=0/);
+  assert.match(filter, /crop=608:1080:x='[^']*176[^']*':y='[^']*'/);
   assert.match(filter, /lt\(t,2\.069\)/);
   assert.match(filter, /scale=1080:1920,setsar=1\[shot_out\]/);
   assert.doesNotMatch(filter, /(?:split|trim|concat|gblur|overlay)=?/);
@@ -690,4 +690,64 @@ test('a sustained cut is framed on the person it cut to', () => {
     Object.values(tracked.centers).some(center => center > 0.65),
     'and must actually frame the person it cut to',
   );
+});
+
+test('framing zooms to the faces and seats them off the top edge', () => {
+  // The full-height slice this replaced left a seated speaker's head against
+  // the top edge with his chest filling the lower half of the frame, and made
+  // anyone in a wide shot too small to see.
+  const width = 3840;
+  const height = 2160;
+  const plan = faceHeight => ({
+    segments: [{
+      start_s: 0, end_s: 10, layout: 'crop',
+      center_x: 0.5, center_y: 0.34, face_h: faceHeight, transition: 'shot_cut',
+    }],
+    width, height, outputLabel: 'v',
+  });
+
+  const filter = shotAwareFramingFilter(plan(0.16));
+  const [, cropWidth, cropHeight] = filter.match(/crop=(\d+):(\d+)/).map(Number);
+  assert.ok(cropHeight < height, 'a face-sized crop must be tighter than the whole frame');
+  assert.equal(cropWidth % 2, 0, 'even dimensions keep the encoder from resampling chroma');
+  assert.equal(cropHeight % 2, 0);
+  assert.ok(
+    Math.abs(cropWidth / cropHeight - 9 / 16) < 0.01,
+    `the crop must stay 9:16, got ${cropWidth}x${cropHeight}`,
+  );
+
+  // The face must land near the upper third, not at the very top.
+  const y = Number(filter.match(/y='(\d+)'/)[1]);
+  const faceCentreWithinCrop = (0.34 * height - y) / cropHeight;
+  assert.ok(
+    faceCentreWithinCrop > 0.3 && faceCentreWithinCrop < 0.55,
+    `face should sit around the upper third, landed at ${(faceCentreWithinCrop * 100).toFixed(0)}%`,
+  );
+});
+
+test('framing never upscales far enough to go soft', () => {
+  // A distant face cannot be zoomed to portrait size without visibly degrading
+  // the picture; the crop stops before that rather than chasing the target.
+  const filter = shotAwareFramingFilter({
+    segments: [{ start_s: 0, end_s: 10, layout: 'crop', center_x: 0.5, center_y: 0.44, face_h: 0.02, transition: 'shot_cut' }],
+    width: 3840, height: 2160, outputLabel: 'v',
+  });
+  const [, , cropHeight] = filter.match(/crop=(\d+):(\d+)/).map(Number);
+  assert.ok(cropHeight >= 1920 * 0.7, `crop got too small to stay sharp: ${cropHeight}`);
+});
+
+test('framing keeps the crop inside the source on every axis', () => {
+  // A face near an edge must not push the crop rectangle out of the frame,
+  // which ffmpeg would either clamp silently or fail on.
+  for (const [cx, cy] of [[0.02, 0.05], [0.98, 0.95], [0.5, 0.5]]) {
+    const filter = shotAwareFramingFilter({
+      segments: [{ start_s: 0, end_s: 10, layout: 'crop', center_x: cx, center_y: cy, face_h: 0.12, transition: 'shot_cut' }],
+      width: 3840, height: 2160, outputLabel: 'v',
+    });
+    const [, cropWidth, cropHeight] = filter.match(/crop=(\d+):(\d+)/).map(Number);
+    const x = Number(filter.match(/x='(\d+)/)[1]);
+    const y = Number(filter.match(/y='(\d+)/)[1]);
+    assert.ok(x >= 0 && x + cropWidth <= 3840, `x out of bounds at ${cx}: ${x}+${cropWidth}`);
+    assert.ok(y >= 0 && y + cropHeight <= 2160, `y out of bounds at ${cy}: ${y}+${cropHeight}`);
+  }
 });
