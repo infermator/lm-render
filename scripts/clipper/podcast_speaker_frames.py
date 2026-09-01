@@ -258,6 +258,45 @@ def _activity_at(track: dict[str, Any], seconds: float) -> float:
     return float(np.percentile(nearby, 65))
 
 
+def _track_center(track: dict[str, Any]) -> float:
+    return _median([item["center_x"] for item in track["items"]])
+
+
+def _fallback_track(tracks: list[dict[str, Any]], previous_center: float) -> dict[str, Any]:
+    """Choose one stable subject when local speech evidence is uncertain.
+
+    Strong repeated mouth activity wins first. Otherwise prominence and
+    continuity decide the shot once, instead of changing the output layout or
+    guessing again on every sample.
+    """
+    ranked = []
+    for track in tracks:
+        activities = [item["speech_activity"] for item in track["items"]]
+        robust_activity = float(np.percentile(activities, 65)) if activities else 0.0
+        proven_activity = robust_activity if robust_activity >= ACTIVE_SPEAKER_MIN_ACTIVITY else 0.0
+        area = _median([item["area"] for item in track["items"]])
+        coverage = len(track["items"])
+        center = _track_center(track)
+        ranked.append((proven_activity, area, coverage, -abs(center - previous_center), track))
+    return max(ranked, key=lambda item: item[:-1])[-1]
+
+
+def _fill_uncertain_labels(labels: list[int | None], fallback_id: int) -> list[int]:
+    """Hold a proven subject through pauses; never flash to another layout."""
+    filled: list[int] = []
+    last = fallback_id
+    for label in labels:
+        if label is not None:
+            last = label
+        filled.append(last)
+    first_proven = next((label for label in labels if label is not None), fallback_id)
+    for index, label in enumerate(labels):
+        if label is not None:
+            break
+        filled[index] = first_proven
+    return filled
+
+
 def _collapse_labels(labels: list[int | None]) -> list[int | None]:
     """Debounce active-speaker choices and bridge brief speech pauses."""
     if not labels:
@@ -320,20 +359,25 @@ def _stabilize_label_runs(labels: list[int | None]) -> list[int | None]:
     return stable
 
 
-def _plan_shot_segments(start: float, end: float, observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _plan_shot_segments(
+    start: float,
+    end: float,
+    observations: list[dict[str, Any]],
+    previous_center: float = 0.5,
+) -> list[dict[str, Any]]:
     tracks = _track_faces(observations)
-    duration = max(0.0, end - start)
     visible_tracks = [track for track in tracks if len(track["items"]) >= max(1, len(observations) // 3)]
     if not visible_tracks:
         return [{
-            "start_s": start, "end_s": end, "layout": "fit_blur", "center_x": None,
-            "reason": "no_stable_face", "confidence": 0.0, "face_count": 0,
+            "start_s": start, "end_s": end, "layout": "crop",
+            "center_x": round(max(0.0, min(1.0, previous_center)), 4),
+            "reason": "no_stable_face_hold", "confidence": 0.0, "face_count": 0,
         }]
     if len(visible_tracks) == 1:
         track = visible_tracks[0]
         return [{
             "start_s": start, "end_s": end, "layout": "crop",
-            "center_x": round(_median([item["center_x"] for item in track["items"]]), 4),
+            "center_x": round(_track_center(track), 4),
             "reason": "single_visible_face", "confidence": 1.0, "face_count": 1,
         }]
 
@@ -355,19 +399,22 @@ def _plan_shot_segments(start: float, end: float, observations: list[dict[str, A
         confidences.append(0.0 if not confident else min(1.0, (best_score - second_score) / max(best_score, 1e-6)))
     labels = _stabilize_label_runs(_collapse_labels(labels))
 
-    # If less than two-thirds of a multi-person shot has a proven speaker, swapping
-    # between zoom and fallback is more distracting than simply preserving the
-    # whole shot. Fail safe for the entire camera angle.
-    labelled_coverage = sum(label is not None for label in labels) / max(1, len(labels))
-    if labelled_coverage < 0.65:
-        labels = [None] * len(labels)
+    fallback = _fallback_track(visible_tracks, previous_center)
+    fallback_id = fallback["id"]
 
+    # If nobody wins for a sustained run, hold one stable best subject for the
+    # entire camera angle. If even one run is proven, keep those speaker choices
+    # and bridge the uncertain pauses below. The old coverage threshold threw
+    # useful speech evidence away merely because a shot contained long pauses.
     if not any(label is not None for label in labels):
         return [{
-            "start_s": start, "end_s": end, "layout": "fit_blur", "center_x": None,
-            "reason": "ambiguous_multiple_faces", "confidence": 0.0,
+            "start_s": start, "end_s": end, "layout": "crop",
+            "center_x": round(_track_center(fallback), 4),
+            "reason": "ambiguous_stable_subject", "confidence": 0.0,
             "face_count": len(visible_tracks),
         }]
+
+    labels = _fill_uncertain_labels(labels, fallback_id)
 
     track_by_id = {track["id"]: track for track in visible_tracks}
     boundaries = [start]
@@ -378,59 +425,46 @@ def _plan_shot_segments(start: float, end: float, observations: list[dict[str, A
     for index, label in enumerate(labels):
         segment_start = boundaries[index]
         segment_end = boundaries[index + 1]
-        layout = "crop" if label is not None else "fit_blur"
+        layout = "crop"
         center_x = None
-        reason = "ambiguous_multiple_faces"
+        reason = "active_speaker_motion"
         confidence = confidences[index]
-        if label is not None:
-            track = track_by_id[label]
-            nearby_centers = [
-                item["center_x"] for item in track["items"]
-                if segment_start - ACTIVE_SPEAKER_WINDOW_S <= item["time_s"] <= segment_end + ACTIVE_SPEAKER_WINDOW_S
-            ]
-            center_x = round(_median(nearby_centers or [item["center_x"] for item in track["items"]]), 4)
-            reason = "active_speaker_motion"
+        track = track_by_id[label]
+        nearby_centers = [
+            item["center_x"] for item in track["items"]
+            if segment_start - ACTIVE_SPEAKER_WINDOW_S <= item["time_s"] <= segment_end + ACTIVE_SPEAKER_WINDOW_S
+        ]
+        center_x = round(_median(nearby_centers or [item["center_x"] for item in track["items"]]), 4)
         candidate = {
             "start_s": segment_start, "end_s": segment_end, "layout": layout,
             "center_x": center_x, "reason": reason, "confidence": round(confidence, 3),
             "face_count": len(visible_tracks),
         }
         if segments and segments[-1]["layout"] == candidate["layout"]:
-            same_crop = layout != "crop" or abs(segments[-1]["center_x"] - center_x) < 0.06
-            if same_crop:
+            if abs(segments[-1]["center_x"] - center_x) < 0.06:
                 segments[-1]["end_s"] = segment_end
                 segments[-1]["confidence"] = round(max(segments[-1]["confidence"], candidate["confidence"]), 3)
                 continue
         segments.append(candidate)
-
-    # A sub-second fallback flash is worse than holding the proven speaker on
-    # either side. Merge it only when both neighbours agree on the same crop.
-    for index in range(1, len(segments) - 1):
-        current = segments[index]
-        left = segments[index - 1]
-        right = segments[index + 1]
-        if (current["layout"] == "fit_blur" and current["end_s"] - current["start_s"] < 0.8
-                and left["layout"] == right["layout"] == "crop"
-                and abs(left["center_x"] - right["center_x"]) < 0.06):
-            left["end_s"] = right["end_s"]
-            right["start_s"] = right["end_s"]
-            current["start_s"] = current["end_s"]
     return [segment for segment in segments if segment["end_s"] - segment["start_s"] > 0.02]
 
 
 def _framing_plan(duration: float, cuts: list[float], observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     segments = []
+    previous_center = 0.5
     for shot_index, (start, end) in enumerate(zip(cuts, cuts[1:])):
         shot_observations = [item for item in observations if start <= item["time_s"] < end]
-        planned = _plan_shot_segments(start, end, shot_observations)
+        planned = _plan_shot_segments(start, end, shot_observations, previous_center)
         for segment in planned:
             segment["shot_index"] = shot_index
             segment["transition"] = "shot_cut" if abs(segment["start_s"] - start) < 0.02 else "speaker_switch"
             segments.append(segment)
+        if planned:
+            previous_center = float(planned[-1]["center_x"])
     if not segments:
         return [{
-            "start_s": 0.0, "end_s": duration, "layout": "fit_blur", "center_x": None,
-            "reason": "no_timeline_evidence", "confidence": 0.0, "face_count": 0,
+            "start_s": 0.0, "end_s": duration, "layout": "crop", "center_x": 0.5,
+            "reason": "no_timeline_evidence_center", "confidence": 0.0, "face_count": 0,
             "shot_index": 0, "transition": "shot_cut",
         }]
     segments[0]["start_s"] = 0.0
@@ -493,7 +527,7 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
     return {
         "ok": True,
-        "method": "yunet-shot-aware-active-speaker-v2",
+        "method": "yunet-shot-aware-active-speaker-v3",
         "source": {"width": source_width, "height": source_height},
         "speaker_centers": centers,
         "speaker_evidence_count": {speaker: len(items) for speaker, items in evidence.items()},

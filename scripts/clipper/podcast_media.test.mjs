@@ -269,23 +269,35 @@ test('nearby multi-speaker positions do not create fake camera motion', () => {
   assert.equal(framing.raw_spread, 0.09);
 });
 
-test('shot-aware framing cuts on measured edit boundaries and preserves ambiguous wide shots', () => {
+test('shot-aware framing preserves the source timeline and never emits a 16:9 insert', () => {
   const filter = shotAwareFramingFilter({
     width: 1920,
     height: 1080,
     outputLabel: 'shot_out',
     segments: [
-      { start_s: 0, end_s: 2.069, layout: 'crop', center_x: 0.25 },
-      { start_s: 2.069, end_s: 7.341, layout: 'fit_blur', center_x: null },
+      { start_s: 0, end_s: 2.069, layout: 'crop', center_x: 0.25, transition: 'shot_cut' },
+      { start_s: 2.069, end_s: 7.341, layout: 'crop', center_x: 0.75, transition: 'shot_cut' },
     ],
   });
-  assert.match(filter, /split=2\[shot_source_0\]\[shot_source_1\]/);
-  assert.match(filter, /trim=start=0\.000:end=2\.069/);
-  assert.match(filter, /crop=608:1080:x=176:y=0/);
-  assert.match(filter, /trim=start=2\.069:end=7\.341/);
-  assert.match(filter, /gblur=sigma=28/);
-  assert.match(filter, /concat=n=2:v=1:a=0\[shot_out\]/);
-  assert.doesNotMatch(filter, /lt\(t,/, 'camera cuts must not arrive late through an eased crop');
+  assert.match(filter, /crop=608:1080:x='[^']*176[^']*':y=0/);
+  assert.match(filter, /lt\(t,2\.069\)/);
+  assert.match(filter, /scale=1080:1920,setsar=1\[shot_out\]/);
+  assert.doesNotMatch(filter, /(?:split|trim|concat|gblur|overlay)=?/);
+  assert.doesNotMatch(filter, /2\.269/, 'camera cuts must not arrive late through an eased crop');
+});
+
+test('shot-aware framing eases a speaker switch inside a held camera shot', () => {
+  const filter = shotAwareFramingFilter({
+    width: 1920,
+    height: 1080,
+    segments: [
+      { start_s: 0, end_s: 2, layout: 'crop', center_x: 0.25, transition: 'shot_cut' },
+      { start_s: 2, end_s: 4, layout: 'crop', center_x: 0.75, transition: 'speaker_switch' },
+    ],
+  });
+  assert.match(filter, /lt\(t,2\.000\)/);
+  assert.match(filter, /lt\(t,2\.200\)/);
+  assert.match(filter, /3-2\*/);
 });
 
 test('shot-aware framing rejects an unusable plan', () => {
@@ -294,6 +306,11 @@ test('shot-aware framing rejects an unusable plan', () => {
     width: 1920,
     height: 1080,
     segments: [{ start_s: 0, end_s: 2, layout: 'crop', center_x: null }],
+  }), null);
+  assert.equal(shotAwareFramingFilter({
+    width: 1920,
+    height: 1080,
+    segments: [{ start_s: 0, end_s: 2, layout: 'fit_blur', center_x: null }],
   }), null);
   assert.equal(shotAwareFramingFilter({
     width: 1920,
@@ -347,6 +364,12 @@ test('Podcast batch materialization stays ephemeral while outputs are uploaded',
   assert.match(worker, /path\.join\(CLIPPER_SCRIPT_DIR, 'podcast_speaker_frames\.py'\)/);
   assert.match(worker, /path\.join\(CLIPPER_SCRIPT_DIR, 'podcast_audio_align\.py'\)/);
   assert.doesNotMatch(worker, /path\.resolve\('scripts\/clipper\/podcast_/);
+});
+
+test('Podcast rendering has no landscape or fit-blur fallback path', () => {
+  const worker = fs.readFileSync(new URL('./podcast_render.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(worker, /fit_blur|fitBlurFilter|force_original_aspect_ratio=decrease/);
+  assert.match(worker, /const layoutFilter = activeFilter \|\| centerCropFilter\(layoutOutputLabel\)/);
 });
 
 test('Podcast render owns the same isolated proof-of-origin fallback as transcript ingest', () => {

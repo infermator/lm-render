@@ -238,10 +238,6 @@ function probe(file) {
   return JSON.parse(runCapture('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', file]));
 }
 
-function fitBlurFilter(outputLabel = 'v') {
-  return `[0:v]split=2[bg0][fg0];[bg0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.16[bg];[fg0]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[${outputLabel}]`;
-}
-
 function centerCropFilter(outputLabel = 'v') {
   return `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[${outputLabel}]`;
 }
@@ -265,7 +261,7 @@ function estimateSpeakerCenters(source, intervals, duration, work) {
       framingSegments: (Array.isArray(analysis?.framing_segments) ? analysis.framing_segments : [])
         .filter(segment => Number.isFinite(Number(segment?.start_s))
           && Number.isFinite(Number(segment?.end_s)) && Number(segment.end_s) > Number(segment.start_s)
-          && (segment?.layout === 'crop' || segment?.layout === 'fit_blur')),
+          && segment?.layout === 'crop' && Number.isFinite(Number(segment?.center_x))),
       // Where the speaking face actually was, sample by sample. The aggregate
       // centre alone cannot tell a locked-off camera from a multicam edit.
       samples: (Array.isArray(analysis?.samples) ? analysis.samples : [])
@@ -311,13 +307,14 @@ function extractConfirmationFrames(source, artifact, absoluteStart, duration, wo
 }
 
 function chooseLayout(plan, confirmation, framing) {
-  const requested = String(plan?.output?.requested_layout || plan?.output?.layout || 'fit_blur');
+  const requested = String(plan?.output?.requested_layout || plan?.output?.layout || 'center_crop');
   if (requested === 'center_crop') return 'center_crop';
-  if (!confirmation?.confirmed) return 'fit_blur';
-  if (confirmation.held_object || confirmation.screen_content || confirmation.recommended_layout === 'two_shot') return 'fit_blur';
-  if (confirmation.recommended_layout === 'center_crop') return 'center_crop';
-  if (confirmation.recommended_layout === 'active_speaker') return framing.mode;
-  return 'fit_blur';
+  if (confirmation?.confirmed && confirmation.recommended_layout === 'active_speaker'
+      && framing.mode === 'active_speaker') return 'active_speaker';
+  // Podcast deliverables are portrait crops. Weak confirmation, held objects,
+  // screens, and two-shots may affect the chosen centre, but must never turn a
+  // section into a letterboxed 16:9 insert.
+  return 'center_crop';
 }
 
 function alignAnchor({ batchAudio, alignmentAudio, anchor, expectedLocal, duration, work, index }) {
@@ -500,7 +497,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   }
   // The local analyzer now owns the timeline: it detects the edit boundaries,
   // holds one identity inside each shot, follows only sustained mouth activity,
-  // and preserves the complete frame when a multi-person shot is ambiguous.
+  // and holds one stable portrait subject when a multi-person shot is ambiguous.
   // The older sparse-sample tracker remains a compatibility fallback for an
   // analyzer result produced before framing_segments existed.
   const shotAwareFilter = process.env.CLIPPER_SHOT_TRACKING !== '0'
@@ -530,10 +527,10 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   }) : null);
   const actualLayout = activeFilter
     ? (shotAwareFilter ? 'shot_aware' : layout === 'active_speaker' ? 'active_speaker' : 'shot_tracked')
-    : layout === 'center_crop' ? 'center_crop' : 'fit_blur';
-  const layoutFilter = activeFilter || (actualLayout === 'center_crop'
-    ? centerCropFilter(layoutOutputLabel)
-    : fitBlurFilter(layoutOutputLabel));
+    : 'center_crop';
+  // A missing/invalid tracker may degrade to a static portrait crop, never to
+  // a letterboxed landscape insert.
+  const layoutFilter = activeFilter || centerCropFilter(layoutOutputLabel);
   const filter = captionsCreated
     ? `${layoutFilter};${captionCompositeFilter({
         filePath: captionPath,
@@ -618,10 +615,12 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
         ffprobe: soundtrackProbe,
       } : { enabled: false, reason: String(plan?.output?.soundtrack?.selection || 'not_selected') },
       shot_tracking: shotAwareFilter ? {
-        mode: 'shot_aware_active_speaker_v2',
+        mode: 'shot_aware_active_speaker_v3',
         shots: speakerEstimate.analysis?.timeline?.shot_count ?? null,
         segments: speakerEstimate.framingSegments.length,
-        ambiguous_segments: speakerEstimate.framingSegments.filter(segment => segment.layout === 'fit_blur').length,
+        fallback_segments: speakerEstimate.framingSegments.filter(segment =>
+          String(segment.reason || '').includes('ambiguous') || String(segment.reason || '').includes('no_stable')).length,
+        all_vertical_crop: speakerEstimate.framingSegments.every(segment => segment.layout === 'crop'),
       } : shotTracking ? { mode: 'legacy_sparse_samples', shots: shotTracking.shots, spread: shotTracking.spread } : null,
       framing_segments: speakerEstimate.framingSegments,
       // What the frame analysis actually measured, time by time. Without this

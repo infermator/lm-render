@@ -586,14 +586,12 @@ export function activeSpeakerCropFilter({ width, height, centers, intervals, cap
 }
 
 /**
- * Compose an offline, shot-aware vertical edit.
+ * Compose an offline, shot-aware vertical crop without cutting the timeline.
  *
- * Camera cuts are hard cuts here too: each source shot is trimmed, reframed,
- * and concatenated at the boundary measured from the video. Multi-person shots
- * without a proven active speaker preserve the whole frame over the blurred
- * background. That fallback is intentionally local to the ambiguous shot; it
- * never lets one uncertain face drag the crop away from a correctly framed
- * close-up before or after it.
+ * A single crop expression preserves every source frame and changes position
+ * exactly on measured camera cuts. Speaker changes inside a held shot use a
+ * short smoothstep move so the crop cannot flash between two positions. Every
+ * segment must be a finite portrait crop; a 16:9 fallback is invalid here.
  */
 export function shotAwareFramingFilter({ width, height, segments, outputLabel = 'v' }) {
   const rawWidth = Number(width);
@@ -606,12 +604,12 @@ export function shotAwareFramingFilter({ width, height, segments, outputLabel = 
     .map(segment => ({
       start: segment?.start_s == null ? Number.NaN : Number(segment.start_s),
       end: segment?.end_s == null ? Number.NaN : Number(segment.end_s),
-      layout: segment?.layout === 'crop' ? 'crop' : segment?.layout === 'fit_blur' ? 'fit_blur' : null,
+      layout: segment?.layout === 'crop' ? 'crop' : null,
       center: segment?.center_x == null ? Number.NaN : Number(segment.center_x),
+      transition: segment?.transition === 'speaker_switch' ? 'speaker_switch' : 'shot_cut',
     }))
     .filter(segment => Number.isFinite(segment.start) && Number.isFinite(segment.end)
-      && segment.end - segment.start > 0.02 && segment.layout
-      && (segment.layout !== 'crop' || Number.isFinite(segment.center)))
+      && segment.end - segment.start > 0.02 && segment.layout && Number.isFinite(segment.center))
     .sort((left, right) => left.start - right.start);
   if (!usable.length || usable.length !== rawSegments.length) return null;
   // Do not silently concatenate a damaged or partial plan. A gap would shorten
@@ -629,44 +627,28 @@ export function shotAwareFramingFilter({ width, height, segments, outputLabel = 
     cropHeight = Math.min(sourceHeight, Math.round(sourceWidth * 16 / 9));
   }
   const defaultY = Math.max(0, Math.round((sourceHeight - cropHeight) / 2));
-  const graph = [];
-  const sourceLabels = [];
-  if (usable.length > 1) {
-    const splitLabels = usable.map((_, index) => `[shot_source_${index}]`).join('');
-    graph.push(`[0:v]split=${usable.length}${splitLabels}`);
-    sourceLabels.push(...usable.map((_, index) => `shot_source_${index}`));
-  } else {
-    sourceLabels.push('0:v');
-  }
-
-  usable.forEach((segment, index) => {
-    const start = Math.max(0, segment.start).toFixed(3);
-    const end = Math.max(segment.start + 0.02, segment.end).toFixed(3);
-    const source = `[${sourceLabels[index]}]`;
-    const output = `shot_segment_${index}`;
-    if (segment.layout === 'crop') {
-      const x = Math.max(0, Math.min(
-        sourceWidth - cropWidth,
-        Math.round((Math.max(0, Math.min(1, segment.center)) * sourceWidth) - (cropWidth / 2)),
-      ));
-      graph.push(`${source}trim=start=${start}:end=${end},setpts=PTS-STARTPTS,`
-        + `crop=${cropWidth}:${cropHeight}:x=${x}:y=${defaultY},scale=1080:1920,setsar=1[${output}]`);
-      return;
+  const xFor = segment => Math.max(0, Math.min(
+    sourceWidth - cropWidth,
+    Math.round((Math.max(0, Math.min(1, segment.center)) * sourceWidth) - (cropWidth / 2)),
+  ));
+  let previousX = xFor(usable[0]);
+  let xExpression = String(previousX);
+  for (const segment of usable.slice(1)) {
+    const nextX = xFor(segment);
+    if (nextX === previousX) continue;
+    const at = Math.max(0, segment.start);
+    if (segment.transition === 'speaker_switch') {
+      const duration = 0.20;
+      const end = at + duration;
+      const progress = `(t-${at.toFixed(3)})/${duration.toFixed(3)}`;
+      const eased = `(${progress})*(${progress})*(3-2*(${progress}))`;
+      xExpression = `if(lt(t,${at.toFixed(3)}),${xExpression},if(lt(t,${end.toFixed(3)}),${previousX}+(${nextX - previousX})*${eased},${nextX}))`;
+    } else {
+      xExpression = `if(lt(t,${at.toFixed(3)}),${xExpression},${nextX})`;
     }
-    graph.push(`${source}trim=start=${start}:end=${end},setpts=PTS-STARTPTS[shot_fit_${index}]`);
-    graph.push(`[shot_fit_${index}]split=2[shot_bg_${index}][shot_fg_${index}]`);
-    graph.push(`[shot_bg_${index}]scale=1080:1920:force_original_aspect_ratio=increase,`
-      + `crop=1080:1920,gblur=sigma=28,eq=brightness=-0.16[shot_bg_ready_${index}]`);
-    graph.push(`[shot_fg_${index}]scale=1080:1920:force_original_aspect_ratio=decrease[shot_fg_ready_${index}]`);
-    graph.push(`[shot_bg_ready_${index}][shot_fg_ready_${index}]overlay=(W-w)/2:(H-h)/2,setsar=1[${output}]`);
-  });
-  if (usable.length === 1) {
-    graph.push(`[shot_segment_0]null[${outputLabel}]`);
-  } else {
-    const inputs = usable.map((_, index) => `[shot_segment_${index}]`).join('');
-    graph.push(`${inputs}concat=n=${usable.length}:v=1:a=0[${outputLabel}]`);
+    previousX = nextX;
   }
-  return graph.join(';');
+  return `[0:v]crop=${cropWidth}:${cropHeight}:x='${xExpression}':y=${defaultY},scale=1080:1920,setsar=1[${outputLabel}]`;
 }
 
 const SPEAKER_SAMPLE_BUDGET = 24;

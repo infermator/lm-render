@@ -97,7 +97,7 @@ class ShotAwarePlannerTest(unittest.TestCase):
         self.assertEqual(planned[0]["layout"], "crop")
         self.assertGreater(planned[0]["center_x"], 0.7)
 
-    def test_ambiguous_multiple_faces_preserve_the_whole_shot(self):
+    def test_ambiguous_multiple_faces_hold_one_portrait_subject(self):
         observations = self._observations([
             (time_s, [(0.22, 1.0), (0.76, 1.1)])
             for time_s in (0.2, 0.6, 1.0, 1.4, 1.8, 2.2)
@@ -106,12 +106,38 @@ class ShotAwarePlannerTest(unittest.TestCase):
         self.assertEqual(planned, [{
             "start_s": 0.0,
             "end_s": 2.4,
-            "layout": "fit_blur",
-            "center_x": None,
-            "reason": "ambiguous_multiple_faces",
+            "layout": "crop",
+            "center_x": 0.76,
+            "reason": "ambiguous_stable_subject",
             "confidence": 0.0,
             "face_count": 2,
         }])
+
+    def test_missing_faces_hold_the_previous_portrait_center(self):
+        planned = frames._plan_shot_segments(1.0, 2.0, [], previous_center=0.73)
+        self.assertEqual(planned[0]["layout"], "crop")
+        self.assertEqual(planned[0]["center_x"], 0.73)
+        self.assertEqual(planned[0]["reason"], "no_stable_face_hold")
+
+    def test_a_sustained_speaker_run_is_kept_even_with_long_uncertain_pauses(self):
+        observations = self._observations([
+            (time_s, [(0.22, 0.4), (0.76, 8.0 if 3 <= index <= 5 else 0.3)])
+            for index, time_s in enumerate((0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6, 3.0, 3.4, 3.8, 4.2, 4.6))
+        ])
+        planned = frames._plan_shot_segments(0.0, 4.8, observations)
+        self.assertTrue(all(item["layout"] == "crop" for item in planned))
+        self.assertTrue(all(item["reason"] == "active_speaker_motion" for item in planned))
+        self.assertGreater(planned[0]["center_x"], 0.7)
+
+    def test_every_planned_segment_is_a_finite_portrait_crop(self):
+        observations = self._observations([
+            (0.2, [(0.22, 1.0), (0.76, 1.1)]),
+            (0.6, [(0.22, 1.0), (0.76, 1.1)]),
+            (2.2, []), (2.6, []),
+        ])
+        planned = frames._framing_plan(4.0, [0.0, 2.0, 4.0], observations)
+        self.assertTrue(all(item["layout"] == "crop" for item in planned))
+        self.assertTrue(all(0.0 <= item["center_x"] <= 1.0 for item in planned))
 
     def test_camera_cut_boundaries_are_used_exactly(self):
         observations = self._observations([
