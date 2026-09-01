@@ -103,15 +103,24 @@ class ShotAwarePlannerTest(unittest.TestCase):
             for time_s in (0.2, 0.6, 1.0, 1.4, 1.8, 2.2)
         ])
         planned = frames._plan_shot_segments(0.0, 2.4, observations)
-        self.assertEqual(planned, [{
-            "start_s": 0.0,
-            "end_s": 2.4,
-            "layout": "crop",
-            "center_x": 0.76,
-            "reason": "ambiguous_stable_subject",
-            "confidence": 0.0,
-            "face_count": 2,
-        }])
+        self.assertEqual(len(planned), 1)
+        segment = planned[0]
+        # Asserted field by field rather than as a whole dict: the planner grew
+        # center_y and face_h for vertical framing, and an exact-dict compare
+        # fails on any added field even when the behaviour under test is
+        # unchanged.
+        self.assertEqual(segment["start_s"], 0.0)
+        self.assertEqual(segment["end_s"], 2.4)
+        self.assertEqual(segment["layout"], "crop")
+        self.assertEqual(segment["center_x"], 0.76)
+        self.assertEqual(segment["reason"], "ambiguous_stable_subject")
+        self.assertEqual(segment["confidence"], 0.0)
+        self.assertEqual(segment["face_count"], 2)
+        # The vertical fields must still be present and usable by the crop.
+        self.assertIn("center_y", segment)
+        self.assertIn("face_h", segment)
+        self.assertGreaterEqual(segment["center_y"], 0.0)
+        self.assertLessEqual(segment["center_y"], 1.0)
 
     def test_missing_faces_hold_the_previous_portrait_center(self):
         planned = frames._plan_shot_segments(1.0, 2.0, [], previous_center=0.73)
