@@ -376,14 +376,18 @@ function escapeAssText(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/{/g, '\\{').replace(/}/g, '\\}').replace(/\r?\n/g, '\\N');
 }
 
-function captionLine(items, activeIndex, accent) {
+function captionText(items) {
+  return items.map(item => escapeAssText(String(item.text || '').trim()))
+    .filter(Boolean).join(' ').replace(/\s+([,.;!?])/g, '$1');
+}
+
+function activeWordLine(items, activeIndex) {
   return items.map((item, index) => {
     const text = escapeAssText(String(item.text || '').trim());
-    if (index !== activeIndex) return text;
-    // BorderStyle=3 is a real opaque rectangular word chip. Resetting to this
-    // style for only the active token avoids the glyph-shaped coloured halo
-    // produced by xbord/ybord while keeping the rest of the phrase stable.
-    return `{\\rActiveWord}${text}{\\rPodcastCaption}`;
+    // TransparentWord uses the exact same font metrics as the base line. It
+    // reserves every inactive word's width, so the active chip can move without
+    // causing the centered phrase to be laid out at a new horizontal position.
+    return `{\\r${index === activeIndex ? 'ActiveWord' : 'TransparentWord'}}${text}`;
   }).filter(Boolean).join(' ').replace(/\s+([,.;!?])/g, '$1');
 }
 
@@ -400,18 +404,30 @@ WrapStyle: 0
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: PodcastCaption,Inter,15,&H00FFFFFF,&H00FFFFFF,&H00000000,&H70000000,-1,0,0,0,100,100,0,0,1,0.8,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
 Style: ActiveWord,Inter,15,&H00${accent.text_ass_bgr},&H00${accent.text_ass_bgr},&H00${accent.ass_bgr},&H00${accent.ass_bgr},-1,0,0,0,100,100,0,0,3,1.8,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
+Style: TransparentWord,Inter,15,&HFF000000,&HFF000000,&HFF000000,&HFF000000,-1,0,0,0,100,100,0,0,1,0,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`;
   const events = [];
   for (const items of captionGroups(words)) {
+    const groupStartCs = Math.max(0, Math.round(Number(items[0].start) * 100));
+    const groupEndCs = Math.max(groupStartCs + 1, Math.round(Number(items.at(-1).end) * 100));
+    // The readable phrase is one continuous event. Previously it was emitted
+    // once per word, so clustered timestamps could overlap and draw the entire
+    // line twice; even clean boundaries made libass re-layout the centered line
+    // on every token.
+    events.push(`Dialogue: 0,${assTimestamp(groupStartCs / 100)},${assTimestamp(groupEndCs / 100)},PodcastCaption,,0,0,0,,${captionText(items)}`);
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index];
       const next = items[index + 1];
-      const start = Math.max(0, Number(item.start));
-      const naturalEnd = Math.max(start + 0.06, Number(item.end));
-      const end = next ? Math.max(start + 0.06, Number(next.start)) : naturalEnd;
-      events.push(`Dialogue: 0,${assTimestamp(start)},${assTimestamp(end)},PodcastCaption,,0,0,0,,${captionLine(items, index, accent)}`);
+      const startCs = Math.max(groupStartCs, Math.round(Number(item.start) * 100));
+      const nextStartCs = next ? Math.round(Number(next.start) * 100) : groupEndCs;
+      const naturalEndCs = Math.max(startCs + 1, Math.round(Number(item.end) * 100));
+      const endCs = Math.min(groupEndCs, next ? nextStartCs : naturalEndCs);
+      // A bright one- or two-frame chip reads as a flash, not a highlight. Keep
+      // the stable base text and omit only that unreliable active overlay.
+      if (endCs - startCs < 8) continue;
+      events.push(`Dialogue: 1,${assTimestamp(startCs / 100)},${assTimestamp(endCs / 100)},TransparentWord,,0,0,0,,${activeWordLine(items, index)}`);
     }
   }
   return `${header}\n${events.join('\n')}\n`;

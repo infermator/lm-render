@@ -60,7 +60,7 @@ test('Podcast captions preserve the established face-safe lane and restrained ou
   assert.doesNotMatch(PODCAST_CAPTION_FORCE_STYLE, /Outline=3/);
 });
 
-test('Podcast ASS captions highlight only the currently spoken word', () => {
+test('Podcast ASS captions keep one stable base line and isolate the active word', () => {
   const words = wordsForWindow(artifact, 99.5, 103);
   const ass = buildTranscriptAss(words, {
     name: 'yellow', rgb: [255, 215, 62], ass_bgr: '3ED7FF', text_ass_bgr: '000000', contrast_score: 9,
@@ -68,11 +68,26 @@ test('Podcast ASS captions highlight only the currently spoken word', () => {
   assert.match(ass, /Fontname, Fontsize/);
   assert.match(ass, /Style: PodcastCaption,Inter,15/);
   assert.match(ass, /Style: ActiveWord,Inter,15,[^\n]+,3,1\.8,0,2,18,18,96,1/);
-  assert.match(ass, /Dialogue: 0,0:00:00\.50,0:00:01\.50/);
+  assert.match(ass, /Style: TransparentWord,Inter,15,&HFF000000/);
+  assert.match(ass, /Dialogue: 0,0:00:00\.50,0:00:02\.50,PodcastCaption,,0,0,0,,Hello world\./);
+  assert.match(ass, /Dialogue: 1,0:00:00\.50,0:00:01\.50,TransparentWord/);
   assert.match(ass, /Style: ActiveWord,Inter,15,&H00000000,[^\n]+&H003ED7FF,&H003ED7FF/);
   assert.doesNotMatch(ass, /\\x?bord|\\ybord|\\blur/);
-  assert.match(ass, /\{\\rActiveWord\}Hello\{\\rPodcastCaption\} world\./);
-  assert.match(ass, /Hello \{\\rActiveWord\}world\.\{\\rPodcastCaption\}/);
+  assert.match(ass, /\{\\rActiveWord\}Hello \{\\rTransparentWord\}world\./);
+  assert.match(ass, /\{\\rTransparentWord\}Hello \{\\rActiveWord\}world\./);
+});
+
+test('Podcast ASS captions never overlap full lines or flash sub-80ms highlights', () => {
+  const ass = buildTranscriptAss([
+    { start: 0.5, end: 0.54, text: 'I', speaker: 'SPEAKER_00' },
+    { start: 0.54, end: 0.58, text: 'am', speaker: 'SPEAKER_00' },
+    { start: 0.58, end: 0.9, text: 'ready.', speaker: 'SPEAKER_00' },
+  ]);
+  const dialogue = ass.split('\n').filter(line => line.startsWith('Dialogue:'));
+  assert.equal(dialogue.filter(line => line.startsWith('Dialogue: 0,')).length, 1);
+  assert.equal(dialogue.filter(line => line.startsWith('Dialogue: 1,')).length, 1);
+  assert.match(dialogue[0], /0:00:00\.50,0:00:00\.90/);
+  assert.match(dialogue[1], /0:00:00\.58,0:00:00\.90/);
 });
 
 test('caption accent selection is deterministic and keeps active text readable', () => {
