@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import math
 from pathlib import Path
 from typing import Any
@@ -192,6 +193,43 @@ def _scene_change_score(previous: np.ndarray, current: np.ndarray) -> float:
     return float(histogram_distance + pixel_distance * 1.5)
 
 
+def _audio_envelope(video_path: Path, duration: float, step_s: float) -> "np.ndarray | None":
+    """Loudness of the speech track, sampled on the same grid as the frames.
+
+    Mouth pixels moving is not evidence of speech. A listener nods, chews, or
+    turns their head and the mouth region changes just as much as a talker's,
+    which is how a confidently-wrong face gets the crop. Speech is the one thing
+    that must line up with the audio, so the envelope is what turns motion into
+    evidence.
+    """
+    if duration <= 0 or step_s <= 0:
+        return None
+    rate = 16000
+    try:
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(video_path), "-vn",
+             "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"],
+            capture_output=True, timeout=300,
+        )
+    except Exception:
+        return None
+    if raw.returncode != 0 or not raw.stdout:
+        return None
+    samples = np.frombuffer(raw.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    if samples.size == 0:
+        return None
+    slots = max(1, int(round(duration / step_s)))
+    per_slot = max(1, samples.size // slots)
+    usable = samples[: slots * per_slot].reshape(slots, per_slot)
+    envelope = np.sqrt(np.mean(np.square(usable), axis=1))
+    # Silence carries no information about who is talking; comparing shapes
+    # matters, not absolute level.
+    spread = float(envelope.max() - envelope.min())
+    if spread <= 1e-6:
+        return None
+    return (envelope - envelope.mean()) / (envelope.std() + 1e-9)
+
+
 def _timeline_observations(video_path: Path) -> tuple[float, list[float], list[dict[str, Any]]]:
     """Decode once, finding exact cuts and measuring faces on a dense grid."""
     capture = cv2.VideoCapture(str(video_path))
@@ -290,6 +328,51 @@ def _track_faces(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
             used.add(track_index)
             tracks[track_index]["items"].append({"time_s": observation["time_s"], **face})
     return tracks
+
+
+#: Correlation below this is not evidence of speech. A talker's mouth tracks the
+#: envelope strongly; a listener's incidental movement does not line up with it.
+AUDIO_SYNC_MIN_CORRELATION = 0.22
+
+
+def _audio_sync_score(
+    track: dict[str, Any],
+    envelope: "np.ndarray | None",
+    step_s: float,
+    start: float,
+    end: float,
+) -> float:
+    """How well this face's mouth motion follows the speech envelope.
+
+    This is the difference between "a mouth moved" and "a mouth moved *when
+    speech happened*". Raw motion cannot tell a listener chewing from a host
+    mid-sentence; correlation with the audio can, because only one of them is
+    synchronised with the sound.
+
+    Returns 0.0 when there is nothing to correlate, so the caller falls back to
+    the motion-only behaviour rather than trusting a number built from noise.
+    """
+    if envelope is None or step_s <= 0:
+        return 0.0
+    pairs = []
+    for item in track["items"]:
+        if not (start <= item["time_s"] < end):
+            continue
+        index = int(round(item["time_s"] / step_s))
+        if 0 <= index < envelope.size:
+            pairs.append((float(envelope[index]), float(item["mouth_motion"])))
+    if len(pairs) < 4:
+        return 0.0
+    audio = np.array([p[0] for p in pairs], dtype=np.float64)
+    motion = np.array([p[1] for p in pairs], dtype=np.float64)
+    if float(motion.std()) <= 1e-6 or float(audio.std()) <= 1e-6:
+        return 0.0
+    correlation = float(np.corrcoef(audio, motion)[0, 1])
+    return correlation if math.isfinite(correlation) else 0.0
+
+
+def track_by_index(tracks: list[dict[str, Any]], track_id: int) -> dict[str, Any]:
+    return next(track for track in tracks if track["id"] == track_id)
 
 
 def _activity_at(track: dict[str, Any], seconds: float) -> float:
@@ -474,6 +557,8 @@ def _plan_shot_segments(
     previous_center: float = 0.5,
     confident_identity: "np.ndarray | None" = None,
     diarized_identity: "np.ndarray | None" = None,
+    envelope: "np.ndarray | None" = None,
+    envelope_step_s: float = 0.0,
 ) -> list[dict[str, Any]]:
     tracks = _track_faces(observations)
     visible_tracks = [track for track in tracks if len(track["items"]) >= max(1, len(observations) // 3)]
@@ -494,6 +579,21 @@ def _plan_shot_segments(
             "reason": "single_visible_face", "confidence": 1.0, "face_count": 1,
         }]
 
+    # Which face, across this whole shot, actually moves in time with the
+    # speech. Motion alone repeatedly handed the crop to the wrong host with
+    # full confidence; only one face can be synchronised with the sound.
+    sync = {
+        track["id"]: _audio_sync_score(track, envelope, envelope_step_s, start, end)
+        for track in visible_tracks
+    }
+    ranked_sync = sorted(sync.values(), reverse=True)
+    sync_leader = max(sync, key=sync.get) if sync else None
+    sync_decides = (
+        sync_leader is not None
+        and ranked_sync[0] >= AUDIO_SYNC_MIN_CORRELATION
+        and (len(ranked_sync) < 2 or ranked_sync[0] >= ranked_sync[1] + 0.10)
+    )
+
     times = [observation["time_s"] for observation in observations]
     labels: list[int | None] = []
     confidences: list[float] = []
@@ -508,6 +608,14 @@ def _plan_shot_segments(
             best_score >= ACTIVE_SPEAKER_MIN_ACTIVITY
             and best_score >= second_score * ACTIVE_SPEAKER_MIN_RATIO + ACTIVE_SPEAKER_MARGIN
         )
+        if sync_decides:
+            # The audio says who is talking across this shot. A per-instant
+            # motion spike on another face is noise against that, so it must not
+            # be allowed to steal the frame.
+            if confident and best_id != sync_leader:
+                confident = False
+            if not confident and _activity_at(track_by_index(visible_tracks, sync_leader), seconds) > 0:
+                best_id, confident = sync_leader, True
         labels.append(best_id if confident else None)
         confidences.append(0.0 if not confident else min(1.0, (best_score - second_score) / max(best_score, 1e-6)))
     labels = _stabilize_label_runs(_collapse_labels(labels))
@@ -547,7 +655,7 @@ def _plan_shot_segments(
         segment_end = boundaries[index + 1]
         layout = "crop"
         center_x = None
-        reason = "active_speaker_motion"
+        reason = "audio_synced_speaker" if sync_decides else "active_speaker_motion"
         confidence = confidences[index]
         track = track_by_id[label]
         nearby_centers = [
@@ -589,7 +697,7 @@ def _dominant_speaker(start: float, end: float, diarization: list[dict[str, Any]
 
 
 #: Reasons that mean "we actually knew who was talking".
-PROVEN_REASONS = {"active_speaker_motion", "single_visible_face"}
+PROVEN_REASONS = {"audio_synced_speaker", "active_speaker_motion", "single_visible_face"}
 
 
 def _diarized_identity_for(
@@ -625,6 +733,8 @@ def _framing_plan(
     cuts: list[float],
     observations: list[dict[str, Any]],
     diarization: list[dict[str, Any]] | None = None,
+    envelope: "np.ndarray | None" = None,
+    envelope_step_s: float = 0.0,
 ) -> list[dict[str, Any]]:
     segments = []
     previous_center = 0.5
@@ -637,6 +747,7 @@ def _framing_plan(
         diarized_identity = _diarized_identity_for(start, end, speaker_identities, diarization or [])
         planned = _plan_shot_segments(
             start, end, shot_observations, previous_center, confident_identity, diarized_identity,
+            envelope, envelope_step_s,
         )
         shot_tracks = _track_faces(shot_observations)
         for segment in planned:
@@ -709,7 +820,11 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
     # Diarization arrives as one label per sampled instant. Turning it into
     # spans lets a shot ask who the transcript says is talking across it.
     diarization = _diarization_spans(samples, duration)
-    framing_segments = _framing_plan(duration, cuts, timeline, diarization)
+    envelope_step_s = TIMELINE_SAMPLE_INTERVAL_S
+    envelope = _audio_envelope(video_path, duration, envelope_step_s)
+    framing_segments = _framing_plan(
+        duration, cuts, timeline, diarization, envelope, envelope_step_s,
+    )
     evidence: dict[str, list[dict[str, float]]] = {}
     inspected: list[dict[str, Any]] = []
 

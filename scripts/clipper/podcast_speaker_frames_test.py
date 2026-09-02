@@ -232,7 +232,12 @@ class AmbiguousShotResolutionTest(unittest.TestCase):
         self.assertFalse(frames._same_person(frames._track_identity(faceless), self._identity(1)))
 
     def test_a_guess_never_becomes_the_anchor_for_the_next_guess(self):
-        self.assertEqual(frames.PROVEN_REASONS, {"active_speaker_motion", "single_visible_face"})
+        # Only reasons backed by evidence may anchor a later decision.
+        self.assertEqual(
+            frames.PROVEN_REASONS,
+            {"audio_synced_speaker", "active_speaker_motion", "single_visible_face"},
+        )
+        self.assertNotIn("ambiguous_stable_subject", frames.PROVEN_REASONS)
 
 
 class FaceIdentityTest(unittest.TestCase):
@@ -274,3 +279,46 @@ class DiarizationSpanTest(unittest.TestCase):
             [{"time_s": t, "speaker": "SPEAKER_00"} for t in (0.0, 2.0, 4.0)], 6.0
         )
         self.assertIsNone(frames._diarized_identity_for(0.0, 6.0, {}, spans))
+
+
+class AudioSyncTest(unittest.TestCase):
+    """Who is talking is decided by the mouth that moves with the sound."""
+
+    @staticmethod
+    def _track(track_id, motions, start=0.0, step=0.4):
+        return {
+            "id": track_id,
+            "items": [
+                {"time_s": start + index * step, "mouth_motion": value,
+                 "center_x": 0.5, "center_y": 0.4, "face_h": 0.12,
+                 "area": 0.05, "speech_activity": value, "embedding": None}
+                for index, value in enumerate(motions)
+            ],
+        }
+
+    def test_the_face_that_moves_with_the_audio_scores_highest(self):
+        # A listener chewing or nodding produces mouth motion just like a
+        # talker. Only the talker's motion rises and falls with the sound.
+        envelope = np.array([2.0, -1.0, 2.0, -1.0, 2.0, -1.0, 2.0, -1.0], dtype=np.float64)
+        speaker = self._track(1, [9.0, 1.0, 9.0, 1.0, 9.0, 1.0, 9.0, 1.0])
+        fidget = self._track(2, [1.0, 9.0, 1.0, 9.0, 1.0, 9.0, 1.0, 9.0])
+        speaker_score = frames._audio_sync_score(speaker, envelope, 0.4, 0.0, 4.0)
+        fidget_score = frames._audio_sync_score(fidget, envelope, 0.4, 0.0, 4.0)
+        self.assertGreater(speaker_score, frames.AUDIO_SYNC_MIN_CORRELATION)
+        self.assertLess(fidget_score, 0.0, "anti-correlated motion is not speech")
+
+    def test_constant_motion_carries_no_information(self):
+        # A face whose mouth region never changes cannot be correlated with
+        # anything; it must score zero rather than a spurious value.
+        envelope = np.array([2.0, -1.0, 2.0, -1.0, 2.0, -1.0, 2.0, -1.0], dtype=np.float64)
+        flat = self._track(1, [5.0] * 8)
+        self.assertEqual(frames._audio_sync_score(flat, envelope, 0.4, 0.0, 4.0), 0.0)
+
+    def test_missing_audio_falls_back_rather_than_inventing_evidence(self):
+        speaker = self._track(1, [9.0, 1.0, 9.0, 1.0, 9.0, 1.0, 9.0, 1.0])
+        self.assertEqual(frames._audio_sync_score(speaker, None, 0.4, 0.0, 4.0), 0.0)
+
+    def test_too_few_overlapping_samples_is_not_evidence(self):
+        envelope = np.array([2.0, -1.0, 2.0, -1.0], dtype=np.float64)
+        short = self._track(1, [9.0, 1.0])
+        self.assertEqual(frames._audio_sync_score(short, envelope, 0.4, 0.0, 4.0), 0.0)
