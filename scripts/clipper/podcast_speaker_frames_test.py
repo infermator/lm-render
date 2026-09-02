@@ -167,51 +167,88 @@ class AmbiguousShotResolutionTest(unittest.TestCase):
     """What decides the frame when no face shows usable lip motion."""
 
     @staticmethod
-    def _track(track_id, center, area, items=6):
+    def _identity(seed):
+        vector = np.zeros(128, dtype=np.float32)
+        vector[seed] = 1.0
+        return vector
+
+    def _track(self, track_id, center, area, identity_seed, items=6):
+        embedding = self._identity(identity_seed)
         return {
             "id": track_id,
             "items": [
-                {"center_x": center, "center_y": 0.4, "face_h": 0.12,
-                 "area": area, "speech_activity": 0.0, "time_s": index * 0.4}
+                {"center_x": center, "center_y": 0.4, "face_h": 0.12, "area": area,
+                 "speech_activity": 0.0, "time_s": index * 0.4, "embedding": embedding}
                 for index in range(items)
             ],
         }
 
     def test_the_last_confident_speaker_keeps_the_frame(self):
-        # Measured at ~9% of runtime across three finished clips: several faces
-        # visible, none provably talking. Ranking on prominence hands the frame
-        # to whoever sits nearest the camera, so it settles on a listener while
-        # someone else speaks. A shot with no new evidence is far more likely to
-        # be the same person still talking.
-        listener_closer = self._track(1, 0.30, area=0.09)
-        speaker_further = self._track(2, 0.72, area=0.05)
+        # About nine per cent of runtime across three finished clips reached
+        # this branch: several faces visible, none provably talking. Ranking on
+        # prominence hands the frame to whoever sits nearest the camera, so it
+        # settles on a listener while somebody else speaks.
+        listener_closer = self._track(1, 0.30, area=0.09, identity_seed=1)
+        speaker_further = self._track(2, 0.72, area=0.05, identity_seed=2)
         chosen = frames._fallback_track(
-            [listener_closer, speaker_further], previous_center=0.5, confident_center=0.72,
+            [listener_closer, speaker_further], previous_center=0.5,
+            confident_identity=self._identity(2),
         )
         self.assertEqual(chosen["id"], 2, "the frame must stay on the last proven speaker")
 
-    def test_diarization_outranks_continuity(self):
-        # If the transcript places the current speaker somewhere else, that is
-        # better evidence than "whoever was talking a moment ago".
-        held = self._track(1, 0.30, area=0.09)
-        diarized = self._track(2, 0.72, area=0.05)
+    def test_identity_is_matched_across_a_camera_cut(self):
+        # The reason this is identity and not position: the same host sits at a
+        # different x in every angle, so matching on centre never fired once on
+        # a real clip. The speaker here has moved right across the cut.
+        moved_speaker = self._track(1, 0.85, area=0.04, identity_seed=7)
+        other_person = self._track(2, 0.20, area=0.10, identity_seed=9)
         chosen = frames._fallback_track(
-            [held, diarized], previous_center=0.3, confident_center=0.30, diarized_center=0.72,
+            [moved_speaker, other_person], previous_center=0.2,
+            confident_identity=self._identity(7),
+        )
+        self.assertEqual(chosen["id"], 1, "identity must beat both position and size")
+
+    def test_diarization_outranks_continuity(self):
+        held = self._track(1, 0.30, area=0.09, identity_seed=1)
+        diarized = self._track(2, 0.72, area=0.05, identity_seed=2)
+        chosen = frames._fallback_track(
+            [held, diarized], previous_center=0.3,
+            confident_identity=self._identity(1), diarized_identity=self._identity(2),
         )
         self.assertEqual(chosen["id"], 2)
 
     def test_prominence_still_decides_with_no_other_signal(self):
-        # First ambiguous shot of a clip: nothing proven yet, nothing diarized.
-        small = self._track(1, 0.25, area=0.03)
-        large = self._track(2, 0.70, area=0.11)
+        small = self._track(1, 0.25, area=0.03, identity_seed=1)
+        large = self._track(2, 0.70, area=0.11, identity_seed=2)
         chosen = frames._fallback_track([small, large], previous_center=0.5)
         self.assertEqual(chosen["id"], 2)
 
+    def test_an_unknown_face_never_counts_as_a_match(self):
+        # A track with no usable embedding must not be treated as the speaker
+        # just because nothing contradicts it.
+        faceless = self._track(1, 0.30, area=0.09, identity_seed=1)
+        for item in faceless["items"]:
+            item["embedding"] = None
+        self.assertFalse(frames._same_person(frames._track_identity(faceless), self._identity(1)))
+
     def test_a_guess_never_becomes_the_anchor_for_the_next_guess(self):
-        # confident_center is only ever set from proven shots, so an unproven
-        # choice cannot justify repeating itself down the clip.
-        self.assertIn("PROVEN_REASONS", dir(frames))
         self.assertEqual(frames.PROVEN_REASONS, {"active_speaker_motion", "single_visible_face"})
+
+
+class FaceIdentityTest(unittest.TestCase):
+    def test_a_track_identity_averages_its_frames(self):
+        base = np.zeros(128, dtype=np.float32); base[3] = 1.0
+        noise = np.zeros(128, dtype=np.float32); noise[4] = 1.0
+        track = {"items": [{"embedding": base}, {"embedding": base}, {"embedding": noise}]}
+        identity = frames._track_identity(track)
+        # Two frames agree and one does not; the pair must dominate.
+        self.assertGreater(float(np.dot(identity, base)), float(np.dot(identity, noise)))
+
+    def test_identity_threshold_separates_the_measured_populations(self):
+        # Measured on a finished clip: same person 0.79-0.89 across cuts,
+        # different people 0.00-0.03. The threshold must sit between them.
+        self.assertGreater(frames.IDENTITY_MATCH_THRESHOLD, 0.05)
+        self.assertLess(frames.IDENTITY_MATCH_THRESHOLD, 0.75)
 
 
 class DiarizationSpanTest(unittest.TestCase):
@@ -224,17 +261,16 @@ class DiarizationSpanTest(unittest.TestCase):
         self.assertEqual(spans[1]["end_s"], 10.0)
 
     def test_unlabelled_samples_are_not_evidence(self):
-        # A grid probe carries no speaker; it must not inherit a neighbour's.
         spans = frames._diarization_spans(
             [{"time_s": 0.0, "speaker": "SPEAKER_00"}, {"time_s": 2.0, "speaker": None}], 6.0
         )
         self.assertEqual(len(spans), 1)
         self.assertEqual(spans[0]["speaker"], "SPEAKER_00")
 
-    def test_a_single_collapsed_label_offers_no_discrimination(self):
-        # This episode's diarization merges both hosts into one label. The
-        # mapping must then produce nothing rather than a confident wrong pick.
+    def test_no_learned_faces_means_no_diarized_answer(self):
+        # Before any shot has been resolved confidently there is nothing to map
+        # a speaker label onto, and guessing would be worse than abstaining.
         spans = frames._diarization_spans(
             [{"time_s": t, "speaker": "SPEAKER_00"} for t in (0.0, 2.0, 4.0)], 6.0
         )
-        self.assertIsNone(frames._diarized_center_for(0.0, 6.0, {}, spans))
+        self.assertIsNone(frames._diarized_identity_for(0.0, 6.0, {}, spans))

@@ -13,6 +13,12 @@ import cv2
 import numpy as np
 
 MODEL_PATH = Path(__file__).with_name("models") / "face_detection_yunet_2023mar.onnx"
+RECOGNITION_MODEL_PATH = Path(__file__).with_name("models") / "face_recognition_sface_2021dec.onnx"
+#: Two embeddings of the same face score 0.79-0.89 across camera cuts on the
+#: reference clip; two different people score 0.00-0.03. Anything in between is
+#: treated as "not the same person", because a wrong identity moves the crop to
+#: the wrong host, while a missed match only falls back to the older behaviour.
+IDENTITY_MATCH_THRESHOLD = 0.40
 #: Below this YuNet is guessing. A wrong face moves the crop onto the wrong
 #: thing, which is worse than not moving it, so low-confidence hits are dropped.
 MIN_FACE_CONFIDENCE = 0.75
@@ -57,6 +63,36 @@ def _face_detector(width: int, height: int):
     )
 
 
+def _face_recognizer():
+    """SFace, run locally on CPU.
+
+    Identity is the only thing that survives a camera cut. Position does not:
+    the same host sits at a different x in every angle, which is why matching
+    the previous speaker by centre never fired on a real clip.
+    """
+    if not RECOGNITION_MODEL_PATH.exists():
+        return None
+    try:
+        return cv2.FaceRecognizerSF.create(str(RECOGNITION_MODEL_PATH), "")
+    except Exception:
+        # An OpenCV build without the recognition module must degrade to the
+        # previous behaviour rather than fail the render.
+        return None
+
+
+def _face_embedding(recognizer, frame, face_row) -> "np.ndarray | None":
+    if recognizer is None or face_row is None:
+        return None
+    try:
+        embedding = recognizer.feature(recognizer.alignCrop(frame, face_row)).flatten()
+    except Exception:
+        return None
+    norm = float(np.linalg.norm(embedding))
+    if norm <= 1e-6:
+        return None
+    return embedding / norm
+
+
 def _detect_faces(detector, frame) -> list:
     """Return [((x, y, w, h), confidence)] for faces the model is sure about."""
     height, width = frame.shape[:2]
@@ -68,7 +104,10 @@ def _detect_faces(detector, frame) -> list:
         confidence = float(row[-1])
         if box_width < 8 or box_height < 8 or confidence < MIN_FACE_CONFIDENCE:
             continue
-        faces.append(((max(0, x), max(0, y), box_width, box_height), confidence))
+        # The raw row is kept alongside the box: face alignment needs the
+        # landmarks it carries, and cropping to the box alone measurably
+        # degrades the embedding.
+        faces.append(((max(0, x), max(0, y), box_width, box_height), confidence, row))
     return faces
 
 
@@ -108,11 +147,11 @@ def _region_motion(
     )
 
 
-def _face_observations(detector, before: np.ndarray, center: np.ndarray, after: np.ndarray) -> list[dict[str, float]]:
+def _face_observations(detector, before: np.ndarray, center: np.ndarray, after: np.ndarray, recognizer=None) -> list[dict[str, float]]:
     """Measure every real face without deciding who deserves the crop yet."""
     frame_height, frame_width = center.shape[:2]
     observations = []
-    for face, confidence in _detect_faces(detector, center):
+    for face, confidence, raw_row in _detect_faces(detector, center):
         x, y, width, height = face
         mouth = _region_motion(before, center, after, face, (0.50, 0.92))
         upper = _region_motion(before, center, after, face, (0.08, 0.43))
@@ -133,6 +172,7 @@ def _face_observations(detector, before: np.ndarray, center: np.ndarray, after: 
             "mouth_motion": mouth,
             "upper_motion": upper,
             "speech_activity": activity,
+            "embedding": _face_embedding(recognizer, center, raw_row),
         })
     return observations
 
@@ -167,6 +207,7 @@ def _timeline_observations(video_path: Path) -> tuple[float, list[float], list[d
     duration = frame_count / fps
     analysis_width, analysis_height = _analysis_size(source_width, source_height)
     detector = _face_detector(analysis_width, analysis_height)
+    recognizer = _face_recognizer()
 
     motion_offset_frames = max(1, int(round(TIMELINE_MOTION_OFFSET_S * fps)))
     sample_step_frames = max(1, int(round(TIMELINE_SAMPLE_INTERVAL_S * fps)))
@@ -208,7 +249,7 @@ def _timeline_observations(video_path: Path) -> tuple[float, list[float], list[d
             if before is not None and center is not None and after is not None:
                 observations.append({
                     "time_s": center_index / fps,
-                    "faces": _face_observations(detector, before, center, after),
+                    "faces": _face_observations(detector, before, center, after, recognizer),
                 })
             # These frames cannot be needed by any later centre once its after
             # frame has arrived. Keeping the dictionary bounded matters on 4K.
@@ -265,6 +306,22 @@ def _activity_at(track: dict[str, Any], seconds: float) -> float:
     return float(np.percentile(nearby, 65))
 
 
+def _track_identity(track: dict[str, Any]) -> "np.ndarray | None":
+    """One averaged embedding for a track, so a single bad frame cannot define it."""
+    vectors = [item["embedding"] for item in track["items"] if item.get("embedding") is not None]
+    if not vectors:
+        return None
+    mean = np.mean(np.stack(vectors), axis=0)
+    norm = float(np.linalg.norm(mean))
+    return mean / norm if norm > 1e-6 else None
+
+
+def _same_person(left: "np.ndarray | None", right: "np.ndarray | None") -> bool:
+    if left is None or right is None:
+        return False
+    return float(np.dot(left, right)) >= IDENTITY_MATCH_THRESHOLD
+
+
 def _track_center(track: dict[str, Any]) -> float:
     return _median([item["center_x"] for item in track["items"]])
 
@@ -293,8 +350,8 @@ CONTINUITY_MATCH_TOLERANCE = 0.12
 def _fallback_track(
     tracks: list[dict[str, Any]],
     previous_center: float,
-    confident_center: float | None = None,
-    diarized_center: float | None = None,
+    confident_identity: "np.ndarray | None" = None,
+    diarized_identity: "np.ndarray | None" = None,
 ) -> dict[str, Any]:
     """Choose one subject when this shot has no usable lip-motion evidence.
 
@@ -317,14 +374,9 @@ def _fallback_track(
         area = _median([item["area"] for item in track["items"]])
         coverage = len(track["items"])
         center = _track_center(track)
-        matches_diarized = (
-            diarized_center is not None
-            and abs(center - diarized_center) <= CONTINUITY_MATCH_TOLERANCE
-        )
-        continues_confident = (
-            confident_center is not None
-            and abs(center - confident_center) <= CONTINUITY_MATCH_TOLERANCE
-        )
+        identity = _track_identity(track)
+        matches_diarized = _same_person(identity, diarized_identity)
+        continues_confident = _same_person(identity, confident_identity)
         ranked.append((
             proven_activity,
             1 if matches_diarized else 0,
@@ -420,8 +472,8 @@ def _plan_shot_segments(
     end: float,
     observations: list[dict[str, Any]],
     previous_center: float = 0.5,
-    confident_center: float | None = None,
-    diarized_center: float | None = None,
+    confident_identity: "np.ndarray | None" = None,
+    diarized_identity: "np.ndarray | None" = None,
 ) -> list[dict[str, Any]]:
     tracks = _track_faces(observations)
     visible_tracks = [track for track in tracks if len(track["items"]) >= max(1, len(observations) // 3)]
@@ -460,7 +512,7 @@ def _plan_shot_segments(
         confidences.append(0.0 if not confident else min(1.0, (best_score - second_score) / max(best_score, 1e-6)))
     labels = _stabilize_label_runs(_collapse_labels(labels))
 
-    fallback = _fallback_track(visible_tracks, previous_center, confident_center, diarized_center)
+    fallback = _fallback_track(visible_tracks, previous_center, confident_identity, diarized_identity)
     fallback_id = fallback["id"]
 
     # If nobody wins for a sustained run, hold one stable best subject for the
@@ -474,13 +526,9 @@ def _plan_shot_segments(
             "center_y": round(_track_vertical(fallback)[0], 4),
             "face_h": round(_track_vertical(fallback)[1], 4),
             "reason": (
-                "diarized_speaker_hold" if (
-                    diarized_center is not None
-                    and abs(_track_center(fallback) - diarized_center) <= CONTINUITY_MATCH_TOLERANCE
-                ) else "confident_speaker_hold" if (
-                    confident_center is not None
-                    and abs(_track_center(fallback) - confident_center) <= CONTINUITY_MATCH_TOLERANCE
-                ) else "ambiguous_stable_subject"
+                "diarized_speaker_hold" if _same_person(_track_identity(fallback), diarized_identity)
+                else "confident_speaker_hold" if _same_person(_track_identity(fallback), confident_identity)
+                else "ambiguous_stable_subject"
             ),
             "confidence": 0.0,
             "face_count": len(visible_tracks),
@@ -544,12 +592,12 @@ def _dominant_speaker(start: float, end: float, diarization: list[dict[str, Any]
 PROVEN_REASONS = {"active_speaker_motion", "single_visible_face"}
 
 
-def _diarized_center_for(
+def _diarized_identity_for(
     start: float,
     end: float,
-    speaker_positions: dict[str, float],
+    speaker_identities: dict[str, Any],
     diarization: list[dict[str, Any]],
-) -> float | None:
+) -> "np.ndarray | None":
     """Where the transcript says the current speaker sits, if that is known.
 
     Only useful once a speaker label has been seen on screen during a stretch
@@ -557,19 +605,19 @@ def _diarized_center_for(
     into one label this returns nothing, which is the honest answer rather than
     a confident wrong one.
     """
-    if not speaker_positions or not diarization:
+    if not speaker_identities or not diarization:
         return None
     overlap: dict[str, float] = {}
     for entry in diarization:
         label = entry.get("speaker")
-        if not label or label not in speaker_positions:
+        if not label or label not in speaker_identities:
             continue
         covered = min(end, entry["end_s"]) - max(start, entry["start_s"])
         if covered > 0:
             overlap[label] = overlap.get(label, 0.0) + covered
     if not overlap:
         return None
-    return speaker_positions[max(overlap, key=overlap.get)]
+    return speaker_identities[max(overlap, key=overlap.get)]
 
 
 def _framing_plan(
@@ -582,25 +630,36 @@ def _framing_plan(
     previous_center = 0.5
     # Only updated from shots where we actually knew who was speaking. A guess
     # must not become the anchor that justifies the next guess.
-    confident_center: float | None = None
-    speaker_positions: dict[str, float] = {}
+    confident_identity = None
+    speaker_identities: dict[str, Any] = {}
     for shot_index, (start, end) in enumerate(zip(cuts, cuts[1:])):
         shot_observations = [item for item in observations if start <= item["time_s"] < end]
-        diarized_center = _diarized_center_for(start, end, speaker_positions, diarization or [])
+        diarized_identity = _diarized_identity_for(start, end, speaker_identities, diarization or [])
         planned = _plan_shot_segments(
-            start, end, shot_observations, previous_center, confident_center, diarized_center,
+            start, end, shot_observations, previous_center, confident_identity, diarized_identity,
         )
+        shot_tracks = _track_faces(shot_observations)
         for segment in planned:
             segment["shot_index"] = shot_index
             segment["transition"] = "shot_cut" if abs(segment["start_s"] - start) < 0.02 else "speaker_switch"
             segments.append(segment)
             if segment["reason"] in PROVEN_REASONS:
-                confident_center = float(segment["center_x"])
-                # Learn where each diarized speaker sits, but only from shots
-                # whose subject we were sure of.
-                label = _dominant_speaker(segment["start_s"], segment["end_s"], diarization or [])
-                if label:
-                    speaker_positions[label] = float(segment["center_x"])
+                # Remember who that was, not where they sat. The identity is
+                # taken from the track nearest the chosen centre within this
+                # shot, which is the face the crop actually framed.
+                subject = min(
+                    (t for t in shot_tracks if _track_identity(t) is not None),
+                    key=lambda t: abs(_track_center(t) - float(segment["center_x"])),
+                    default=None,
+                )
+                identity = _track_identity(subject) if subject is not None else None
+                if identity is not None:
+                    confident_identity = identity
+                    # Learn each diarized speaker's face, but only from shots
+                    # whose subject we were sure of.
+                    label = _dominant_speaker(segment["start_s"], segment["end_s"], diarization or [])
+                    if label:
+                        speaker_identities[label] = identity
         if planned:
             previous_center = float(planned[-1]["center_x"])
     if not segments:
