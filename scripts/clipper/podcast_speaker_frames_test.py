@@ -161,3 +161,80 @@ class ShotAwarePlannerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AmbiguousShotResolutionTest(unittest.TestCase):
+    """What decides the frame when no face shows usable lip motion."""
+
+    @staticmethod
+    def _track(track_id, center, area, items=6):
+        return {
+            "id": track_id,
+            "items": [
+                {"center_x": center, "center_y": 0.4, "face_h": 0.12,
+                 "area": area, "speech_activity": 0.0, "time_s": index * 0.4}
+                for index in range(items)
+            ],
+        }
+
+    def test_the_last_confident_speaker_keeps_the_frame(self):
+        # Measured at ~9% of runtime across three finished clips: several faces
+        # visible, none provably talking. Ranking on prominence hands the frame
+        # to whoever sits nearest the camera, so it settles on a listener while
+        # someone else speaks. A shot with no new evidence is far more likely to
+        # be the same person still talking.
+        listener_closer = self._track(1, 0.30, area=0.09)
+        speaker_further = self._track(2, 0.72, area=0.05)
+        chosen = frames._fallback_track(
+            [listener_closer, speaker_further], previous_center=0.5, confident_center=0.72,
+        )
+        self.assertEqual(chosen["id"], 2, "the frame must stay on the last proven speaker")
+
+    def test_diarization_outranks_continuity(self):
+        # If the transcript places the current speaker somewhere else, that is
+        # better evidence than "whoever was talking a moment ago".
+        held = self._track(1, 0.30, area=0.09)
+        diarized = self._track(2, 0.72, area=0.05)
+        chosen = frames._fallback_track(
+            [held, diarized], previous_center=0.3, confident_center=0.30, diarized_center=0.72,
+        )
+        self.assertEqual(chosen["id"], 2)
+
+    def test_prominence_still_decides_with_no_other_signal(self):
+        # First ambiguous shot of a clip: nothing proven yet, nothing diarized.
+        small = self._track(1, 0.25, area=0.03)
+        large = self._track(2, 0.70, area=0.11)
+        chosen = frames._fallback_track([small, large], previous_center=0.5)
+        self.assertEqual(chosen["id"], 2)
+
+    def test_a_guess_never_becomes_the_anchor_for_the_next_guess(self):
+        # confident_center is only ever set from proven shots, so an unproven
+        # choice cannot justify repeating itself down the clip.
+        self.assertIn("PROVEN_REASONS", dir(frames))
+        self.assertEqual(frames.PROVEN_REASONS, {"active_speaker_motion", "single_visible_face"})
+
+
+class DiarizationSpanTest(unittest.TestCase):
+    def test_labelled_instants_become_contiguous_spans(self):
+        spans = frames._diarization_spans(
+            [{"time_s": 0.0, "speaker": "SPEAKER_00"}, {"time_s": 4.0, "speaker": "SPEAKER_01"}], 10.0
+        )
+        self.assertEqual(len(spans), 2)
+        self.assertEqual(spans[0], {"speaker": "SPEAKER_00", "start_s": 0.0, "end_s": 4.0})
+        self.assertEqual(spans[1]["end_s"], 10.0)
+
+    def test_unlabelled_samples_are_not_evidence(self):
+        # A grid probe carries no speaker; it must not inherit a neighbour's.
+        spans = frames._diarization_spans(
+            [{"time_s": 0.0, "speaker": "SPEAKER_00"}, {"time_s": 2.0, "speaker": None}], 6.0
+        )
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["speaker"], "SPEAKER_00")
+
+    def test_a_single_collapsed_label_offers_no_discrimination(self):
+        # This episode's diarization merges both hosts into one label. The
+        # mapping must then produce nothing rather than a confident wrong pick.
+        spans = frames._diarization_spans(
+            [{"time_s": t, "speaker": "SPEAKER_00"} for t in (0.0, 2.0, 4.0)], 6.0
+        )
+        self.assertIsNone(frames._diarized_center_for(0.0, 6.0, {}, spans))

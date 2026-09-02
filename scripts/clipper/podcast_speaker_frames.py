@@ -284,12 +284,30 @@ def _track_vertical(track: dict[str, Any], items: list[dict[str, Any]] | None = 
     )
 
 
-def _fallback_track(tracks: list[dict[str, Any]], previous_center: float) -> dict[str, Any]:
-    """Choose one stable subject when local speech evidence is uncertain.
+#: How close a track has to sit to the last proven speaker to count as the same
+#: person continuing. Wider than detector jitter, tighter than the gap between
+#: two people sharing a table.
+CONTINUITY_MATCH_TOLERANCE = 0.12
 
-    Strong repeated mouth activity wins first. Otherwise prominence and
-    continuity decide the shot once, instead of changing the output layout or
-    guessing again on every sample.
+
+def _fallback_track(
+    tracks: list[dict[str, Any]],
+    previous_center: float,
+    confident_center: float | None = None,
+    diarized_center: float | None = None,
+) -> dict[str, Any]:
+    """Choose one subject when this shot has no usable lip-motion evidence.
+
+    Measured on three finished clips, roughly nine per cent of runtime lands
+    here: several faces on screen and nothing to say which is talking. Ranking
+    that by prominence alone picks whoever sits closest to the camera, so the
+    frame settles on a listener while someone else speaks.
+
+    Two better signals are used first when they exist. A face that the
+    transcript's diarization places as the current speaker wins outright. So
+    does the face we were last *confidently* on, because a shot with no new
+    evidence is far more likely to be the same person still talking than a
+    silent hand-off to the person beside them.
     """
     ranked = []
     for track in tracks:
@@ -299,7 +317,23 @@ def _fallback_track(tracks: list[dict[str, Any]], previous_center: float) -> dic
         area = _median([item["area"] for item in track["items"]])
         coverage = len(track["items"])
         center = _track_center(track)
-        ranked.append((proven_activity, area, coverage, -abs(center - previous_center), track))
+        matches_diarized = (
+            diarized_center is not None
+            and abs(center - diarized_center) <= CONTINUITY_MATCH_TOLERANCE
+        )
+        continues_confident = (
+            confident_center is not None
+            and abs(center - confident_center) <= CONTINUITY_MATCH_TOLERANCE
+        )
+        ranked.append((
+            proven_activity,
+            1 if matches_diarized else 0,
+            1 if continues_confident else 0,
+            area,
+            coverage,
+            -abs(center - previous_center),
+            track,
+        ))
     return max(ranked, key=lambda item: item[:-1])[-1]
 
 
@@ -386,6 +420,8 @@ def _plan_shot_segments(
     end: float,
     observations: list[dict[str, Any]],
     previous_center: float = 0.5,
+    confident_center: float | None = None,
+    diarized_center: float | None = None,
 ) -> list[dict[str, Any]]:
     tracks = _track_faces(observations)
     visible_tracks = [track for track in tracks if len(track["items"]) >= max(1, len(observations) // 3)]
@@ -424,7 +460,7 @@ def _plan_shot_segments(
         confidences.append(0.0 if not confident else min(1.0, (best_score - second_score) / max(best_score, 1e-6)))
     labels = _stabilize_label_runs(_collapse_labels(labels))
 
-    fallback = _fallback_track(visible_tracks, previous_center)
+    fallback = _fallback_track(visible_tracks, previous_center, confident_center, diarized_center)
     fallback_id = fallback["id"]
 
     # If nobody wins for a sustained run, hold one stable best subject for the
@@ -437,7 +473,16 @@ def _plan_shot_segments(
             "center_x": round(_track_center(fallback), 4),
             "center_y": round(_track_vertical(fallback)[0], 4),
             "face_h": round(_track_vertical(fallback)[1], 4),
-            "reason": "ambiguous_stable_subject", "confidence": 0.0,
+            "reason": (
+                "diarized_speaker_hold" if (
+                    diarized_center is not None
+                    and abs(_track_center(fallback) - diarized_center) <= CONTINUITY_MATCH_TOLERANCE
+                ) else "confident_speaker_hold" if (
+                    confident_center is not None
+                    and abs(_track_center(fallback) - confident_center) <= CONTINUITY_MATCH_TOLERANCE
+                ) else "ambiguous_stable_subject"
+            ),
+            "confidence": 0.0,
             "face_count": len(visible_tracks),
         }]
 
@@ -483,16 +528,79 @@ def _plan_shot_segments(
     return [segment for segment in segments if segment["end_s"] - segment["start_s"] > 0.02]
 
 
-def _framing_plan(duration: float, cuts: list[float], observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _dominant_speaker(start: float, end: float, diarization: list[dict[str, Any]]) -> str | None:
+    overlap: dict[str, float] = {}
+    for entry in diarization:
+        label = entry.get("speaker")
+        if not label:
+            continue
+        covered = min(end, entry["end_s"]) - max(start, entry["start_s"])
+        if covered > 0:
+            overlap[label] = overlap.get(label, 0.0) + covered
+    return max(overlap, key=overlap.get) if overlap else None
+
+
+#: Reasons that mean "we actually knew who was talking".
+PROVEN_REASONS = {"active_speaker_motion", "single_visible_face"}
+
+
+def _diarized_center_for(
+    start: float,
+    end: float,
+    speaker_positions: dict[str, float],
+    diarization: list[dict[str, Any]],
+) -> float | None:
+    """Where the transcript says the current speaker sits, if that is known.
+
+    Only useful once a speaker label has been seen on screen during a stretch
+    we were sure about. On an episode whose diarization collapses every host
+    into one label this returns nothing, which is the honest answer rather than
+    a confident wrong one.
+    """
+    if not speaker_positions or not diarization:
+        return None
+    overlap: dict[str, float] = {}
+    for entry in diarization:
+        label = entry.get("speaker")
+        if not label or label not in speaker_positions:
+            continue
+        covered = min(end, entry["end_s"]) - max(start, entry["start_s"])
+        if covered > 0:
+            overlap[label] = overlap.get(label, 0.0) + covered
+    if not overlap:
+        return None
+    return speaker_positions[max(overlap, key=overlap.get)]
+
+
+def _framing_plan(
+    duration: float,
+    cuts: list[float],
+    observations: list[dict[str, Any]],
+    diarization: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     segments = []
     previous_center = 0.5
+    # Only updated from shots where we actually knew who was speaking. A guess
+    # must not become the anchor that justifies the next guess.
+    confident_center: float | None = None
+    speaker_positions: dict[str, float] = {}
     for shot_index, (start, end) in enumerate(zip(cuts, cuts[1:])):
         shot_observations = [item for item in observations if start <= item["time_s"] < end]
-        planned = _plan_shot_segments(start, end, shot_observations, previous_center)
+        diarized_center = _diarized_center_for(start, end, speaker_positions, diarization or [])
+        planned = _plan_shot_segments(
+            start, end, shot_observations, previous_center, confident_center, diarized_center,
+        )
         for segment in planned:
             segment["shot_index"] = shot_index
             segment["transition"] = "shot_cut" if abs(segment["start_s"] - start) < 0.02 else "speaker_switch"
             segments.append(segment)
+            if segment["reason"] in PROVEN_REASONS:
+                confident_center = float(segment["center_x"])
+                # Learn where each diarized speaker sits, but only from shots
+                # whose subject we were sure of.
+                label = _dominant_speaker(segment["start_s"], segment["end_s"], diarization or [])
+                if label:
+                    speaker_positions[label] = float(segment["center_x"])
         if planned:
             previous_center = float(planned[-1]["center_x"])
     if not segments:
@@ -507,6 +615,29 @@ def _framing_plan(duration: float, cuts: list[float], observations: list[dict[st
     return segments
 
 
+def _diarization_spans(samples: list[dict[str, Any]], duration: float) -> list[dict[str, Any]]:
+    """Turn labelled instants into contiguous speaker spans.
+
+    Each labelled sample owns the time until the next one, so a shot can ask
+    which speaker covers most of it. Samples with no label are skipped rather
+    than inheriting a neighbour's, since an unlabelled instant is not evidence.
+    """
+    labelled = sorted(
+        (
+            {"time_s": float(item.get("time_s") or 0.0), "speaker": str(item.get("speaker") or "").strip()}
+            for item in samples
+            if str(item.get("speaker") or "").strip()
+        ),
+        key=lambda item: item["time_s"],
+    )
+    spans = []
+    for index, item in enumerate(labelled):
+        end = labelled[index + 1]["time_s"] if index + 1 < len(labelled) else duration
+        if end > item["time_s"]:
+            spans.append({"speaker": item["speaker"], "start_s": item["time_s"], "end_s": end})
+    return spans
+
+
 def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
@@ -516,7 +647,10 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
     capture.release()
 
     duration, cuts, timeline = _timeline_observations(video_path)
-    framing_segments = _framing_plan(duration, cuts, timeline)
+    # Diarization arrives as one label per sampled instant. Turning it into
+    # spans lets a shot ask who the transcript says is talking across it.
+    diarization = _diarization_spans(samples, duration)
+    framing_segments = _framing_plan(duration, cuts, timeline, diarization)
     evidence: dict[str, list[dict[str, float]]] = {}
     inspected: list[dict[str, Any]] = []
 
