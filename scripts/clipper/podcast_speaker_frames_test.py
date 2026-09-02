@@ -322,3 +322,32 @@ class AudioSyncTest(unittest.TestCase):
         envelope = np.array([2.0, -1.0, 2.0, -1.0], dtype=np.float64)
         short = self._track(1, [9.0, 1.0])
         self.assertEqual(frames._audio_sync_score(short, envelope, 0.4, 0.0, 4.0), 0.0)
+
+
+class ShotLeadInTest(unittest.TestCase):
+    """What the frame sits on before anyone in a new shot has spoken."""
+
+    def test_the_opening_does_not_jump_to_whoever_speaks_next(self):
+        # Reported at 0:04: the camera cuts to a two-shot while the previous
+        # speaker is still finishing off-screen, and the crop committed to the
+        # upcoming speaker 1.2s before he opened his mouth. Back-filling the
+        # lead-in with the first proven label is what caused that.
+        labels = [None, None, None, 7, 7, 7]
+        filled = frames._fill_uncertain_labels(labels, fallback_id=3, lead_in_id=3)
+        self.assertEqual(filled[:3], [3, 3, 3], "the opening holds, it does not pre-empt")
+        self.assertEqual(filled[3:], [7, 7, 7], "and moves once someone actually speaks")
+
+    def test_without_a_lead_in_subject_it_behaves_as_before(self):
+        labels = [None, None, 7, 7]
+        self.assertEqual(frames._fill_uncertain_labels(labels, fallback_id=3), [7, 7, 7, 7])
+
+    def test_a_pause_after_speech_still_holds_the_speaker(self):
+        # Mid-shot silence must not surrender the frame; only the opening is
+        # treated differently.
+        labels = [7, None, None, 7]
+        self.assertEqual(frames._fill_uncertain_labels(labels, 3, lead_in_id=3), [7, 7, 7, 7])
+
+    def test_a_shot_where_nobody_ever_speaks_holds_the_lead_in(self):
+        self.assertEqual(
+            frames._fill_uncertain_labels([None, None, None], 3, lead_in_id=5), [5, 5, 5]
+        )

@@ -498,19 +498,35 @@ def _fallback_track(
     return max(ranked, key=lambda item: item[:-1])[-1]
 
 
-def _fill_uncertain_labels(labels: list[int | None], fallback_id: int) -> list[int]:
-    """Hold a proven subject through pauses; never flash to another layout."""
+def _fill_uncertain_labels(
+    labels: list[int | None],
+    fallback_id: int,
+    lead_in_id: int | None = None,
+) -> list[int]:
+    """Hold a proven subject through pauses; never flash to another layout.
+
+    The opening of a shot is filled separately from the rest. Back-filling it
+    with the first proven label points the crop at whoever speaks *next*, which
+    is why a cut could land on a silent face over a second before they open
+    their mouth: the camera cuts to a two-shot while the previous speaker is
+    still finishing off-screen, and the frame commits to the upcoming one
+    immediately. The lead-in instead holds whoever the shot should already be
+    on - the speaker we were last confident about, if they are visible here -
+    and only moves once someone actually starts.
+    """
     filled: list[int] = []
     last = fallback_id
     for label in labels:
         if label is not None:
             last = label
         filled.append(last)
-    first_proven = next((label for label in labels if label is not None), fallback_id)
+    opening = lead_in_id if lead_in_id is not None else next(
+        (label for label in labels if label is not None), fallback_id
+    )
     for index, label in enumerate(labels):
         if label is not None:
             break
-        filled[index] = first_proven
+        filled[index] = opening
     return filled
 
 
@@ -668,7 +684,16 @@ def _plan_shot_segments(
             "face_count": len(visible_tracks),
         }]
 
-    labels = _fill_uncertain_labels(labels, fallback_id)
+    # Who the shot should open on before anybody speaks: the person we were
+    # last confident about if this shot contains them, otherwise the subject
+    # prominence already chose. Never the speaker who has not started yet.
+    lead_in_track = next(
+        (track for track in visible_tracks if _same_person(_track_identity(track), confident_identity)),
+        None,
+    )
+    labels = _fill_uncertain_labels(
+        labels, fallback_id, lead_in_track["id"] if lead_in_track else fallback_id,
+    )
 
     track_by_id = {track["id"]: track for track in visible_tracks}
     boundaries = [start]
