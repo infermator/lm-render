@@ -311,7 +311,7 @@ test('shot-aware framing eases a speaker switch inside a held camera shot', () =
     ],
   });
   assert.match(filter, /lt\(t,2\.000\)/);
-  assert.match(filter, /lt\(t,2\.200\)/);
+  assert.match(filter, /lt\(t,2\.420\)/);
   assert.match(filter, /3-2\*/);
 });
 
@@ -750,4 +750,27 @@ test('framing keeps the crop inside the source on every axis', () => {
     assert.ok(x >= 0 && x + cropWidth <= 3840, `x out of bounds at ${cx}: ${x}+${cropWidth}`);
     assert.ok(y >= 0 && y + cropHeight <= 2160, `y out of bounds at ${cy}: ${y}+${cropHeight}`);
   }
+});
+
+test('the music bed skips a music video intro', () => {
+  // Tracks are harvested from video platforms, where a music video opens with a
+  // title card, dialogue or an ambient effect before the song starts. Beginning
+  // the bed at zero put that under the first seconds of the clip.
+  const trackDuration = 115;
+  const clipDuration = 40;
+  const offsets = ['a', 'b', 'c', 'd', 'e', 'f'].map(seed => soundtrackStartOffset(trackDuration, clipDuration, seed));
+  for (const offset of offsets) {
+    assert.ok(offset >= 10, `bed started inside the intro at ${offset}s`);
+    assert.ok(offset + clipDuration <= trackDuration, `bed ran past the end of the track at ${offset}s`);
+  }
+});
+
+test('a track barely longer than the clip still yields a usable offset', () => {
+  // Skipping a lead-in must not push the bed past the end of a short track.
+  const offset = soundtrackStartOffset(80, 72, 'seed');
+  assert.ok(offset >= 0 && offset + 72 <= 80, `offset ${offset} does not fit the track`);
+});
+
+test('a track shorter than the clip starts at zero and loops', () => {
+  assert.equal(soundtrackStartOffset(60, 72, 'seed'), 0);
 });

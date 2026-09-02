@@ -95,11 +95,39 @@ export function validateSoundtrackPlan(raw) {
   };
 }
 
+// Music harvested from video platforms is not a bare track. A music video
+// routinely opens with a title card, dialogue, an ambient effect or silence
+// before the song starts, and closes with credits, and starting the bed there
+// puts unrelated noise under the first seconds of the clip.
+//
+// Skipping a lead-in avoids that without needing to understand the audio: the
+// song itself is reliably playing by then. The tail is avoided for the same
+// reason at the other end.
+const SOUNDTRACK_LEAD_IN_FRACTION = 0.12;
+const SOUNDTRACK_MIN_LEAD_IN_S = 10;
+const SOUNDTRACK_TAIL_GUARD_S = 5;
+
 export function soundtrackStartOffset(trackDurationValue, clipDurationValue, seedValue) {
   const trackDuration = Math.max(0, Number(trackDurationValue) || 0);
   const clipDuration = Math.max(0, Number(clipDurationValue) || 0);
   const maxOffset = Math.max(0, trackDuration - Math.min(trackDuration, clipDuration));
   if (maxOffset <= 0.05) return 0;
+
+  // Only skip the opening when there is enough track left to still cover the
+  // clip afterwards; a short track keeps the whole usable range.
+  const leadIn = Math.min(
+    Math.max(SOUNDTRACK_MIN_LEAD_IN_S, trackDuration * SOUNDTRACK_LEAD_IN_FRACTION),
+    Math.max(0, maxOffset - SOUNDTRACK_TAIL_GUARD_S),
+  );
+  const usableRange = Math.max(0, maxOffset - leadIn);
+  if (usableRange > 0.05) {
+    let leadHash = 2166136261;
+    for (const char of String(seedValue || '')) {
+      leadHash ^= char.charCodeAt(0);
+      leadHash = Math.imul(leadHash, 16777619);
+    }
+    return Number((leadIn + ((leadHash >>> 0) / 0xffffffff) * usableRange).toFixed(3));
+  }
   let hash = 2166136261;
   for (const char of String(seedValue || '')) {
     hash ^= char.charCodeAt(0);
@@ -697,7 +725,10 @@ export function shotAwareFramingFilter({ width, height, segments, outputLabel = 
       if (next === previous) continue;
       const at = Math.max(0, segment.start);
       if (segment.transition === 'speaker_switch') {
-        const duration = 0.20;
+        // Long enough to read as a deliberate move. At 0.20s the reframe
+        // happened faster than the eye tracks it, so a pan inside a continuous
+        // shot registered as a jump rather than a camera move.
+        const duration = 0.42;
         const end = at + duration;
         const progress = `(t-${at.toFixed(3)})/${duration.toFixed(3)}`;
         const eased = `(${progress})*(${progress})*(3-2*(${progress}))`;
