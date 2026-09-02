@@ -148,14 +148,30 @@ def _region_motion(
     )
 
 
-def _face_observations(detector, before: np.ndarray, center: np.ndarray, after: np.ndarray, recognizer=None) -> list[dict[str, float]]:
+def _face_observations(
+    detector,
+    before: np.ndarray,
+    center: np.ndarray,
+    after: np.ndarray,
+    recognizer=None,
+    full_res: tuple = None,
+) -> list[dict[str, float]]:
     """Measure every real face without deciding who deserves the crop yet."""
     frame_height, frame_width = center.shape[:2]
     observations = []
     for face, confidence, raw_row in _detect_faces(detector, center):
         x, y, width, height = face
-        mouth = _region_motion(before, center, after, face, (0.50, 0.92))
-        upper = _region_motion(before, center, after, face, (0.08, 0.43))
+        # Measure on the full-resolution frames when they are available, with
+        # the box scaled up to match. The detection box comes from the small
+        # copy; the pixels it points at are far more informative at source size.
+        if full_res is not None:
+            scale = full_res[1].shape[1] / max(1, center.shape[1])
+            scaled = tuple(int(round(value * scale)) for value in face)
+            mouth = _region_motion(full_res[0], full_res[1], full_res[2], scaled, (0.50, 0.92))
+            upper = _region_motion(full_res[0], full_res[1], full_res[2], scaled, (0.08, 0.43))
+        else:
+            mouth = _region_motion(before, center, after, face, (0.50, 0.92))
+            upper = _region_motion(before, center, after, face, (0.08, 0.43))
         # Head turns and camera motion move the entire face. Subtracting the
         # upper-face baseline keeps lip motion while rejecting rigid movement.
         activity = max(0.0, mouth - upper * 0.65)
@@ -268,8 +284,15 @@ def _timeline_observations(video_path: Path) -> tuple[float, list[float], list[d
         if not ok or frame is None:
             break
         if frame_index in needed_frames:
-            stored_frames[frame_index] = cv2.resize(
-                frame, (analysis_width, analysis_height), interpolation=cv2.INTER_AREA
+            # Both sizes are kept: detection runs on the small copy because it
+            # is cheap, but mouth motion is measured on the full frame. At 960px
+            # a face in a wide two-shot is ~43px tall, leaving a mouth region of
+            # ~17px whose "motion" is mostly sensor noise - which is exactly the
+            # shot where the wrong host kept winning. Frames are pruned as soon
+            # as their sample completes, so only a handful are ever resident.
+            stored_frames[frame_index] = (
+                cv2.resize(frame, (analysis_width, analysis_height), interpolation=cv2.INTER_AREA),
+                frame.copy(),
             )
         scene = cv2.resize(frame, (192, 108), interpolation=cv2.INTER_AREA)
         if previous_scene is not None:
@@ -287,7 +310,10 @@ def _timeline_observations(video_path: Path) -> tuple[float, list[float], list[d
             if before is not None and center is not None and after is not None:
                 observations.append({
                     "time_s": center_index / fps,
-                    "faces": _face_observations(detector, before, center, after, recognizer),
+                    "faces": _face_observations(
+                        detector, before[0], center[0], after[0], recognizer,
+                        (before[1], center[1], after[1]),
+                    ),
                 })
             # These frames cannot be needed by any later centre once its after
             # frame has arrived. Keeping the dictionary bounded matters on 4K.
