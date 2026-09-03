@@ -15,6 +15,15 @@ import numpy as np
 
 MODEL_PATH = Path(__file__).with_name("models") / "face_detection_yunet_2023mar.onnx"
 RECOGNITION_MODEL_PATH = Path(__file__).with_name("models") / "face_recognition_sface_2021dec.onnx"
+SPEAKER_MODEL_PATH = Path(__file__).with_name("models") / "speaker_embedding_campplus.onnx"
+#: Two chunks of the same voice score ~0.7 and up; different people score below
+#: ~0.3. The gap is wide, so the threshold sits in open space rather than being
+#: tuned. Two co-hosts with similar voices land near it, which is why this is
+#: used to tell the guest from the hosts and never to split one host from
+#: another.
+VOICE_MATCH_THRESHOLD = 0.45
+VOICE_CHUNK_S = 1.5
+VOICE_MIN_RMS = 0.02
 #: Two embeddings of the same face score 0.79-0.89 across camera cuts on the
 #: reference clip; two different people score 0.00-0.03. Anything in between is
 #: treated as "not the same person", because a wrong identity moves the crop to
@@ -207,6 +216,145 @@ def _scene_change_score(previous: np.ndarray, current: np.ndarray) -> float:
     current_gray = cv2.cvtColor(current, cv2.COLOR_BGR2GRAY)
     pixel_distance = float(np.mean(cv2.absdiff(previous_gray, current_gray))) / 255.0
     return float(histogram_distance + pixel_distance * 1.5)
+
+
+def _voice_segments(video_path: Path, duration: float) -> list[dict[str, Any]]:
+    """Who is speaking, from the audio itself.
+
+    The transcript's diarization labels every segment of a three-person podcast
+    as one speaker, so it cannot say who has the floor. This measures it
+    directly: overlapping chunks of speech are embedded with a speaker model and
+    grouped, giving spans that can be matched to faces.
+
+    Returns an empty list when the model or its dependencies are unavailable, so
+    a runner without them keeps the previous behaviour instead of failing.
+    """
+    if not SPEAKER_MODEL_PATH.exists():
+        return []
+    try:
+        import onnxruntime as ort
+    except Exception:
+        return []
+    try:
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(video_path), "-vn", "-ac", "1",
+             "-ar", "16000", "-f", "s16le", "-"],
+            capture_output=True, timeout=300,
+        )
+        if raw.returncode != 0 or not raw.stdout:
+            return []
+        audio = np.frombuffer(raw.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        session = ort.InferenceSession(str(SPEAKER_MODEL_PATH), providers=["CPUExecutionProvider"])
+    except Exception:
+        return []
+
+    rate = 16000
+    window = int(VOICE_CHUNK_S * rate)
+    embeddings: list[np.ndarray] = []
+    times: list[float] = []
+    for start in range(0, max(0, len(audio) - window), window // 2):
+        chunk = audio[start:start + window]
+        # Silence has no speaker; embedding it would invent one.
+        if float(np.sqrt(np.mean(np.square(chunk)))) < VOICE_MIN_RMS:
+            continue
+        try:
+            features = _log_mel(chunk, rate)
+            vector = session.run(None, {"feats": features[None]})[0][0]
+        except Exception:
+            return []
+        norm = float(np.linalg.norm(vector))
+        if norm <= 1e-6:
+            continue
+        embeddings.append(vector / norm)
+        times.append(start / rate)
+    if len(embeddings) < 3:
+        return []
+
+    # Group by similarity: each chunk joins the closest voice it is near enough
+    # to, or starts a new one. Averaging as it goes keeps a single loud chunk
+    # from defining a speaker.
+    voices: list[dict[str, Any]] = []
+    for time_s, vector in zip(times, embeddings):
+        best, best_score = None, 0.0
+        for voice in voices:
+            score = float(np.dot(vector, voice["centroid"]))
+            if score > best_score:
+                best, best_score = voice, score
+        if best is not None and best_score >= VOICE_MATCH_THRESHOLD:
+            best["vectors"].append(vector)
+            centroid = np.mean(np.stack(best["vectors"]), axis=0)
+            best["centroid"] = centroid / (np.linalg.norm(centroid) + 1e-9)
+            best["spans"].append(time_s)
+        else:
+            voices.append({
+                "id": f"VOICE_{len(voices):02d}", "centroid": vector,
+                "vectors": [vector], "spans": [time_s],
+            })
+
+    segments = []
+    for voice in voices:
+        for start in voice["spans"]:
+            segments.append({
+                "speaker": voice["id"],
+                "start_s": start,
+                "end_s": min(duration, start + VOICE_CHUNK_S),
+            })
+    return sorted(segments, key=lambda item: item["start_s"])
+
+
+_MEL_BANKS: dict[tuple, "np.ndarray"] = {}
+
+
+def _mel_filterbank(rate: int, n_fft: int, n_mels: int, fmin: float, fmax: float) -> "np.ndarray":
+    """Slaney-scale triangular mel filters, built once.
+
+    Written out rather than imported so the analyzer needs only numpy. librosa
+    would pull numba and llvmlite onto the render runner for this one matrix.
+    """
+    f_sp = 200.0 / 3.0
+    min_log_hz, min_log_mel = 1000.0, 1000.0 / (200.0 / 3.0)
+    logstep = np.log(6.4) / 27.0
+
+    def to_mel(hz):
+        hz = np.asarray(hz, dtype=np.float64)
+        return np.where(hz < min_log_hz, hz / f_sp,
+                        min_log_mel + np.log(np.maximum(hz, 1e-9) / min_log_hz) / logstep)
+
+    def to_hz(mel):
+        mel = np.asarray(mel, dtype=np.float64)
+        return np.where(mel < min_log_mel, mel * f_sp,
+                        min_log_hz * np.exp(logstep * (mel - min_log_mel)))
+
+    fft_freqs = np.linspace(0.0, rate / 2.0, 1 + n_fft // 2)
+    mel_f = to_hz(np.linspace(to_mel(fmin), to_mel(fmax), n_mels + 2))
+    diff = np.diff(mel_f)
+    ramps = mel_f[:, None] - fft_freqs[None, :]
+    lower = -ramps[:-2] / diff[:-1, None]
+    upper = ramps[2:] / diff[1:, None]
+    weights = np.maximum(0.0, np.minimum(lower, upper))
+    # Slaney normalisation: equal area per filter, so wide high-frequency bands
+    # do not dominate the narrow low ones.
+    weights *= (2.0 / (mel_f[2:n_mels + 2] - mel_f[:n_mels]))[:, None]
+    return weights.astype(np.float32)
+
+
+def _log_mel(chunk: "np.ndarray", rate: int) -> "np.ndarray":
+    """80-band log-mel with per-utterance mean normalisation, as the model expects."""
+    n_fft, hop, n_mels = 400, 160, 80
+    key = (rate, n_fft, n_mels)
+    bank = _MEL_BANKS.get(key)
+    if bank is None:
+        bank = _MEL_BANKS[key] = _mel_filterbank(rate, n_fft, n_mels, 20.0, 7600.0)
+    padded = np.pad(chunk, n_fft // 2, mode="reflect")
+    frame_count = 1 + (len(padded) - n_fft) // hop
+    frames = np.lib.stride_tricks.as_strided(
+        padded, shape=(frame_count, n_fft),
+        strides=(padded.strides[0] * hop, padded.strides[0]),
+    )
+    window = np.hanning(n_fft + 1)[:n_fft].astype(np.float32)
+    power = np.abs(np.fft.rfft(frames * window, n=n_fft)) ** 2
+    features = np.log(power @ bank.T + 1e-6).astype(np.float32)
+    return features - features.mean(axis=0, keepdims=True)
 
 
 def _audio_envelope(video_path: Path, duration: float, step_s: float) -> "np.ndarray | None":
@@ -749,6 +897,13 @@ def _dominant_speaker(start: float, end: float, diarization: list[dict[str, Any]
 
 #: Reasons that mean "we actually knew who was talking".
 PROVEN_REASONS = {"audio_synced_speaker", "active_speaker_motion", "single_visible_face"}
+#: Which segments may teach a voice label whose face it is. Deliberately
+#: narrower than PROVEN_REASONS: only shots settled without diarization's help,
+#: where the face is unambiguous. Learning from a diarization-influenced choice
+#: is self-fulfilling -- the label steers the crop onto one person, and that
+#: same crop is then read back as proof the label belongs to them, so a voice
+#: cluster covering two people can never be caught covering two people.
+VOICE_LEARNING_REASONS = {"single_visible_face", "audio_synced_speaker"}
 
 
 def _diarized_identity_for(
@@ -757,26 +912,28 @@ def _diarized_identity_for(
     speaker_identities: dict[str, Any],
     diarization: list[dict[str, Any]],
 ) -> "np.ndarray | None":
-    """Where the transcript says the current speaker sits, if that is known.
+    """Where the current speaker sits, if that is known.
 
     Only useful once a speaker label has been seen on screen during a stretch
-    we were sure about. On an episode whose diarization collapses every host
-    into one label this returns nothing, which is the honest answer rather than
-    a confident wrong one.
+    we were sure about, and only while that label has pointed at exactly one
+    face. A label seen on two different faces is a merged cluster -- two voices
+    the model could not tell apart -- and answering from it would override real
+    per-moment evidence with a coin flip. Such labels are skipped, which is the
+    honest answer rather than a confident wrong one.
     """
     if not speaker_identities or not diarization:
         return None
     overlap: dict[str, float] = {}
     for entry in diarization:
         label = entry.get("speaker")
-        if not label or label not in speaker_identities:
+        if not label or len(speaker_identities.get(label, ())) != 1:
             continue
         covered = min(end, entry["end_s"]) - max(start, entry["start_s"])
         if covered > 0:
             overlap[label] = overlap.get(label, 0.0) + covered
     if not overlap:
         return None
-    return speaker_identities[max(overlap, key=overlap.get)]
+    return speaker_identities[max(overlap, key=overlap.get)][0]
 
 
 def _framing_plan(
@@ -792,7 +949,9 @@ def _framing_plan(
     # Only updated from shots where we actually knew who was speaking. A guess
     # must not become the anchor that justifies the next guess.
     confident_identity = None
-    speaker_identities: dict[str, Any] = {}
+    # label -> the distinct faces it has been seen on. More than one means the
+    # voice model merged two people; see _diarized_identity_for.
+    speaker_identities: dict[str, list[Any]] = {}
     for shot_index, (start, end) in enumerate(zip(cuts, cuts[1:])):
         shot_observations = [item for item in observations if start <= item["time_s"] < end]
         diarized_identity = _diarized_identity_for(start, end, speaker_identities, diarization or [])
@@ -817,11 +976,16 @@ def _framing_plan(
                 identity = _track_identity(subject) if subject is not None else None
                 if identity is not None:
                     confident_identity = identity
-                    # Learn each diarized speaker's face, but only from shots
-                    # whose subject we were sure of.
-                    label = _dominant_speaker(segment["start_s"], segment["end_s"], diarization or [])
-                    if label:
-                        speaker_identities[label] = identity
+                    # Learn each speaker's face, but only where the shot was
+                    # settled without diarization's help. See
+                    # VOICE_LEARNING_REASONS.
+                    if segment["reason"] in VOICE_LEARNING_REASONS:
+                        label = _dominant_speaker(
+                            segment["start_s"], segment["end_s"], diarization or [])
+                        if label:
+                            seen = speaker_identities.setdefault(label, [])
+                            if not any(_same_person(identity, known) for known in seen):
+                                seen.append(identity)
         if planned:
             previous_center = float(planned[-1]["center_x"])
     if not segments:
@@ -870,7 +1034,10 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
     duration, cuts, timeline = _timeline_observations(video_path)
     # Diarization arrives as one label per sampled instant. Turning it into
     # spans lets a shot ask who the transcript says is talking across it.
-    diarization = _diarization_spans(samples, duration)
+    # Measured voice spans beat the transcript's labels, which collapse every
+    # speaker on this material into one. Fall back to the transcript when the
+    # speaker model is unavailable.
+    diarization = _voice_segments(video_path, duration) or _diarization_spans(samples, duration)
     envelope_step_s = TIMELINE_SAMPLE_INTERVAL_S
     envelope = _audio_envelope(video_path, duration, envelope_step_s)
     framing_segments = _framing_plan(

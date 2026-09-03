@@ -159,10 +159,6 @@ class ShotAwarePlannerTest(unittest.TestCase):
         self.assertTrue(all(item["transition"] == "shot_cut" for item in planned))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class AmbiguousShotResolutionTest(unittest.TestCase):
     """What decides the frame when no face shows usable lip motion."""
 
@@ -351,3 +347,73 @@ class ShotLeadInTest(unittest.TestCase):
         self.assertEqual(
             frames._fill_uncertain_labels([None, None, None], 3, lead_in_id=5), [5, 5, 5]
         )
+
+
+class VoiceIdentityTest(unittest.TestCase):
+    """Speaker embeddings computed locally, and the limits of trusting them."""
+
+    @staticmethod
+    def _identity(index):
+        vector = np.zeros(128, dtype=np.float32)
+        vector[index] = 1.0
+        return vector
+
+    def _spans(self, label, start, end):
+        return [{"speaker": label, "start_s": start, "end_s": end}]
+
+    def test_model_is_vendored(self):
+        self.assertTrue(
+            frames.SPEAKER_MODEL_PATH.exists(), f"missing model at {frames.SPEAKER_MODEL_PATH}"
+        )
+
+    def test_a_label_seen_on_one_face_answers_for_that_face(self):
+        face = self._identity(1)
+        identity = frames._diarized_identity_for(
+            0.0, 4.0, {"VOICE_00": [face]}, self._spans("VOICE_00", 0.0, 4.0)
+        )
+        self.assertIsNotNone(identity)
+        self.assertTrue(frames._same_person(identity, face))
+
+    def test_a_label_seen_on_two_faces_answers_for_neither(self):
+        # Two co-hosts measured 0.810 against each other and 0.740 against
+        # themselves, so the voice model merges them into one label. Answering
+        # from a merged label would override real per-moment evidence with a
+        # coin flip, which is how the wrong host ends up centred.
+        merged = {"VOICE_01": [self._identity(1), self._identity(2)]}
+        self.assertIsNone(
+            frames._diarized_identity_for(0.0, 4.0, merged, self._spans("VOICE_01", 0.0, 4.0))
+        )
+
+    def test_only_unambiguous_shots_may_teach_a_voice_its_face(self):
+        # A choice that diarization itself influenced must never be read back as
+        # proof, or a merged label can never be caught being merged.
+        self.assertIn("single_visible_face", frames.VOICE_LEARNING_REASONS)
+        self.assertIn("audio_synced_speaker", frames.VOICE_LEARNING_REASONS)
+        self.assertNotIn("active_speaker_motion", frames.VOICE_LEARNING_REASONS)
+        self.assertTrue(frames.VOICE_LEARNING_REASONS <= frames.PROVEN_REASONS)
+
+    def test_log_mel_is_mean_normalised_at_the_expected_width(self):
+        tone = np.sin(np.arange(24000, dtype=np.float32) * 0.05) * 0.2
+        features = frames._log_mel(tone, 16000)
+        self.assertEqual(features.shape[1], 80)
+        self.assertLess(float(np.max(np.abs(features.mean(axis=0)))), 1e-3)
+
+    def test_mel_filterbank_covers_the_requested_band_only(self):
+        bank = frames._mel_filterbank(16000, 400, 80, 20.0, 7600.0)
+        self.assertEqual(bank.shape, (80, 201))
+        self.assertTrue(np.all(bank >= 0.0))
+        # Every filter must carry energy, or the model reads a dead band.
+        self.assertTrue(np.all(bank.sum(axis=1) > 0.0))
+
+    def test_a_missing_model_degrades_instead_of_failing(self):
+        # A runner without the model must still render, using the previous
+        # evidence, rather than crashing the job.
+        original = frames.SPEAKER_MODEL_PATH
+        frames.SPEAKER_MODEL_PATH = Path("/nonexistent-speaker-model.onnx")
+        try:
+            self.assertEqual(frames._voice_segments(Path("/nonexistent.mp4"), 10.0), [])
+        finally:
+            frames.SPEAKER_MODEL_PATH = original
+
+if __name__ == "__main__":
+    unittest.main()
