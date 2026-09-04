@@ -67,6 +67,18 @@ jobs:
           # Without it framing silently falls back to lip motion alone, so fail
           # the install here rather than discover it in a finished render.
           python -c "import onnxruntime; print('onnxruntime', onnxruntime.__version__)"
+          # The active-speaker model decides which of two co-hosts holds the
+          # frame. Without it the crop silently reverts to one person per shot,
+          # so this fails the install rather than shipping worse video.
+          python - <<'ASD'
+          import hashlib, pathlib, onnxruntime
+          path = pathlib.Path("scripts/clipper/models/active_speaker_light_asd.onnx")
+          digest = hashlib.sha256(path.read_bytes()).hexdigest()
+          expected = "450ab05d4e43c104feedc9503fd12ff9d467b35e1048ee4a7f7fedbf89a530f1"
+          assert digest == expected, f"active-speaker model digest {digest} != {expected}"
+          onnxruntime.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+          print("active-speaker model OK", path.stat().st_size, "bytes")
+          ASD
           sudo install -m 0755 scripts/clipper/yt-dlp-safe.sh "$(command -v yt-dlp)"
           node --check scripts/clipper/podcast_render.mjs
           node --test scripts/clipper/podcast_media.test.mjs

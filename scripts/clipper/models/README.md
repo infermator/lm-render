@@ -37,3 +37,40 @@ These embeddings do separate them. Measured on a reference clip, the guest score
 clustering every speech chunk reproduces the independently-derived
 single-speaker shots exactly. Two co-hosts with similar voices remain close
 (~0.8), so this reliably answers "guest or host", not "which host".
+
+## active_speaker_light_asd.onnx
+
+Audiovisual active-speaker detection: given a face crop sequence and the
+synchronised audio, it returns P(this visible face is speaking) per frame. This
+is what separates the two co-hosts when both share one camera shot - the only
+evidence that can, since neither host ever appears alone on camera and the
+CAM++ voice embeddings merge them (0.810 across versus 0.740 within).
+
+- Upstream: https://github.com/Junhua-Liao/Light-ASD (CVPR 2023,
+  "A Light Weight Model for Active Speaker Detection")
+- Licence: MIT (Copyright (c) 2023 Liao Junhua)
+- Source weights: `weight/pretrain_AVA_CVPR.model`, committed in that repo
+  (no third-party host, no runtime download)
+  SHA-256 `d44bc3ea7baa8e0946fa3921311714a630ed8b90a1928fab0dbe30d918909317`
+- Vendored ONNX SHA-256
+  `450ab05d4e43c104feedc9503fd12ff9d467b35e1048ee4a7f7fedbf89a530f1` (3.92 MB)
+
+Export notes, both of which are silent traps:
+
+1. The final classifier lives in the training wrapper's `lossAV.FC`, not in
+   `ASD_Model`. Exporting the model alone yields a 128-d embedding rather than a
+   score, which looks plausible and is meaningless.
+2. `audio_encoder` applies `MaxPool3d` to a 4-D tensor, which torch reads as
+   unbatched but ONNX cannot represent. Depth is 1, so the equivalent
+   `MaxPool2d` was substituted for export. onnxruntime additionally rejects the
+   `dilations` attribute on 3-D MaxPool even when correctly sized; all values
+   are the default 1 and the attribute is stripped.
+
+The export was verified against the unmodified torch model: max absolute
+difference 1.4e-8. The MFCC front end is reimplemented in numpy in
+`podcast_speaker_frames.py` (verified to 7.4e-13 against
+python_speech_features) so the runner needs only onnxruntime.
+
+Input contract: audio `(1, 4T, 13)` MFCC at 100fps; visual `(1, T, 112, 112)`
+grayscale face crops at 25fps, boxed at 1.40x face height, 224x224 then centre
+112x112. Output `(T,)` probabilities.

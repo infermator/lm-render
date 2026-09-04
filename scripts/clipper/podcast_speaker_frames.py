@@ -16,6 +16,17 @@ import numpy as np
 MODEL_PATH = Path(__file__).with_name("models") / "face_detection_yunet_2023mar.onnx"
 RECOGNITION_MODEL_PATH = Path(__file__).with_name("models") / "face_recognition_sface_2021dec.onnx"
 SPEAKER_MODEL_PATH = Path(__file__).with_name("models") / "speaker_embedding_campplus.onnx"
+ACTIVE_SPEAKER_MODEL_PATH = Path(__file__).with_name("models") / "active_speaker_light_asd.onnx"
+#: Light-ASD answers "is this visible face producing the current sound", which
+#: is the only evidence that separates two co-hosts sharing a shot. Measured on
+#: seven reference clips: it more than halves wrong-subject seconds where voice
+#: identity and lip-motion correlation both fail. Thresholds sit in open space -
+#: correct picks score 0.49-0.98 above the runner-up, so this is a gate against
+#: noise rather than a tuned boundary.
+ASD_MIN_PROBABILITY = 0.25
+ASD_MIN_MARGIN = 0.12
+ASD_FPS = 25.0
+ASD_CROP_SCALE = 0.40
 #: Two chunks of the same voice score ~0.7 and up; different people score below
 #: ~0.3. The gap is wide, so the threshold sits in open space rather than being
 #: tuned. Two co-hosts with similar voices land near it, which is why this is
@@ -355,6 +366,180 @@ def _log_mel(chunk: "np.ndarray", rate: int) -> "np.ndarray":
     power = np.abs(np.fft.rfft(frames * window, n=n_fft)) ** 2
     features = np.log(power @ bank.T + 1e-6).astype(np.float32)
     return features - features.mean(axis=0, keepdims=True)
+
+
+def _mel_filterbanks(nfilt: int, nfft: int, rate: int) -> "np.ndarray":
+    """Triangular mel filters on the HTK scale, as the ASD model was trained with."""
+    def hz2mel(hz): return 2595 * np.log10(1 + hz / 700.0)
+    def mel2hz(mel): return 700 * (10 ** (mel / 2595.0) - 1)
+    points = np.linspace(hz2mel(0), hz2mel(rate / 2), nfilt + 2)
+    bins = np.floor((nfft + 1) * mel2hz(points) / rate)
+    bank = np.zeros([nfilt, nfft // 2 + 1])
+    for j in range(nfilt):
+        for i in range(int(bins[j]), int(bins[j + 1])):
+            bank[j, i] = (i - bins[j]) / (bins[j + 1] - bins[j])
+        for i in range(int(bins[j + 1]), int(bins[j + 2])):
+            bank[j, i] = (bins[j + 2] - i) / (bins[j + 2] - bins[j + 1])
+    return bank
+
+
+def _mfcc(signal: "np.ndarray", rate: int = 16000, numcep: int = 13) -> "np.ndarray":
+    """13-cepstra MFCC at 100fps, matching the ASD model's training front end.
+
+    Written out rather than imported: the reference implementation is a third
+    dependency on the render runner for one array. Verified to 7.4e-13 against
+    python_speech_features on the same input.
+    """
+    winlen, winstep, nfilt, nfft, preemph, ceplifter = 0.025, 0.010, 26, 512, 0.97, 22
+    signal = np.append(signal[0], signal[1:] - preemph * signal[:-1])
+    flen, fstep = int(round(winlen * rate)), int(round(winstep * rate))
+    frames_n = 1 if len(signal) <= flen else 1 + int(math.ceil((len(signal) - flen) / fstep))
+    padded = np.concatenate([signal, np.zeros((frames_n - 1) * fstep + flen - len(signal))])
+    index = (np.tile(np.arange(flen), (frames_n, 1))
+             + np.tile(np.arange(0, frames_n * fstep, fstep), (flen, 1)).T)
+    frames = padded[index.astype(np.int32)]
+    power = 1.0 / nfft * np.square(np.absolute(np.fft.rfft(frames, nfft)))
+    energy = np.where(np.sum(power, 1) == 0, np.finfo(float).eps, np.sum(power, 1))
+    feature = np.dot(power, _mel_filterbanks(nfilt, nfft, rate).T)
+    feature = np.log(np.where(feature == 0, np.finfo(float).eps, feature))
+    # Orthonormal DCT-II.
+    bands = feature.shape[1]
+    k = np.arange(numcep)[:, None]
+    m = np.arange(bands)[None, :]
+    basis = np.cos(np.pi * k * (2 * m + 1) / (2 * bands))
+    scale = np.full((numcep, 1), math.sqrt(2.0 / bands))
+    scale[0] = math.sqrt(1.0 / bands)
+    feature = feature @ (basis * scale).T
+    lift = 1 + (ceplifter / 2.0) * np.sin(np.pi * np.arange(numcep) / ceplifter)
+    feature = lift * feature
+    feature[:, 0] = np.log(energy)
+    return feature.astype(np.float32)
+
+
+def _active_speaker_session():
+    """Load the vendored active-speaker model, or fail loudly.
+
+    This is production machinery, not an optional enhancement: without it two
+    co-hosts sharing a shot cannot be told apart at all, and the framing would
+    silently return to picking one of them for the whole shot. A missing model
+    or runtime must stop the render rather than quietly produce worse video.
+    """
+    if not ACTIVE_SPEAKER_MODEL_PATH.exists():
+        raise RuntimeError(
+            f"active-speaker model missing at {ACTIVE_SPEAKER_MODEL_PATH}; "
+            "podcast framing cannot separate co-hosts without it")
+    try:
+        import onnxruntime as ort
+    except Exception as error:
+        raise RuntimeError(
+            "onnxruntime is required for podcast active-speaker framing") from error
+    return ort.InferenceSession(str(ACTIVE_SPEAKER_MODEL_PATH),
+                                providers=["CPUExecutionProvider"])
+
+
+def _asd_track_scores(
+    video_path: Path,
+    duration: float,
+    windows: list[tuple[float, float]],
+    tracks_by_window: list[list[dict[str, Any]]],
+) -> dict[int, "np.ndarray"]:
+    """P(speaking) per track on a 25fps grid, for multi-face stretches only.
+
+    Only shots with more than one visible face need this; a lone face is already
+    unambiguous and scoring it would roughly quadruple the analysis cost for no
+    decision. Returns an empty mapping when there is nothing to score.
+    """
+    if not windows:
+        return {}
+    session = _active_speaker_session()
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(video_path), "-vn", "-ac", "1",
+         "-ar", "16000", "-f", "s16le", "-"], capture_output=True, timeout=600)
+    if raw.returncode != 0 or not raw.stdout:
+        raise RuntimeError("could not decode audio for active-speaker scoring")
+    audio = np.frombuffer(raw.stdout, dtype=np.int16).astype(np.float32)
+    features = _mfcc(audio)
+
+    capture = cv2.VideoCapture(str(video_path))
+    source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 25.0)
+    frame_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    frame_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    total_frames = int(round(duration * ASD_FPS))
+
+    # Which 25fps slots each track needs a crop for.
+    wanted: dict[int, int] = {}
+    for slot in range(total_frames):
+        wanted[int(round(slot / ASD_FPS * source_fps))] = slot
+    crops: dict[int, np.ndarray] = {}
+    present: dict[int, np.ndarray] = {}
+    positions: dict[int, list[tuple[float, dict[str, Any]]]] = {}
+    for (start, end), tracks in zip(windows, tracks_by_window):
+        for track in tracks:
+            positions.setdefault(track["id"], []).extend(
+                (item["time_s"], item) for item in track["items"])
+    for track_id in positions:
+        crops[track_id] = np.zeros((total_frames, 112, 112), dtype=np.float32)
+        present[track_id] = np.zeros(total_frames, dtype=bool)
+
+    scored_slots = set()
+    for start, end in windows:
+        for slot in range(max(0, int(start * ASD_FPS)), min(total_frames, int(end * ASD_FPS) + 1)):
+            scored_slots.add(slot)
+
+    index = 0
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        slot = wanted.get(index)
+        index += 1
+        if slot is None or slot not in scored_slots:
+            continue
+        seconds = slot / ASD_FPS
+        for track_id, items in positions.items():
+            nearest = min(items, key=lambda item: abs(item[0] - seconds))
+            if abs(nearest[0] - seconds) > 0.6:
+                continue
+            observation = nearest[1]
+            centre_x = observation["center_x"] * frame_width
+            centre_y = observation.get("center_y", 0.5) * frame_height
+            face_h = max(observation.get("face_h", 0.0), 0.02) * frame_height
+            half = face_h * (1 + ASD_CROP_SCALE) / 2
+            x0, x1 = int(max(0, centre_x - half)), int(min(frame_width, centre_x + half))
+            y0, y1 = int(max(0, centre_y - half)), int(min(frame_height, centre_y + half))
+            if x1 - x0 < 8 or y1 - y0 < 8:
+                continue
+            face = cv2.resize(cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY), (224, 224))
+            crops[track_id][slot] = face[56:168, 56:168].astype(np.float32)
+            present[track_id][slot] = True
+    capture.release()
+
+    audio_len = total_frames * 4
+    window_features = features[:audio_len]
+    if len(window_features) < audio_len:
+        window_features = np.pad(window_features, ((0, audio_len - len(window_features)), (0, 0)))
+    scores: dict[int, np.ndarray] = {}
+    for track_id in crops:
+        if not present[track_id].any():
+            continue
+        output = session.run(None, {
+            "audio": window_features[None].astype(np.float32),
+            "visual": crops[track_id][None],
+        })[0]
+        values = np.asarray(output, dtype=np.float64).reshape(-1)[:total_frames]
+        values[~present[track_id]] = np.nan
+        scores[track_id] = values
+    return scores
+
+
+def _asd_at(scores: "np.ndarray | None", start: float, end: float) -> float:
+    """Mean P(speaking) across an interval, ignoring frames with no face."""
+    if scores is None:
+        return float("nan")
+    lo, hi = int(start * ASD_FPS), max(int(start * ASD_FPS) + 1, int(end * ASD_FPS))
+    window = scores[lo:hi]
+    window = window[~np.isnan(window)]
+    return float(np.mean(window)) if window.size >= 2 else float("nan")
 
 
 def _audio_envelope(video_path: Path, duration: float, step_s: float) -> "np.ndarray | None":
@@ -749,6 +934,7 @@ def _plan_shot_segments(
     diarized_identity: "np.ndarray | None" = None,
     envelope: "np.ndarray | None" = None,
     envelope_step_s: float = 0.0,
+    asd_scores: dict[int, "np.ndarray"] | None = None,
 ) -> list[dict[str, Any]]:
     tracks = _track_faces(observations)
     visible_tracks = [track for track in tracks if len(track["items"]) >= max(1, len(observations) // 3)]
@@ -785,9 +971,36 @@ def _plan_shot_segments(
     )
 
     times = [observation["time_s"] for observation in observations]
+    # Per-instant active-speaker evidence. Unlike the shot-wide correlation
+    # above, this can change inside a held shot, which is the only way two
+    # co-hosts sharing one camera angle can ever be told apart.
+    asd_labels: dict[float, int | None] = {}
+    asd_detail: dict[float, tuple[float, float]] = {}
+    if asd_scores:
+        step = TIMELINE_SAMPLE_INTERVAL_S
+        for seconds in times:
+            ranked = []
+            for track in visible_tracks:
+                value = _asd_at(asd_scores.get(track["id"]), seconds, seconds + step)
+                if not math.isnan(value):
+                    ranked.append((value, track["id"]))
+            if not ranked:
+                continue
+            ranked.sort(reverse=True)
+            best_value, best_track = ranked[0]
+            runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
+            asd_detail[seconds] = (best_value, best_value - runner_up)
+            if best_value >= ASD_MIN_PROBABILITY and (best_value - runner_up) >= ASD_MIN_MARGIN:
+                asd_labels[seconds] = best_track
+
     labels: list[int | None] = []
     confidences: list[float] = []
     for seconds in times:
+        decided = asd_labels.get(seconds)
+        if decided is not None:
+            labels.append(decided)
+            confidences.append(min(1.0, asd_detail[seconds][1]))
+            continue
         scored = sorted(
             [(_activity_at(track, seconds), track["id"]) for track in visible_tracks],
             reverse=True,
@@ -854,8 +1067,14 @@ def _plan_shot_segments(
         segment_end = boundaries[index + 1]
         layout = "crop"
         center_x = None
-        reason = "audio_synced_speaker" if sync_decides else "active_speaker_motion"
+        # A decision the model actually made must not be reported under a
+        # heuristic's name, and a heuristic must not borrow the model's.
+        decided_by_model = times[index] in asd_labels and asd_labels[times[index]] == label
+        reason = ("audiovisual_active_speaker" if decided_by_model
+                  else "audio_synced_speaker" if sync_decides
+                  else "active_speaker_motion")
         confidence = confidences[index]
+        probability, margin = asd_detail.get(times[index], (float("nan"), float("nan")))
         track = track_by_id[label]
         nearby_centers = [
             item["center_x"] for item in track["items"]
@@ -874,12 +1093,44 @@ def _plan_shot_segments(
             "reason": reason, "confidence": round(confidence, 3),
             "face_count": len(visible_tracks),
         }
+        # Provenance for every future bad pick: what the model thought of each
+        # face, and whether it or a fallback settled the frame.
+        if not math.isnan(probability):
+            candidate["asd_probability"] = round(probability, 4)
+            candidate["asd_margin"] = round(margin, 4)
+            candidate["asd_model"] = ACTIVE_SPEAKER_MODEL_PATH.name
+        if not decided_by_model and asd_scores:
+            candidate["asd_abstained"] = True
+        # Which evidence actually held the frame, by duration, so a merged run
+        # is reported under whatever settled most of it.
+        candidate["_reason_s"] = {reason: segment_end - segment_start}
         if segments and segments[-1]["layout"] == candidate["layout"]:
             if abs(segments[-1]["center_x"] - center_x) < 0.06:
-                segments[-1]["end_s"] = segment_end
-                segments[-1]["confidence"] = round(max(segments[-1]["confidence"], candidate["confidence"]), 3)
+                # Same subject, so this is one continuous run. Splitting it
+                # because the evidence changed mid-run would manufacture
+                # sub-second segments out of a frame that never moved.
+                previous = segments[-1]
+                previous["_reason_s"][candidate["reason"]] = (
+                    previous["_reason_s"].get(candidate["reason"], 0.0)
+                    + segment_end - segment_start)
+                previous["end_s"] = segment_end
+                previous["confidence"] = round(max(previous["confidence"], candidate["confidence"]), 3)
+                if candidate.get("asd_probability") is not None and (
+                        previous.get("asd_probability") is None
+                        or candidate["asd_probability"] > previous["asd_probability"]):
+                    previous["asd_probability"] = candidate["asd_probability"]
+                    previous["asd_margin"] = candidate["asd_margin"]
+                    previous["asd_model"] = candidate["asd_model"]
                 continue
         segments.append(candidate)
+    for segment in segments:
+        spans = segment.pop("_reason_s", None)
+        if spans:
+            segment["reason"] = max(spans, key=spans.get)
+            if segment["reason"] != "audiovisual_active_speaker":
+                segment.pop("asd_probability", None)
+                segment.pop("asd_margin", None)
+                segment.pop("asd_model", None)
     return [segment for segment in segments if segment["end_s"] - segment["start_s"] > 0.02]
 
 
@@ -943,6 +1194,7 @@ def _framing_plan(
     diarization: list[dict[str, Any]] | None = None,
     envelope: "np.ndarray | None" = None,
     envelope_step_s: float = 0.0,
+    asd_scores: dict[int, "np.ndarray"] | None = None,
 ) -> list[dict[str, Any]]:
     segments = []
     previous_center = 0.5
@@ -957,7 +1209,7 @@ def _framing_plan(
         diarized_identity = _diarized_identity_for(start, end, speaker_identities, diarization or [])
         planned = _plan_shot_segments(
             start, end, shot_observations, previous_center, confident_identity, diarized_identity,
-            envelope, envelope_step_s,
+            envelope, envelope_step_s, asd_scores,
         )
         shot_tracks = _track_faces(shot_observations)
         for segment in planned:
@@ -1040,8 +1292,25 @@ def analyze(video_path: Path, samples: list[dict[str, Any]]) -> dict[str, Any]:
     diarization = _voice_segments(video_path, duration) or _diarization_spans(samples, duration)
     envelope_step_s = TIMELINE_SAMPLE_INTERVAL_S
     envelope = _audio_envelope(video_path, duration, envelope_step_s)
+
+    # Active-speaker scoring is only run where a decision actually exists: shots
+    # showing more than one face. On this material that is under a quarter of
+    # runtime, so the cost lands where it changes the frame.
+    contested: list[tuple[float, float]] = []
+    contested_tracks: list[list[dict[str, Any]]] = []
+    for shot_start, shot_end in zip(cuts, cuts[1:]):
+        shot_observations = [item for item in timeline if shot_start <= item["time_s"] < shot_end]
+        if not shot_observations:
+            continue
+        tracks = _track_faces(shot_observations)
+        visible = [t for t in tracks if len(t["items"]) >= max(1, len(shot_observations) // 3)]
+        if len(visible) >= 2:
+            contested.append((shot_start, shot_end))
+            contested_tracks.append(visible)
+    asd_scores = _asd_track_scores(video_path, duration, contested, contested_tracks)
+
     framing_segments = _framing_plan(
-        duration, cuts, timeline, diarization, envelope, envelope_step_s,
+        duration, cuts, timeline, diarization, envelope, envelope_step_s, asd_scores,
     )
     evidence: dict[str, list[dict[str, float]]] = {}
     inspected: list[dict[str, Any]] = []

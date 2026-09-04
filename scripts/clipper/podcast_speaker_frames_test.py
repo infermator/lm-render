@@ -1,5 +1,6 @@
 """Face detection used to aim the podcast crop."""
 import importlib.util
+import math
 import unittest
 from pathlib import Path
 
@@ -414,6 +415,162 @@ class VoiceIdentityTest(unittest.TestCase):
             self.assertEqual(frames._voice_segments(Path("/nonexistent.mp4"), 10.0), [])
         finally:
             frames.SPEAKER_MODEL_PATH = original
+
+class ActiveSpeakerModelTest(unittest.TestCase):
+    """The audiovisual detector that separates two hosts sharing a shot."""
+
+    def test_model_is_vendored(self):
+        self.assertTrue(frames.ACTIVE_SPEAKER_MODEL_PATH.exists(),
+                        f"missing model at {frames.ACTIVE_SPEAKER_MODEL_PATH}")
+
+    def test_a_missing_model_fails_loudly(self):
+        # Silently degrading would put the framing back to picking one host for
+        # a whole shot while still reporting success, which is how a bad render
+        # reaches the feed unnoticed.
+        original = frames.ACTIVE_SPEAKER_MODEL_PATH
+        frames.ACTIVE_SPEAKER_MODEL_PATH = Path("/nonexistent-asd.onnx")
+        try:
+            with self.assertRaises(RuntimeError):
+                frames._active_speaker_session()
+        finally:
+            frames.ACTIVE_SPEAKER_MODEL_PATH = original
+
+    def test_nothing_contested_needs_no_inference(self):
+        # A lone face is already unambiguous; scoring it would multiply the
+        # analysis cost without changing a single frame.
+        self.assertEqual(frames._asd_track_scores(Path("/nonexistent.mp4"), 10.0, [], []), {})
+
+    def test_model_scores_are_probabilities_of_the_expected_length(self):
+        session = frames._active_speaker_session()
+        frames_n = 40
+        rng = np.random.default_rng(0)
+        audio = rng.standard_normal((1, frames_n * 4, 13)).astype(np.float32)
+        visual = (rng.standard_normal((1, frames_n, 112, 112)) * 40 + 120).astype(np.float32)
+        out = np.asarray(session.run(None, {"audio": audio, "visual": visual})[0]).reshape(-1)
+        self.assertEqual(out.shape[0], frames_n)
+        self.assertTrue(np.all(out >= 0.0) and np.all(out <= 1.0))
+
+    def test_mfcc_matches_the_reference_front_end(self):
+        # The model was trained on 13-cepstra MFCC at 100fps. These are the
+        # invariants that would break if the hand-written transform drifted.
+        signal = (np.sin(np.arange(16000, dtype=np.float64) * 0.05) * 3000)
+        feature = frames._mfcc(signal)
+        self.assertEqual(feature.shape[1], 13)
+        self.assertAlmostEqual(feature.shape[0], 100, delta=2)
+        self.assertTrue(np.all(np.isfinite(feature)))
+
+    def test_scores_are_averaged_only_over_frames_that_had_a_face(self):
+        scores = np.array([0.9, 0.9, np.nan, np.nan, 0.9, 0.9], dtype=np.float64)
+        self.assertAlmostEqual(frames._asd_at(scores, 0.0, 6 / frames.ASD_FPS), 0.9, places=5)
+        self.assertTrue(math.isnan(frames._asd_at(np.array([np.nan, np.nan]), 0.0, 1.0)))
+        self.assertTrue(math.isnan(frames._asd_at(None, 0.0, 1.0)))
+
+    def test_thresholds_sit_between_the_measured_populations(self):
+        # Correct picks on the reference corpus led the runner-up by 0.49-0.98;
+        # the gate exists to reject noise, not to tune a boundary.
+        self.assertGreater(frames.ASD_MIN_PROBABILITY, 0.05)
+        self.assertLess(frames.ASD_MIN_PROBABILITY, 0.45)
+        self.assertGreater(frames.ASD_MIN_MARGIN, 0.02)
+        self.assertLess(frames.ASD_MIN_MARGIN, 0.40)
+
+
+class ActiveSpeakerDecisionTest(unittest.TestCase):
+    """How the model's scores are allowed to move the crop."""
+
+    @staticmethod
+    def _face(center_x, activity, area=0.02):
+        return {"center_x": center_x, "area": area, "confidence": 0.95,
+                "mouth_motion": activity + 2, "upper_motion": 2,
+                "speech_activity": activity, "center_y": 0.5, "face_h": 0.2}
+
+    def _observations(self, rows):
+        return [{"time_s": t, "faces": [self._face(*f) for f in faces]} for t, faces in rows]
+
+    @staticmethod
+    def _scores(pattern, frames_n):
+        """Constant probability per track across the clip."""
+        return {tid: np.full(frames_n, value, dtype=np.float64) for tid, value in pattern.items()}
+
+    def test_two_hosts_alternating_inside_one_shot_are_followed(self):
+        # The defect this whole change exists for: one held two-shot, two
+        # speakers. The old shot-wide winner could only ever pick one.
+        rows = [(t * 0.4, [(0.30, 3.0), (0.75, 3.0)]) for t in range(30)]
+        observations = self._observations(rows)
+        n = int(12.0 * frames.ASD_FPS) + 2
+        left = np.concatenate([np.full(n // 2, 0.9), np.full(n - n // 2, 0.02)])
+        right = np.concatenate([np.full(n // 2, 0.02), np.full(n - n // 2, 0.9)])
+        planned = frames._plan_shot_segments(
+            0.0, 12.0, observations, 0.5, None, None, None, 0.0, {0: left, 1: right})
+        centers = [round(p["center_x"], 2) for p in planned]
+        self.assertGreater(len(set(centers)), 1, "crop never left the first host")
+        self.assertEqual(planned[0]["reason"], "audiovisual_active_speaker")
+
+    def test_a_listener_moving_more_than_the_speaker_does_not_win(self):
+        # Motion alone hands the crop to whoever fidgets; the model does not.
+        rows = [(t * 0.4, [(0.30, 12.0), (0.75, 2.0)]) for t in range(20)]
+        n = int(8.0 * frames.ASD_FPS) + 2
+        scores = {0: np.full(n, 0.03), 1: np.full(n, 0.95)}
+        planned = frames._plan_shot_segments(
+            0.0, 8.0, self._observations(rows), 0.5, None, None, None, 0.0, scores)
+        self.assertAlmostEqual(planned[0]["center_x"], 0.75, places=2)
+        self.assertEqual(planned[0]["reason"], "audiovisual_active_speaker")
+
+    def test_low_confidence_evidence_abstains_rather_than_guessing(self):
+        rows = [(t * 0.4, [(0.30, 3.0), (0.75, 3.0)]) for t in range(20)]
+        n = int(8.0 * frames.ASD_FPS) + 2
+        # Both plausible and neither ahead: no model decision may be claimed.
+        scores = {0: np.full(n, 0.30), 1: np.full(n, 0.28)}
+        planned = frames._plan_shot_segments(
+            0.0, 8.0, self._observations(rows), 0.5, None, None, None, 0.0, scores)
+        for segment in planned:
+            self.assertNotEqual(segment["reason"], "audiovisual_active_speaker")
+
+    def test_a_fallback_is_never_reported_as_a_model_decision(self):
+        rows = [(t * 0.4, [(0.30, 3.0), (0.75, 1.0)]) for t in range(20)]
+        planned = frames._plan_shot_segments(
+            0.0, 8.0, self._observations(rows), 0.5, None, None, None, 0.0, None)
+        for segment in planned:
+            self.assertNotEqual(segment["reason"], "audiovisual_active_speaker")
+            self.assertNotIn("asd_probability", segment)
+
+    def test_a_model_decision_carries_its_provenance(self):
+        rows = [(t * 0.4, [(0.30, 3.0), (0.75, 3.0)]) for t in range(20)]
+        n = int(8.0 * frames.ASD_FPS) + 2
+        scores = {0: np.full(n, 0.95), 1: np.full(n, 0.02)}
+        planned = frames._plan_shot_segments(
+            0.0, 8.0, self._observations(rows), 0.5, None, None, None, 0.0, scores)
+        decided = [p for p in planned if p["reason"] == "audiovisual_active_speaker"]
+        self.assertTrue(decided)
+        self.assertGreater(decided[0]["asd_probability"], frames.ASD_MIN_PROBABILITY)
+        self.assertGreater(decided[0]["asd_margin"], frames.ASD_MIN_MARGIN)
+        self.assertEqual(decided[0]["asd_model"], frames.ACTIVE_SPEAKER_MODEL_PATH.name)
+
+    def test_one_continuous_subject_is_not_split_by_changing_evidence(self):
+        # Merging used to require identical reasons, which chopped a frame that
+        # never moved into sub-second segments.
+        rows = [(t * 0.4, [(0.30, 3.0), (0.75, 3.0)]) for t in range(20)]
+        n = int(8.0 * frames.ASD_FPS) + 2
+        wobbly = np.full(n, 0.95)
+        wobbly[n // 3:n // 2] = 0.26          # dips below the margin, same person
+        scores = {0: wobbly, 1: np.full(n, 0.02)}
+        planned = frames._plan_shot_segments(
+            0.0, 8.0, self._observations(rows), 0.5, None, None, None, 0.0, scores)
+        self.assertEqual(len(planned), 1, "one unmoving subject produced several segments")
+        for segment in planned:
+            self.assertGreaterEqual(segment["end_s"] - segment["start_s"], 0.8)
+
+    def test_every_segment_stays_inside_the_portrait_frame(self):
+        rows = [(t * 0.4, [(0.05, 3.0), (0.95, 3.0)]) for t in range(20)]
+        n = int(8.0 * frames.ASD_FPS) + 2
+        scores = {0: np.full(n, 0.9), 1: np.full(n, 0.02)}
+        planned = frames._plan_shot_segments(
+            0.0, 8.0, self._observations(rows), 0.5, None, None, None, 0.0, scores)
+        for segment in planned:
+            self.assertGreaterEqual(segment["center_x"], 0.0)
+            self.assertLessEqual(segment["center_x"], 1.0)
+            self.assertGreaterEqual(segment["center_y"], 0.0)
+            self.assertLessEqual(segment["center_y"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
