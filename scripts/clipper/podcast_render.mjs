@@ -15,6 +15,7 @@ import {
   analysisSamples,
   shotTrackedFraming,
   shotAwareFramingFilter,
+  splitTwoSpeakerFilter,
   buildTranscriptAss,
   chooseCaptionAccent,
   normalizedSpeakerCenters,
@@ -311,6 +312,12 @@ function extractConfirmationFrames(source, artifact, absoluteStart, duration, wo
 function chooseLayout(plan, confirmation, framing) {
   const requested = String(plan?.output?.requested_layout || plan?.output?.layout || 'center_crop');
   if (requested === 'center_crop') return 'center_crop';
+  // An actual two-shot is required; do not duplicate a speaker in a multicam edit.
+  if (process.env.CLIPPER_PODCAST_SPLIT_SCREEN === '1'
+    && confirmation?.confirmed === true && Number(confirmation.confidence) >= 0.75
+    && confirmation.recommended_layout === 'two_shot'
+    && confirmation.held_object !== true && confirmation.screen_content !== true
+    && framing.mode === 'active_speaker') return 'two_shot_split';
   if (confirmation?.confirmed && confirmation.recommended_layout === 'active_speaker'
       && framing.mode === 'active_speaker') return 'active_speaker';
   // Podcast deliverables are portrait crops. Weak confirmation, held objects,
@@ -518,6 +525,11 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   // and holds one stable portrait subject when a multi-person shot is ambiguous.
   // The older sparse-sample tracker remains a compatibility fallback for an
   // analyzer result produced before framing_segments existed.
+  const positioned = Object.values(framing.centers || {}).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const splitFilter = layout === 'two_shot_split' && Number(speakerEstimate.analysis?.timeline?.shot_count || 0) <= 1
+    && speakerEstimate.framingSegments.length === 1 && positioned.length === 2
+    ? splitTwoSpeakerFilter({ width: sourceVideo.width, height: sourceVideo.height,
+      leftCenter: positioned[0], rightCenter: positioned[1], outputLabel: layoutOutputLabel }) : null;
   const shotAwareFilter = process.env.CLIPPER_SHOT_TRACKING !== '0'
     && (layout === 'center_crop' || layout === 'active_speaker')
     ? shotAwareFramingFilter({
@@ -530,7 +542,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const shotTracking = !shotAwareFilter && process.env.CLIPPER_SHOT_TRACKING !== '0' && layout === 'center_crop'
     ? shotTrackedFraming(speakerEstimate.samples)
     : null;
-  const activeFilter = shotAwareFilter || (layout === 'active_speaker' ? activeSpeakerCropFilter({
+  const activeFilter = splitFilter || shotAwareFilter || (layout === 'active_speaker' ? activeSpeakerCropFilter({
     width: sourceVideo.width,
     height: sourceVideo.height,
     centers,
@@ -544,7 +556,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     outputLabel: trackedOutputLabel,
   }) : null);
   const actualLayout = activeFilter
-    ? (shotAwareFilter ? 'shot_aware' : layout === 'active_speaker' ? 'active_speaker' : 'shot_tracked')
+    ? (splitFilter ? 'two_shot_split' : shotAwareFilter ? 'shot_aware' : layout === 'active_speaker' ? 'active_speaker' : 'shot_tracked')
     : 'center_crop';
   // A missing/invalid tracker may degrade to a static portrait crop, never to
   // a letterboxed landscape insert.
