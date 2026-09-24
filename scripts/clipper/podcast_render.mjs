@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { captionCompositeFilter, subtitleFilterSuffix } from './ffmpeg_filters.mjs';
-import { normalizeCreativeMedia, buildHookAss, zoomFilter } from './creative_media.mjs';
+import { normalizeCreativeMedia, buildHookAss, zoomFilter, sfxAudioFilter } from './creative_media.mjs';
 import { checkRenderedVideo } from './content_qc.mjs';
 import {
   activeSpeakerCropFilter,
@@ -480,6 +480,8 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       ? rawCreative.zoom_cues.map(cue => ({ ...cue, at_s: Number(cue.at_s) - creativeShift })) : [],
     music_curve: Array.isArray(rawCreative.music_curve)
       ? rawCreative.music_curve.map(point => ({ ...point, at_s: Number(point.at_s) - creativeShift })) : [],
+    sfx_cues: Array.isArray(rawCreative.sfx_cues)
+      ? rawCreative.sfx_cues.map(cue => ({ ...cue, at_s: Number(cue.at_s) - creativeShift })) : [],
   }, speechWords, duration);
   const captionPath = path.join(work, 'captions.ass');
   const captionWords = plan?.output?.captions === false ? [] : speechWords;
@@ -563,10 +565,12 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const ffmpegInputs = ['-i', source];
   if (soundtrackFile) ffmpegInputs.push('-stream_loop', '-1', '-ss', soundtrackOffset.toFixed(3), '-i', soundtrackFile);
   const audioFilter = soundtrack ? podcastSoundtrackAudioFilter({ duration, gainDb: soundtrack.gain_db, sourceHasAudio, musicCurve: creative.musicCurve }) : null;
-  const fullFilter = audioFilter ? `${filter};${audioFilter}` : filter;
+  const sfxFilter = (sourceHasAudio || Boolean(soundtrack))
+    ? sfxAudioFilter(creative.sfxCues, soundtrack ? 'a' : '0:a') : null;
+  const fullFilter = [filter, audioFilter, sfxFilter].filter(Boolean).join(';');
   run('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-y', ...ffmpegInputs, '-filter_complex', fullFilter,
-    '-map', `[${videoOutputLabel}]`, '-map', soundtrack ? '[a]' : '0:a?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
+    '-map', `[${videoOutputLabel}]`, '-map', sfxFilter ? '[audio_sfx]' : soundtrack ? '[a]' : '0:a?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-r', String(Number(plan?.output?.fps || 30)),
     '-t', duration.toFixed(3), '-movflags', '+faststart', output,
   ]);
@@ -611,6 +615,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       source_window_s: [start, end],
       boundary_refinement: refinedWindow,
       creative: { schema_version: plan?.creative?.schema_version || null, applied: creative, timeline_shift_s: creativeShift },
+      sfx_count: creative.sfxCues.length,
       content_qc: contentQc,
       shared_materialization: { ephemeral: true, identity: batchIdentity, start_s: batchStart },
       audio_alignment: alignment,
