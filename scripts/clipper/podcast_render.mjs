@@ -10,6 +10,7 @@ import { gunzipSync } from 'node:zlib';
 import { captionCompositeFilter, subtitleFilterSuffix } from './ffmpeg_filters.mjs';
 import { normalizeCreativeMedia, buildHookAss, zoomFilter, sfxAudioFilter } from './creative_media.mjs';
 import { checkRenderedVideo } from './content_qc.mjs';
+import { buildEditorialCaptionsAss } from './editorial_captions.mjs';
 import {
   activeSpeakerCropFilter,
   analysisSamples,
@@ -493,11 +494,33 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const captionPath = path.join(work, 'captions.ass');
   const captionWords = plan?.output?.captions === false ? [] : speechWords;
   const captionAccent = chooseCaptionAccent(captionLaneSamples(source, duration));
-  const ass = buildTranscriptAss(captionWords, captionAccent, creative.emphasisWords);
-  if (captionWords.length) fs.writeFileSync(captionPath, ass, 'utf8');
   const captionsCreated = captionWords.length > 0;
+  let editorialActive = process.env.CLIPPER_PODCAST_EDITORIAL_V2 === '1'
+    && creative.enabled && captionWords.length >= 12;
+  let ass = '';
+  if (editorialActive) {
+    try {
+      const cards = (Array.isArray(rawCreative.chapter_cards) ? rawCreative.chapter_cards : [])
+        .map(card => ({ ...card, at_s: Number(card.at_s) - creativeShift }));
+      // A short verified first-spoken-word hook may be used as a fallback when
+      // Creative Director omits the more expansive editorial card sequence.
+      if (!cards.length && creative.hookText) {
+        cards.push({ at_s: Number(captionWords[0].start), text: creative.hookText });
+      }
+      ass = buildEditorialCaptionsAss(captionWords, { duration,
+        cards, emphasisWords: creative.emphasisWords });
+    } catch (error) {
+      console.warn('[podcast-render] editorial caption validation failed; using proven V3 caption profile: '
+        + (error instanceof Error ? error.message : String(error)));
+      editorialActive = false;
+    }
+  }
+  if (!editorialActive) ass = buildTranscriptAss(captionWords, captionAccent, creative.emphasisWords);
+  if (captionsCreated) fs.writeFileSync(captionPath, ass, 'utf8');
   const hookPath = path.join(work, 'hook.ass');
-  const hookAss = buildHookAss(creative.hookText, duration);
+  // Editorial captions already include grounded headline cards. Rendering
+  // the old hook overlay too would print two independent lines over the face.
+  const hookAss = editorialActive ? '' : buildHookAss(creative.hookText, duration);
   if (hookAss) fs.writeFileSync(hookPath, hookAss, 'utf8');
   const layoutOutputLabel = captionsCreated ? 'caption_base' : 'v';
   const trackedOutputLabel = creative.zoomCues.length ? 'creative_base' : layoutOutputLabel;
@@ -626,7 +649,8 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       worker_run_id: WORKER_RUN_ID,
       source_window_s: [start, end],
       boundary_refinement: refinedWindow,
-      creative: { schema_version: plan?.creative?.schema_version || null, applied: creative, timeline_shift_s: creativeShift },
+      creative: { schema_version: plan?.creative?.schema_version || null, applied: creative, timeline_shift_s: creativeShift,
+        editorial_captions: editorialActive },
       sfx_count: creative.sfxCues.length,
       content_qc: contentQc,
       shared_materialization: { ephemeral: true, identity: batchIdentity, start_s: batchStart },
@@ -639,7 +663,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
         sha256: vod.transcript_sha256,
         word_count: captionWords.length,
         captions_created: captionsCreated,
-        caption_format: captionsCreated ? 'ass-word-chip-v2' : null,
+        caption_format: captionsCreated ? (editorialActive ? 'ass-editorial-single-layer-v1' : 'ass-word-chip-v2') : null,
         caption_accent: captionsCreated ? captionAccent : null,
       },
       soundtrack: soundtrack ? {
