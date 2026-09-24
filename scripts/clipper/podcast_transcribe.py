@@ -26,7 +26,7 @@ from podcast_diarization import local_acoustic_diarize
 from podcast_recovery_artifact import persist_recovery_artifact
 from podcast_source_cache import download_source_cache, upload_source_cache, validate_source_cache
 from podcast_storage_contract import assert_storage_project
-from transcript_quality import quality_signals, use_retry, agreed_silence
+from transcript_quality import quality_signals, use_retry, agreed_silence, zero_duration_words, use_timing_retry
 
 
 BUCKET = "clipper-media"
@@ -166,15 +166,17 @@ def transcribe(wav: pathlib.Path, model_name: str) -> tuple[list[dict[str, Any]]
         segments.append({
             "start_s": round(float(item.start), 3),
             "end_s": round(float(item.end), 3),
-            "text": text, "words": words, "quality": quality_signals(item),
+            "text": text, "words": words, "quality": {
+                **quality_signals(item), "zero_duration_words": zero_duration_words(words),
+            },
         })
 
     # Refine ONLY suspicious, short spans; never re-decode the full episode.
     # A targeted alternative is accepted only on a measured quality improvement.
     suspicious = [i for i, segment in enumerate(segments)
-                  if segment["quality"]["suspected_hallucination"]
+                  if (segment["quality"]["suspected_hallucination"] or segment["quality"]["zero_duration_words"] > 0)
                   and 0.3 <= segment["end_s"] - segment["start_s"] <= 14]
-    retried = repaired = confirmed_silence = 0
+    retried = repaired = confirmed_silence = repaired_word_timings = 0
     with wave.open(str(wav), "rb") as wave_file:
         if wave_file.getnchannels() != 1 or wave_file.getsampwidth() != 2:
             raise RuntimeError("Podcast transcription WAV is not mono PCM16")
@@ -217,7 +219,9 @@ def transcribe(wav: pathlib.Path, model_name: str) -> tuple[list[dict[str, Any]]
                     "words": alt_words,
                     "quality": quality_signals(alt_items[0]) if alt_items else {},
                 }
-                if use_retry(original, alt):
+                if use_retry(original, alt) or use_timing_retry(original, alt):
+                    if original["quality"].get("zero_duration_words", 0) and not alt["quality"].get("suspected_hallucination"):
+                        repaired_word_timings += 1
                     original["words"] = alt_words
                     original["text"] = " ".join(word["text"] for word in alt_words)
                     original["quality"] = {
@@ -243,6 +247,7 @@ def transcribe(wav: pathlib.Path, model_name: str) -> tuple[list[dict[str, Any]]
             "suspected_segments": len(suspicious),
             "targeted_retries": retried,
             "repaired_segments": repaired,
+            "repaired_word_timing_segments": repaired_word_timings,
             "confirmed_silence_segments": confirmed_silence,
             "unresolved_segments": sum(bool(segment["quality"].get("suspected_hallucination"))
                                        for segment in segments),
