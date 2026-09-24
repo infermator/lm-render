@@ -523,7 +523,13 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const hookAss = editorialActive ? '' : buildHookAss(creative.hookText, duration);
   if (hookAss) fs.writeFileSync(hookPath, hookAss, 'utf8');
   const layoutOutputLabel = captionsCreated ? 'caption_base' : 'v';
-  const trackedOutputLabel = creative.zoomCues.length ? 'creative_base' : layoutOutputLabel;
+  // Never punch a two-shot, on-screen illustration, or rapid multicam edit:
+  // a blind centre zoom can crop the actual speaker or remove a held object.
+  const safeZooms = layout === 'two_shot_split'
+    || visualConfirmation?.held_object === true || visualConfirmation?.screen_content === true
+    || Number(speakerEstimate.analysis?.timeline?.shot_count || 0) > 8
+      ? [] : creative.zoomCues;
+  const trackedOutputLabel = safeZooms.length ? 'creative_base' : layoutOutputLabel;
 
   const sourceProbe = probe(source);
   const sourceVideo = (sourceProbe.streams || []).find(stream => stream.codec_type === 'video') || {};
@@ -584,7 +590,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   // A missing/invalid tracker may degrade to a static portrait crop, never to
   // a letterboxed landscape insert.
   const layoutFilter = activeFilter || centerCropFilter(trackedOutputLabel);
-  const zoomStage = zoomFilter(creative.zoomCues, trackedOutputLabel, layoutOutputLabel);
+  const zoomStage = zoomFilter(safeZooms, trackedOutputLabel, layoutOutputLabel);
   const visualBase = zoomStage ? `${layoutFilter};${zoomStage}` : layoutFilter;
   const captioned = captionsCreated
     ? `${visualBase};${captionCompositeFilter({
@@ -650,7 +656,8 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       source_window_s: [start, end],
       boundary_refinement: refinedWindow,
       creative: { schema_version: plan?.creative?.schema_version || null, applied: creative, timeline_shift_s: creativeShift,
-        editorial_captions: editorialActive },
+        editorial_captions: editorialActive,
+        zoom_applied_count: safeZooms.length, zoom_skipped_count: creative.zoomCues.length - safeZooms.length },
       sfx_count: creative.sfxCues.length,
       content_qc: contentQc,
       shared_materialization: { ephemeral: true, identity: batchIdentity, start_s: batchStart },
