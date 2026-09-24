@@ -1,0 +1,46 @@
+name: CLIPPER V2 V3 Creative Quality
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/clipper/**'
+      - '.github/workflows/clipper-creative-quality.yml'
+  push:
+    paths:
+      - 'scripts/clipper/**'
+      - '.github/workflows/clipper-creative-quality.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Syntax check V2 and V3 workers, never V1
+        run: |
+          node --check scripts/clipper/creative_media.mjs
+          node --check scripts/clipper/content_qc.mjs
+          node --check scripts/clipper/podcast_media.mjs
+          node --check scripts/clipper/podcast_render.mjs
+          node --check scripts/clipper/render.mjs
+          python -m py_compile scripts/clipper/transcript_quality.py scripts/clipper/podcast_transcribe.py
+      - name: Unit tests
+        run: |
+          node --test scripts/clipper/creative_media.test.mjs
+          python scripts/clipper/transcript_quality_test.py
+      - name: FFmpeg smoke - zoom and music-expression syntax
+        run: |
+          ffmpeg -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=320x568:rate=30:duration=1' \
+            -vf "zoompan=z='if(between(on/30\,0.2\,0.65)\,1.12\,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=30" \
+            -frames:v 5 -f null -
+          ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=1000:duration=2' \
+            -af "volume='if(lt(t\,1)\,max(0.35\,min(1\,0.5+(0.4)*(t-0)/1))\,0.9)':eval=frame" -f null -
