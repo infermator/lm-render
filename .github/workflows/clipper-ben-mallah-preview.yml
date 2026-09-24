@@ -1,4 +1,5 @@
 name: Ben Mallah creative before-after preview
+# Export canonical, public Ben Mallah transcript timings for visual editing review.
 # Second source-grounded preview after hook layout and source context fixes.
 
 on:
@@ -38,5 +39,6 @@ jobs:
           path: |
             clipper-demo-output/*.mp4
             clipper-demo-output/report.json
+            clipper-demo-output/transcript-words.json
           if-no-files-found: error
           retention-days: 7
