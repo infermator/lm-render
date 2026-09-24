@@ -27,6 +27,7 @@ jobs:
       - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Syntax check V2 and V3 workers, never V1
         run: |
+          node --check scripts/clipper/editorial_captions.mjs
           node --check scripts/clipper/creative_media.mjs
           node --check scripts/clipper/content_qc.mjs
           node --check scripts/clipper/podcast_media.mjs
@@ -35,7 +36,7 @@ jobs:
           python -m py_compile scripts/clipper/transcript_quality.py scripts/clipper/podcast_transcribe.py
       - name: Unit tests
         run: |
-          node --test scripts/clipper/creative_media.test.mjs scripts/clipper/content_qc.test.mjs scripts/clipper/podcast_media.test.mjs scripts/clipper/split_media.test.mjs
+          node --test scripts/clipper/creative_media.test.mjs scripts/clipper/content_qc.test.mjs scripts/clipper/podcast_media.test.mjs scripts/clipper/split_media.test.mjs scripts/clipper/editorial_captions.test.mjs
           python scripts/clipper/transcript_quality_test.py
       - name: FFmpeg smoke - zoom and music-expression syntax
         run: |
