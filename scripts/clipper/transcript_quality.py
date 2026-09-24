@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 import math
 import re
+from difflib import SequenceMatcher
 
 
 def finite(value: Any, default: float) -> float:
@@ -56,3 +57,32 @@ def agreed_silence(original: dict[str, Any], retry_words: list[dict[str, Any]]) 
     signals = original.get("quality", {})
     return (not retry_words and finite(signals.get("no_speech_prob"), 0) > 0.85
             and finite(signals.get("avg_logprob"), 0) < -1.35)
+
+
+def zero_duration_words(words: list[dict[str, Any]]) -> int:
+    """Count ASR words with no possible spoken duration; do not treat quick
+    real monosyllables as corrupt (only <=5ms with non-punctuation content)."""
+    return sum(
+        1 for word in words
+        if re.search(r"\w", str(word.get("text") or ""), re.UNICODE)
+        and finite(word.get("end_s"), 0) - finite(word.get("start_s"), 0) <= 0.005
+    )
+
+
+def use_timing_retry(original: dict[str, Any], candidate: dict[str, Any] | None) -> bool:
+    """Replace a faulty timing pass only when a second decode retains the
+    original sentence. ASR is not free to change actual spoken content here."""
+    if not candidate or not candidate.get("words") or not original.get("words"):
+        return False
+    if zero_duration_words(original["words"]) == 0 or zero_duration_words(candidate["words"]) > 0:
+        return False
+    before, after = original.get("quality", {}), candidate.get("quality", {})
+    if after.get("suspected_hallucination"):
+        return False
+    if finite(after.get("avg_logprob"), -10) < finite(before.get("avg_logprob"), -10) - 0.08:
+        return False
+    def tokens(words):
+        return re.findall(r"\w+", " ".join(str(w.get("text") or "") for w in words).lower(),
+                          re.UNICODE)
+    similarity = SequenceMatcher(None, tokens(original["words"]), tokens(candidate["words"])).ratio()
+    return similarity >= 0.78 and len(candidate["words"]) >= 0.7 * len(original["words"])
