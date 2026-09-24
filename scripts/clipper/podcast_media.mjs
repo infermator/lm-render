@@ -1,3 +1,4 @@
+import { musicCurveFilter } from './creative_media.mjs';
 // ASS uses the explicit 324x576 script canvas below. MarginV=96 therefore
 // preserves the visual lane of the older SRT profile (MarginV=48 on libass's
 // implicit 288-line canvas) instead of dropping captions against the UI-safe
@@ -148,7 +149,7 @@ export function soundtrackStartOffset(trackDurationValue, clipDurationValue, see
 // quieter than the videos around it.
 const PROGRAMME_TRIM_DB = -1.5;
 
-export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: gainValue, sourceHasAudio = true }) {
+export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: gainValue, sourceHasAudio = true, musicCurve = [] }) {
   const duration = Number(durationValue);
   const gainDb = Number(gainValue);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('Soundtrack mix duration is invalid');
@@ -156,15 +157,17 @@ export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: 
   const fadeOutDuration = Math.min(1.2, Math.max(0.25, duration / 8));
   const fadeOutStart = Math.max(0, duration - fadeOutDuration);
   const music = `[1:a]aformat=sample_rates=48000:channel_layouts=stereo,loudnorm=I=-18:LRA=7:TP=-2,volume=${gainDb.toFixed(2)}dB,atrim=0:${duration.toFixed(3)},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.45,afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOutDuration.toFixed(3)}[music_pre]`;
-  if (!sourceHasAudio) return `${music};[music_pre]volume=${PROGRAMME_TRIM_DB.toFixed(2)}dB,alimiter=limit=0.95:attack=5:release=50[a]`;
+  const dynamicMusic = musicCurveFilter(musicCurve);
+  if (!sourceHasAudio) return `${music};${dynamicMusic};[music_dynamic]volume=${PROGRAMME_TRIM_DB.toFixed(2)}dB,alimiter=limit=0.95:attack=5:release=50[a]`;
   return [
     music,
+    dynamicMusic,
     `[0:a]aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)},asplit=2[source_mix][speech_key]`,
     // Keep the bed audible beneath a podcast voice. The previous 0.03/10:1
     // contract pushed a normalized -14 dB bed to roughly -42 LUFS on the
     // reference clip, which was functionally dry. This gentler detector keeps
     // speech about 16 dB forward while preserving the track's rhythm.
-    '[music_pre][speech_key]sidechaincompress=threshold=0.06:ratio=4:attack=20:release=450:makeup=1[ducked_music]',
+    '[music_dynamic][speech_key]sidechaincompress=threshold=0.06:ratio=4:attack=20:release=450:makeup=1[ducked_music]',
     `[source_mix][ducked_music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,volume=${PROGRAMME_TRIM_DB.toFixed(2)}dB,alimiter=limit=0.95:attack=5:release=50[a]`,
   ].join(';');
 }
