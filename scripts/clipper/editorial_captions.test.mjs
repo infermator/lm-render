@@ -68,3 +68,23 @@ test('validate title cards against actual nearby speech and render ASS through F
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test('zero-duration handoff punctuation never fuses two speakers into one caption', () => {
+  const interjection = [
+    { start: 1.44, end: 1.58, text: 'Is' },
+    { start: 1.58, end: 1.66, text: 'that' },
+    { start: 1.66, end: 1.74, text: 'what' },
+    { start: 1.74, end: 1.74, text: 'you' },
+    { start: 1.74, end: 1.74, text: 'use?' },
+    { start: 1.74, end: 1.90, text: 'Only' },
+    { start: 1.90, end: 2.16, text: 'use' },
+    { start: 2.16, end: 2.22, text: 'the' },
+  ];
+  const g = editorialCaptionGroups(interjection);
+  assert.equal(g.length, 2);
+  assert.equal(g[0].map(w => w.text).join(' '), 'Is that what');
+  assert.equal(g[1].map(w => w.text).join(' '), 'Only use the');
+  const ass = buildEditorialCaptionsAss(interjection, { duration: 10 });
+  assert.doesNotMatch(ass, /what.*Only/);
+});
