@@ -7,12 +7,16 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { captionCompositeFilter } from './ffmpeg_filters.mjs';
+import { captionCompositeFilter, subtitleFilterSuffix } from './ffmpeg_filters.mjs';
+import { normalizeCreativeMedia, buildHookAss, zoomFilter, sfxAudioFilter } from './creative_media.mjs';
+import { checkRenderedVideo } from './content_qc.mjs';
+import { buildEditorialCaptionsAss } from './editorial_captions.mjs';
 import {
   activeSpeakerCropFilter,
   analysisSamples,
   shotTrackedFraming,
   shotAwareFramingFilter,
+  splitTwoSpeakerFilter,
   buildTranscriptAss,
   chooseCaptionAccent,
   normalizedSpeakerCenters,
@@ -309,6 +313,12 @@ function extractConfirmationFrames(source, artifact, absoluteStart, duration, wo
 function chooseLayout(plan, confirmation, framing) {
   const requested = String(plan?.output?.requested_layout || plan?.output?.layout || 'center_crop');
   if (requested === 'center_crop') return 'center_crop';
+  // An actual two-shot is required; do not duplicate a speaker in a multicam edit.
+  if (process.env.CLIPPER_PODCAST_SPLIT_SCREEN === '1'
+    && confirmation?.confirmed === true && Number(confirmation.confidence) >= 0.75
+    && confirmation.recommended_layout === 'two_shot'
+    && confirmation.held_object !== true && confirmation.screen_content !== true
+    && framing.mode === 'active_speaker') return 'two_shot_split';
   if (confirmation?.confirmed && confirmation.recommended_layout === 'active_speaker'
       && framing.mode === 'active_speaker') return 'active_speaker';
   // Podcast deliverables are portrait crops. Weak confirmation, held objects,
@@ -469,13 +479,57 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   });
   const centers = framing.centers;
   const layout = chooseLayout(plan, visualConfirmation, framing);
+  const speechWords = wordsForWindow(artifact, start, end);
+  const creativeShift = Math.max(0, start - Number(plan?.creative_timeline_origin_s ?? start));
+  const rawCreative = plan?.creative && typeof plan.creative === 'object' ? plan.creative : {};
+  const creative = normalizeCreativeMedia({
+    ...rawCreative,
+    zoom_cues: Array.isArray(rawCreative.zoom_cues)
+      ? rawCreative.zoom_cues.map(cue => ({ ...cue, at_s: Number(cue.at_s) - creativeShift })) : [],
+    music_curve: Array.isArray(rawCreative.music_curve)
+      ? rawCreative.music_curve.map(point => ({ ...point, at_s: Number(point.at_s) - creativeShift })) : [],
+    sfx_cues: Array.isArray(rawCreative.sfx_cues)
+      ? rawCreative.sfx_cues.map(cue => ({ ...cue, at_s: Number(cue.at_s) - creativeShift })) : [],
+  }, speechWords, duration);
   const captionPath = path.join(work, 'captions.ass');
-  const captionWords = plan?.output?.captions === false ? [] : wordsForWindow(artifact, start, end);
+  const captionWords = plan?.output?.captions === false ? [] : speechWords;
   const captionAccent = chooseCaptionAccent(captionLaneSamples(source, duration));
-  const ass = buildTranscriptAss(captionWords, captionAccent);
-  if (captionWords.length) fs.writeFileSync(captionPath, ass, 'utf8');
   const captionsCreated = captionWords.length > 0;
+  let editorialActive = process.env.CLIPPER_PODCAST_EDITORIAL_V2 === '1'
+    && creative.enabled && captionWords.length >= 12;
+  let ass = '';
+  if (editorialActive) {
+    try {
+      const cards = (Array.isArray(rawCreative.chapter_cards) ? rawCreative.chapter_cards : [])
+        .map(card => ({ ...card, at_s: Number(card.at_s) - creativeShift }));
+      // A short verified first-spoken-word hook may be used as a fallback when
+      // Creative Director omits the more expansive editorial card sequence.
+      if (!cards.length && creative.hookText) {
+        cards.push({ at_s: Number(captionWords[0].start), text: creative.hookText });
+      }
+      ass = buildEditorialCaptionsAss(captionWords, { duration,
+        cards, emphasisWords: creative.emphasisWords });
+    } catch (error) {
+      console.warn('[podcast-render] editorial caption validation failed; using proven V3 caption profile: '
+        + (error instanceof Error ? error.message : String(error)));
+      editorialActive = false;
+    }
+  }
+  if (!editorialActive) ass = buildTranscriptAss(captionWords, captionAccent, creative.emphasisWords);
+  if (captionsCreated) fs.writeFileSync(captionPath, ass, 'utf8');
+  const hookPath = path.join(work, 'hook.ass');
+  // Editorial captions already include grounded headline cards. Rendering
+  // the old hook overlay too would print two independent lines over the face.
+  const hookAss = editorialActive ? '' : buildHookAss(creative.hookText, duration);
+  if (hookAss) fs.writeFileSync(hookPath, hookAss, 'utf8');
   const layoutOutputLabel = captionsCreated ? 'caption_base' : 'v';
+  // Never punch a two-shot, on-screen illustration, or rapid multicam edit:
+  // a blind centre zoom can crop the actual speaker or remove a held object.
+  const safeZooms = layout === 'two_shot_split'
+    || visualConfirmation?.held_object === true || visualConfirmation?.screen_content === true
+    || Number(speakerEstimate.analysis?.timeline?.shot_count || 0) > 8
+      ? [] : creative.zoomCues;
+  const trackedOutputLabel = safeZooms.length ? 'creative_base' : layoutOutputLabel;
 
   const sourceProbe = probe(source);
   const sourceVideo = (sourceProbe.streams || []).find(stream => stream.codec_type === 'video') || {};
@@ -500,53 +554,64 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   // and holds one stable portrait subject when a multi-person shot is ambiguous.
   // The older sparse-sample tracker remains a compatibility fallback for an
   // analyzer result produced before framing_segments existed.
+  const positioned = Object.values(framing.centers || {}).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const splitFilter = layout === 'two_shot_split' && Number(speakerEstimate.analysis?.timeline?.shot_count || 0) <= 1
+    && speakerEstimate.framingSegments.length === 1 && positioned.length === 2
+    ? splitTwoSpeakerFilter({ width: sourceVideo.width, height: sourceVideo.height,
+      leftCenter: positioned[0], rightCenter: positioned[1], outputLabel: trackedOutputLabel }) : null;
   const shotAwareFilter = process.env.CLIPPER_SHOT_TRACKING !== '0'
     && (layout === 'center_crop' || layout === 'active_speaker')
     ? shotAwareFramingFilter({
       width: sourceVideo.width,
       height: sourceVideo.height,
       segments: speakerEstimate.framingSegments,
-      outputLabel: layoutOutputLabel,
+      outputLabel: trackedOutputLabel,
     })
     : null;
   const shotTracking = !shotAwareFilter && process.env.CLIPPER_SHOT_TRACKING !== '0' && layout === 'center_crop'
     ? shotTrackedFraming(speakerEstimate.samples)
     : null;
-  const activeFilter = shotAwareFilter || (layout === 'active_speaker' ? activeSpeakerCropFilter({
+  const activeFilter = splitFilter || shotAwareFilter || (layout === 'active_speaker' ? activeSpeakerCropFilter({
     width: sourceVideo.width,
     height: sourceVideo.height,
     centers,
     intervals,
-    outputLabel: layoutOutputLabel,
+    outputLabel: trackedOutputLabel,
   }) : shotTracking ? activeSpeakerCropFilter({
     width: sourceVideo.width,
     height: sourceVideo.height,
     centers: shotTracking.centers,
     intervals: shotTracking.intervals,
-    outputLabel: layoutOutputLabel,
+    outputLabel: trackedOutputLabel,
   }) : null);
   const actualLayout = activeFilter
-    ? (shotAwareFilter ? 'shot_aware' : layout === 'active_speaker' ? 'active_speaker' : 'shot_tracked')
+    ? (splitFilter ? 'two_shot_split' : shotAwareFilter ? 'shot_aware' : layout === 'active_speaker' ? 'active_speaker' : 'shot_tracked')
     : 'center_crop';
   // A missing/invalid tracker may degrade to a static portrait crop, never to
   // a letterboxed landscape insert.
-  const layoutFilter = activeFilter || centerCropFilter(layoutOutputLabel);
-  const filter = captionsCreated
-    ? `${layoutFilter};${captionCompositeFilter({
+  const layoutFilter = activeFilter || centerCropFilter(trackedOutputLabel);
+  const zoomStage = zoomFilter(safeZooms, trackedOutputLabel, layoutOutputLabel);
+  const visualBase = zoomStage ? `${layoutFilter};${zoomStage}` : layoutFilter;
+  const captioned = captionsCreated
+    ? `${visualBase};${captionCompositeFilter({
         filePath: captionPath,
         forceStyle: '',
         strength: 'readable',
       })}`
-    : layoutFilter;
+    : visualBase;
+  const filter = hookAss ? `${captioned};[v]${subtitleFilterSuffix(hookPath, '').slice(1)}[creative_hook]` : captioned;
+  const videoOutputLabel = hookAss ? 'creative_hook' : 'v';
   await progress(render.id, 'composing', `Rendering 1080x1920 podcast edit (${actualLayout})`);
   const output = path.join(work, 'video.mp4');
   const ffmpegInputs = ['-i', source];
   if (soundtrackFile) ffmpegInputs.push('-stream_loop', '-1', '-ss', soundtrackOffset.toFixed(3), '-i', soundtrackFile);
-  const audioFilter = soundtrack ? podcastSoundtrackAudioFilter({ duration, gainDb: soundtrack.gain_db, sourceHasAudio }) : null;
-  const fullFilter = audioFilter ? `${filter};${audioFilter}` : filter;
+  const audioFilter = soundtrack ? podcastSoundtrackAudioFilter({ duration, gainDb: soundtrack.gain_db, sourceHasAudio, musicCurve: creative.musicCurve }) : null;
+  const sfxFilter = (sourceHasAudio || Boolean(soundtrack))
+    ? sfxAudioFilter(creative.sfxCues, soundtrack ? 'a' : '0:a') : null;
+  const fullFilter = [filter, audioFilter, sfxFilter].filter(Boolean).join(';');
   run('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-y', ...ffmpegInputs, '-filter_complex', fullFilter,
-    '-map', '[v]', '-map', soundtrack ? '[a]' : '0:a?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
+    '-map', `[${videoOutputLabel}]`, '-map', sfxFilter ? '[audio_sfx]' : soundtrack ? '[a]' : '0:a?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-r', String(Number(plan?.output?.fps || 30)),
     '-t', duration.toFixed(3), '-movflags', '+faststart', output,
   ]);
@@ -562,6 +627,11 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     throw new Error(`Unexpected podcast output duration ${outputDuration.toFixed(2)}s for ${duration.toFixed(2)}s plan`);
   }
   if (soundtrack && !resultAudio) throw new Error('Soundtrack render completed without an audio stream');
+  const contentQc = checkRenderedVideo(output, {
+    sourceHasAudio: sourceHasAudio || Boolean(soundtrack),
+    expectedDuration: duration,
+  });
+  if (!contentQc.passed) throw new Error('content_qc_failed: ' + contentQc.errors.join(','));
 
   const lease = await progress(render.id, 'uploading', 'Uploading immutable podcast render');
   if (!lease || lease.ignored) throw new Error('stale_worker_run: Podcast render lease changed before upload');
@@ -585,6 +655,11 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       worker_run_id: WORKER_RUN_ID,
       source_window_s: [start, end],
       boundary_refinement: refinedWindow,
+      creative: { schema_version: plan?.creative?.schema_version || null, applied: creative, timeline_shift_s: creativeShift,
+        editorial_captions: editorialActive,
+        zoom_applied_count: safeZooms.length, zoom_skipped_count: creative.zoomCues.length - safeZooms.length },
+      sfx_count: creative.sfxCues.length,
+      content_qc: contentQc,
       shared_materialization: { ephemeral: true, identity: batchIdentity, start_s: batchStart },
       audio_alignment: alignment,
       layout: actualLayout,
@@ -595,7 +670,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
         sha256: vod.transcript_sha256,
         word_count: captionWords.length,
         captions_created: captionsCreated,
-        caption_format: captionsCreated ? 'ass-word-chip-v2' : null,
+        caption_format: captionsCreated ? (editorialActive ? 'ass-editorial-single-layer-v1' : 'ass-word-chip-v2') : null,
         caption_accent: captionsCreated ? captionAccent : null,
       },
       soundtrack: soundtrack ? {
@@ -655,6 +730,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       audio_stream: Boolean(resultAudio),
       natural_speech_tail: refinedWindow.reason,
       visual_confirmation: Boolean(visualConfirmation),
+      content_qc: contentQc,
     },
   });
   console.log(`[podcast-render] completed ${render.id} -> ${resultStoragePath}`);
