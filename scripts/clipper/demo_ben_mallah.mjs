@@ -55,6 +55,7 @@ const artifact = JSON.parse(gunzipSync(zipped, { maxOutputLength: 128 * 1024 * 1
 if (artifact.vod_id !== vodId) throw new Error('Transcript source does not match baseline VOD');
 const words = wordsForWindow(artifact, sourceStart, sourceStart + duration);
 if (words.length < 15) throw new Error('Not enough verified Ben Mallah source words for preview');
+fs.writeFileSync(path.join(root, 'transcript-words.json'), JSON.stringify(words, null, 2));
 const spoken = words.map(w => w.text).join(' ').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
 const firstPhrase = spoken.includes('you don t use the 50 rule')
   ? "You don't use the 50% rule"
