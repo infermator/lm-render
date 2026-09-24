@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { buildHookAss, normalizeCreativeMedia, zoomFilter } from './creative_media.mjs';
 import { wordsForWindow } from './podcast_media.mjs';
 import { checkRenderedVideo } from './content_qc.mjs';
+import { buildEditorialCaptionsAss, normalizeEditorialCards } from './editorial_captions.mjs';
 import { captionCompositeFilter } from './ffmpeg_filters.mjs';
 
 const url = String(process.env.SHOTLEE_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/$/, '');
@@ -85,6 +86,49 @@ const videoFilter = '[0:v]scale=1080:1920[base];' + zoom
 run(['-i', output.before, '-filter_complex', videoFilter, '-map', '[v]', '-map', '0:a?',
   '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p',
   '-c:a', 'aac', '-b:a', '160k', '-r', '30', '-movflags', '+faststart', output.after]);
+// Editorial v2: the first successful demo used one barely-visible 9% zoom
+// and a top quote. Replace it with visible full-clip typography, 5 purposeful
+// camera punches and six verified topic cards, using the exact same source
+// frames and bit-identical licensed audio. This remains a non-publishing preview.
+const rawCards = [
+  { at_s: 0, text: "You don't use the 50 % rule." },
+  { at_s: 6.1, text: '100 plus units' },
+  { at_s: 11.55, text: 'all these expenses' },
+  { at_s: 30.8, text: "don't cash flow" },
+  { at_s: 37.15, text: 'You flip single family houses' },
+  { at_s: 43.3, text: "Don't ever buy a house for cash flow" },
+];
+const editorialCards = normalizeEditorialCards(rawCards, words, duration);
+if (editorialCards.length < 4) throw new Error('Canonical Ben Mallah transcript did not verify enough editorial cards');
+const editorialAssPath = path.join(root, 'ben-mallah-editorial.ass');
+fs.writeFileSync(editorialAssPath, buildEditorialCaptionsAss(words, {
+  duration, cards: rawCards, emphasisWords: ['expenses', 'cash', 'flow', 'flip'],
+}), 'utf8');
+// The green baked-in legacy captions are inside the source MP4, so a dark
+// bottom scrim must be composited BEFORE zoom. Fresh V3 jobs never need it:
+// editorial_captions.mjs is drawn directly over the original uncaptioned VOD.
+const gradientPath = path.join(root, 'temporary-caption-scrim.png');
+run(['-f', 'lavfi', '-i', 'color=c=0x04090F:s=1080x1920:r=30:d=0.1',
+  '-vf', "format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='if(lt(Y,1320),0,if(lt(Y,1470),246*(Y-1320)/150,if(lt(Y,1765),246,if(lt(Y,1885),246*(1885-Y)/120,0))))'",
+  '-frames:v', '1', '-pix_fmt', 'rgba', gradientPath]);
+const editorialZooms = [
+  [5.05, 7.35, 1.125], [10.6, 13.7, 1.16], [19, 21.5, 1.09],
+  [40.15, 41.95, 1.13], [43.3, 46.36, 1.16],
+];
+let zoomExpression = '1';
+for (const [a, stop, scale] of [...editorialZooms].reverse()) {
+  zoomExpression = 'if(between(on,' + Math.round(a * 30) + ','
+    + Math.round(stop * 30) + '),' + scale + ',' + zoomExpression + ')';
+}
+const editorialGraph = "[0:v][1:v]overlay=0:0:shortest=1[precovered];"
+  + "[precovered]fps=30,zoompan=z='" + zoomExpression
+  + "':x='iw/2-iw/zoom/2':y='0':d=1:s=1080x1920:fps=30[zoom];"
+  + "[zoom]ass=filename='" + editorialAssPath.replace(/'/g, "\\'") + "'[v]";
+run(['-i', output.before, '-loop', '1', '-i', gradientPath,
+  '-filter_complex', editorialGraph, '-map', '[v]', '-map', '0:a?',
+  '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+  '-c:a', 'copy', '-movflags', '+faststart', output.after]);
+
 const qcBefore = checkRenderedVideo(output.before, { sourceHasAudio: true, expectedDuration: duration });
 const qcAfter = checkRenderedVideo(output.after, { sourceHasAudio: true, expectedDuration: duration });
 if (!qcBefore.passed || !qcAfter.passed) throw new Error('Before/after clip QC failed: ' + JSON.stringify({ qcBefore, qcAfter }));
@@ -102,6 +146,9 @@ const report = {
   original_transcript_sha256: transcriptSha,
   transcript_words: words.length,
   applied_creative_plan: plan,
+  editorial_v2: { caption_px: 76, max_words: 4, cards: editorialCards,
+    zoom_windows: editorialZooms, verified_source_words: words.length,
+    audio_passthrough: true, original_renderer: 'clipper-v3-podcast' },
   before_qc: qcBefore,
   after_qc: qcAfter,
   disclaimer: 'Preview finishes an existing 9:16 captioned/mixed render. It does not demonstrate the upstream V3 re-transcription, framing or full remaster stages.',
