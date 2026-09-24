@@ -276,7 +276,12 @@ async function main() {
     }
 
     const sourceHasAudio = (probe(source).streams || []).some(stream => stream.codec_type === 'audio');
-    const contentQc = checkRenderedVideo(out, { sourceHasAudio, expectedDuration: duration });
+    const contentQc = checkRenderedVideo(out, {
+      // V2 also clips gameplay or deliberately silent stretches. Do not reject
+      // their audio because a source container happened to include a silent track.
+      sourceHasAudio: sourceHasAudio && Number(captionMeta.words || 0) > 0,
+      expectedDuration: duration,
+    });
     if (!contentQc.passed) throw new Error('content_qc_failed: ' + contentQc.errors.join(','));
 
     await progress(render.id, 'uploading', 'Uploading source window and rendered MP4 to clipper-media');
