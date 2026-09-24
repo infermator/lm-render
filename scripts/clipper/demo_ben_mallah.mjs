@@ -55,8 +55,12 @@ const artifact = JSON.parse(gunzipSync(zipped, { maxOutputLength: 128 * 1024 * 1
 if (artifact.vod_id !== vodId) throw new Error('Transcript source does not match baseline VOD');
 const words = wordsForWindow(artifact, sourceStart, sourceStart + duration);
 if (words.length < 15) throw new Error('Not enough verified Ben Mallah source words for preview');
-const firstPhrase = words.slice(0, 5).map(w => w.text).join(' ').replace(/\s+([,.!?])/g, '$1');
-const accent = words.find(w => Number(w.start) >= 8 && Number(w.start) <= 15 && /\w/.test(w.text));
+const spoken = words.map(w => w.text).join(' ').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+const firstPhrase = spoken.includes('you don t use the 50 rule')
+  ? "You don't use the 50% rule"
+  : words.slice(0, 8).map(w => w.text).join(' ').replace(/\s+([,.!?])/g, '$1');
+const accent = words.find(w => Number(w.start) >= 8 && Number(w.start) <= 17 && /^(expenses|payroll|rents|cashflow|money|profit|revenue)[,.!?]?$/i.test(w.text))
+  || words.find(w => Number(w.start) >= 8 && Number(w.start) <= 15 && /\w/.test(w.text));
 if (!accent) throw new Error('Could not find source-grounded zoom anchor');
 const emphasized = words.filter(w => /\$[\d,]+|million|thousand/i.test(w.text)).map(w => w.text).slice(0, 3);
 const plan = normalizeCreativeMedia({
@@ -84,8 +88,8 @@ const qcBefore = checkRenderedVideo(output.before, { sourceHasAudio: true, expec
 const qcAfter = checkRenderedVideo(output.after, { sourceHasAudio: true, expectedDuration: duration });
 if (!qcBefore.passed || !qcAfter.passed) throw new Error('Before/after clip QC failed: ' + JSON.stringify({ qcBefore, qcAfter }));
 run(['-i', output.before, '-i', output.after, '-filter_complex',
-  "[0:v]trim=duration=10,setpts=PTS-STARTPTS,scale=540:960,drawtext=text='BEFORE':fontcolor=white:fontsize=30:x=24:y=32[l];"
-  + "[1:v]trim=duration=10,setpts=PTS-STARTPTS,scale=540:960,drawtext=text='AFTER':fontcolor=white:fontsize=30:x=24:y=32[r];"
+  "[0:v]trim=duration=10,setpts=PTS-STARTPTS,scale=540:960,drawtext=text='BEFORE':fontcolor=white:fontsize=30:x=24:y=909:box=1:boxcolor=black@0.7:boxborderw=8[l];"
+  + "[1:v]trim=duration=10,setpts=PTS-STARTPTS,scale=540:960,drawtext=text='AFTER':fontcolor=white:fontsize=30:x=24:y=909:box=1:boxcolor=black@0.7:boxborderw=8[r];"
   + '[l][r]hstack=inputs=2[v]', '-map', '[v]', '-map', '1:a?', '-t', '10', '-c:v', 'libx264',
   '-preset', 'veryfast', '-crf', '24', '-c:a', 'aac', '-b:a', '128k', output.compare]);
 const report = {
