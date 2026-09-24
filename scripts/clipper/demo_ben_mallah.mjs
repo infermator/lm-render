@@ -132,11 +132,27 @@ run(['-i', output.before, '-loop', '1', '-i', gradientPath,
 const qcBefore = checkRenderedVideo(output.before, { sourceHasAudio: true, expectedDuration: duration });
 const qcAfter = checkRenderedVideo(output.after, { sourceHasAudio: true, expectedDuration: duration });
 if (!qcBefore.passed || !qcAfter.passed) throw new Error('Before/after clip QC failed: ' + JSON.stringify({ qcBefore, qcAfter }));
-run(['-i', output.before, '-i', output.after, '-filter_complex',
-  "[0:v]trim=duration=10,setpts=PTS-STARTPTS,scale=540:960,drawtext=text='BEFORE':fontcolor=white:fontsize=30:x=24:y=909:box=1:boxcolor=black@0.7:boxborderw=8[l];"
-  + "[1:v]trim=duration=10,setpts=PTS-STARTPTS,scale=540:960,drawtext=text='AFTER':fontcolor=white:fontsize=30:x=24:y=909:box=1:boxcolor=black@0.7:boxborderw=8[r];"
-  + '[l][r]hstack=inputs=2[v]', '-map', '[v]', '-map', '1:a?', '-t', '10', '-c:v', 'libx264',
-  '-preset', 'veryfast', '-crf', '24', '-c:a', 'aac', '-b:a', '128k', output.compare]);
+// Side-by-side samples seven important moments at the SAME original timestamps,
+// not just the first 10 seconds (which hid the payoff and camera treatment).
+const moments = [0.12, 5.05, 10.85, 19, 29.35, 36.65, 43.2];
+const comparisonGraph = [];
+for (const [index, at] of moments.entries()) {
+  const stop = Number((at + 1.7).toFixed(3));
+  for (const [sourceIndex, name, label] of [[0, 'before', 'BEFORE'], [1, 'after', 'AFTER']]) {
+    comparisonGraph.push('[' + sourceIndex + ':v]trim=start=' + at + ':end=' + stop
+      + ',setpts=PTS-STARTPTS,fps=30,scale=540:960,setsar=1,drawtext=text=' + label
+      + ':fontcolor=white:fontsize=29:box=1:boxcolor=black@0.72:boxborderw=8:x=24:y=908[' + name + index + ']');
+  }
+  comparisonGraph.push('[before' + index + '][after' + index + ']hstack=inputs=2[v' + index + ']');
+  comparisonGraph.push('[1:a]atrim=start=' + at + ':end=' + stop
+    + ',asetpts=PTS-STARTPTS[a' + index + ']');
+}
+comparisonGraph.push(moments.map((_, index) => '[v' + index + '][a' + index + ']').join('')
+  + 'concat=n=' + moments.length + ':v=1:a=1[v][a]');
+run(['-i', output.before, '-i', output.after, '-filter_complex', comparisonGraph.join(';'),
+  '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+  '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', output.compare]);
+
 const report = {
   schema_version: 'clipper-ben-mallah-creative-demo-v1',
   original_render_id: oldRender,
