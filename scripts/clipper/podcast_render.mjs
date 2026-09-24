@@ -529,7 +529,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const splitFilter = layout === 'two_shot_split' && Number(speakerEstimate.analysis?.timeline?.shot_count || 0) <= 1
     && speakerEstimate.framingSegments.length === 1 && positioned.length === 2
     ? splitTwoSpeakerFilter({ width: sourceVideo.width, height: sourceVideo.height,
-      leftCenter: positioned[0], rightCenter: positioned[1], outputLabel: layoutOutputLabel }) : null;
+      leftCenter: positioned[0], rightCenter: positioned[1], outputLabel: trackedOutputLabel }) : null;
   const shotAwareFilter = process.env.CLIPPER_SHOT_TRACKING !== '0'
     && (layout === 'center_crop' || layout === 'active_speaker')
     ? shotAwareFramingFilter({
