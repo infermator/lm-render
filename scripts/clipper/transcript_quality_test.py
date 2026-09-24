@@ -2,7 +2,7 @@
 import unittest
 from dataclasses import dataclass
 
-from transcript_quality import quality_signals, use_retry, agreed_silence
+from transcript_quality import quality_signals, use_retry, agreed_silence, zero_duration_words, use_timing_retry
 
 
 @dataclass
@@ -26,6 +26,20 @@ class TranscriptQualityTests(unittest.TestCase):
         self.assertTrue(use_retry(old, good))
         self.assertFalse(use_retry(old, {**good, "words": [1]}))
         self.assertFalse(use_retry(old, {**good, "quality": {"avg_logprob": -1.7}}))
+
+    def test_zero_duration_word_retry_requires_same_spoken_content(self):
+        original = {"quality": {"avg_logprob": -.9},
+                    "words": [{"start_s": 1.74, "end_s": 1.74, "text": "use?"},
+                              {"start_s": 1.74, "end_s": 1.9, "text": "Only"}]}
+        recovered = {"quality": {"avg_logprob": -.85, "suspected_hallucination": False},
+                     "words": [{"start_s": 1.6, "end_s": 1.72, "text": "use?"},
+                               {"start_s": 1.74, "end_s": 1.9, "text": "Only"}]}
+        self.assertEqual(zero_duration_words(original["words"]), 1)
+        self.assertTrue(use_timing_retry(original, recovered))
+        self.assertFalse(use_timing_retry(original, {**recovered,
+            "words": [{"start_s": 1.6, "end_s": 1.72, "text": "invention"}]}))
+        self.assertFalse(use_timing_retry(original, {**recovered,
+            "quality": {"avg_logprob": -1.8, "suspected_hallucination": False}}))
 
     def test_only_two_pass_agreed_silence_is_dropped(self):
         old = {"quality": {"no_speech_prob": .9, "avg_logprob": -1.6}}
