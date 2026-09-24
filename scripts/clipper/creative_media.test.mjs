@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCreativeMedia, buildHookAss, zoomFilter, musicCurveFilter } from './creative_media.mjs';
+import { normalizeCreativeMedia, buildHookAss, zoomFilter, musicCurveFilter, sfxAudioFilter } from './creative_media.mjs';
+import { spawnSync } from 'node:child_process';
 import { buildTranscriptAss } from './podcast_media.mjs';
 
 const words = [
@@ -44,4 +45,20 @@ test('hook captions escape ASS override injection and emphasis uses real words',
   assert.match(captions, /Style: EmphasisWord,/);
   assert.match(captions, /\\rEmphasisWord/);
   assert.doesNotMatch(buildHookAss('', 8), /Dialogue/);
+});
+
+test('timed SFX only accept exact grounded transcript anchor and parse in real FFmpeg', () => {
+  const plan = normalizeCreativeMedia({
+    ...input,
+    sfx_cues: [{ at_s: 4.2, type: 'ding', anchor: 'lost' },
+      { at_s: 2, type: 'pop', anchor: 'an invented word' }],
+  }, words, 8);
+  assert.equal(plan.sfxCues.length, 1);
+  const graph = sfxAudioFilter(plan.sfxCues, '0:a');
+  assert.match(graph, /adelay=4200\|4200/);
+  const r = spawnSync('ffmpeg', ['-hide_banner', '-nostdin', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'sine=frequency=220:duration=6:sample_rate=48000',
+    '-filter_complex', graph, '-map', '[audio_sfx]', '-f', 'null', '-'],
+    { encoding: 'utf8', timeout: 30000 });
+  assert.equal(r.status, 0, r.stderr || r.error?.message);
 });
