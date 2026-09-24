@@ -1,0 +1,41 @@
+name: Ben Mallah creative before-after preview
+
+on:
+  push:
+    branches:
+      - feat/clipper-v2-v3-creative-qc
+    paths:
+      - '.github/workflows/clipper-ben-mallah-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ben-mallah-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install FFmpeg and subtitle fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-inter fonts-dejavu-core
+          node --check scripts/clipper/demo_ben_mallah.mjs
+      - name: Render existing Ben Mallah clip BEFORE and AFTER
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/clipper/demo_ben_mallah.mjs
+      - name: Upload comparison artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ben-mallah-before-after-creative-preview
+          path: |
+            clipper-demo-output/*.mp4
+            clipper-demo-output/report.json
+          if-no-files-found: error
+          retention-days: 7
