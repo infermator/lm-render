@@ -591,6 +591,29 @@ export function resolvePodcastFraming({ localCenters, speakerPositions, interval
   };
 }
 
+/** Optional two-person split only on confirmed stable wide camera shots.
+ * Multicam material must keep the existing one-speaker crop. */
+export function splitTwoSpeakerFilter({ width, height, leftCenter, rightCenter, outputLabel = 'v' }) {
+  const w = Math.floor(Number(width)), h = Math.floor(Number(height));
+  const xLeft = Number(leftCenter), xRight = Number(rightCenter);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w < 640 || h < 360
+    || !Number.isFinite(xLeft) || !Number.isFinite(xRight)
+    || xLeft < 0.08 || xRight > 0.92 || xRight - xLeft < 0.27) return null;
+  let cropHeight = h;
+  let cropWidth = Math.round(h * 9 / 8);
+  if (cropWidth > w) { cropWidth = w; cropHeight = Math.round(w * 8 / 9); }
+  cropWidth -= cropWidth % 2; cropHeight -= cropHeight % 2;
+  if (cropWidth < 320 || cropHeight < 320) return null;
+  const at = x => Math.max(0, Math.min(w - cropWidth, Math.round(x * w - cropWidth / 2)));
+  const y = Math.max(0, Math.floor((h - cropHeight) / 2));
+  const a = at(xLeft), c = at(xRight);
+  if (Math.abs(a - c) < Math.round(cropWidth * 0.16)) return null;
+  return '[0:v]split=2[dual_a][dual_b];'
+    + '[dual_a]crop=' + cropWidth + ':' + cropHeight + ':' + a + ':' + y + ',scale=1080:960[dual_top];'
+    + '[dual_b]crop=' + cropWidth + ':' + cropHeight + ':' + c + ':' + y + ',scale=1080:960[dual_bottom];'
+    + '[dual_top][dual_bottom]vstack=inputs=2[' + outputLabel + ']';
+}
+
 export function activeSpeakerCropFilter({ width, height, centers, intervals, captionSuffix = '', outputLabel = 'v' }) {
   const rawWidth = Number(width);
   const rawHeight = Number(height);
