@@ -490,8 +490,8 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   const hookPath = path.join(work, 'hook.ass');
   const hookAss = buildHookAss(creative.hookText, duration);
   if (hookAss) fs.writeFileSync(hookPath, hookAss, 'utf8');
-  const layoutOutputLabel = creative.zoomCues.length ? 'creative_base'
-    : captionsCreated ? 'caption_base' : 'v';
+  const layoutOutputLabel = captionsCreated ? 'caption_base' : 'v';
+  const trackedOutputLabel = creative.zoomCues.length ? 'creative_base' : layoutOutputLabel;
 
   const sourceProbe = probe(source);
   const sourceVideo = (sourceProbe.streams || []).find(stream => stream.codec_type === 'video') || {};
@@ -522,7 +522,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       width: sourceVideo.width,
       height: sourceVideo.height,
       segments: speakerEstimate.framingSegments,
-      outputLabel: layoutOutputLabel,
+      outputLabel: trackedOutputLabel,
     })
     : null;
   const shotTracking = !shotAwareFilter && process.env.CLIPPER_SHOT_TRACKING !== '0' && layout === 'center_crop'
@@ -533,21 +533,21 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     height: sourceVideo.height,
     centers,
     intervals,
-    outputLabel: layoutOutputLabel,
+    outputLabel: trackedOutputLabel,
   }) : shotTracking ? activeSpeakerCropFilter({
     width: sourceVideo.width,
     height: sourceVideo.height,
     centers: shotTracking.centers,
     intervals: shotTracking.intervals,
-    outputLabel: layoutOutputLabel,
+    outputLabel: trackedOutputLabel,
   }) : null);
   const actualLayout = activeFilter
     ? (shotAwareFilter ? 'shot_aware' : layout === 'active_speaker' ? 'active_speaker' : 'shot_tracked')
     : 'center_crop';
   // A missing/invalid tracker may degrade to a static portrait crop, never to
   // a letterboxed landscape insert.
-  const layoutFilter = activeFilter || centerCropFilter(layoutOutputLabel);
-  const zoomStage = zoomFilter(creative.zoomCues, layoutOutputLabel, captionsCreated ? 'caption_base' : 'v');
+  const layoutFilter = activeFilter || centerCropFilter(trackedOutputLabel);
+  const zoomStage = zoomFilter(creative.zoomCues, trackedOutputLabel, layoutOutputLabel);
   const visualBase = zoomStage ? `${layoutFilter};${zoomStage}` : layoutFilter;
   const captioned = captionsCreated
     ? `${visualBase};${captionCompositeFilter({
