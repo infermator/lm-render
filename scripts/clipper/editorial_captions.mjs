@@ -20,13 +20,20 @@ const phrase = words => words.map((word, i) =>
 export function editorialCaptionGroups(rawWords) {
   const words = (Array.isArray(rawWords) ? rawWords : [])
     .filter(w => Number.isFinite(Number(w?.start)) && Number.isFinite(Number(w?.end))
-      && Number(w.end) > Number(w.start) && clean(w.text))
+      && clean(w.text))
     .sort((a, b) => Number(a.start) - Number(b.start));
   const groups = [];
   let group = [];
   const flush = () => { if (group.length) groups.push(group); group = []; };
   for (const word of words) {
-    if (group.length && (String(word.speaker || '') !== String(group.at(-1).speaker || '')
+    // Whisper sometimes assigns zero-length punctuation at a speaker handoff.
+    // Keep its sentence boundary so two different voices cannot share a caption.
+    if (Number(word.end) <= Number(word.start)) {
+      if (/[.!?]$/.test(clean(word.text))) flush();
+      continue;
+    }
+    if (group.length && (Number(word.start) < Number(group.at(-1).end) - 0.08
+      || String(word.speaker || '') !== String(group.at(-1).speaker || '')
       || Number(word.start) - Number(group.at(-1).end) > 0.65)) flush();
     group.push(word);
     if (group.length >= EDITORIAL_CAPTION_CONTRACT.max_words
@@ -51,7 +58,7 @@ export function normalizeEditorialCards(rawCards, words, duration) {
     .sort((a, b) => a.at_s - b.at_s)
     .filter((c, i, all) => i === 0 || c.at_s - all[i - 1].at_s >= 3)
     .slice(0, 5)
-    .map(c => ({ ...c, text: c.text.toLocaleUpperCase('en'),
+    .map(c => ({ ...c, text: c.text.toLocaleUpperCase('en').replace(/(\d)\s+%/g, '$1%'),
       end_s: Math.min(duration, c.at_s + (c.text.length > 25 ? 2.8 : 2.3)) }));
 }
 function styledPhrase(group, selected, emphasized) {
