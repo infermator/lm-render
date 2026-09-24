@@ -7,7 +7,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { captionCompositeFilter } from './ffmpeg_filters.mjs';
+import { captionCompositeFilter, subtitleFilterSuffix } from './ffmpeg_filters.mjs';
+import { normalizeCreativeMedia, buildHookAss, zoomFilter } from './creative_media.mjs';
+import { checkRenderedVideo } from './content_qc.mjs';
 import {
   activeSpeakerCropFilter,
   analysisSamples,
@@ -469,13 +471,27 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   });
   const centers = framing.centers;
   const layout = chooseLayout(plan, visualConfirmation, framing);
+  const speechWords = wordsForWindow(artifact, start, end);
+  const creativeShift = Math.max(0, start - Number(plan?.creative_timeline_origin_s ?? start));
+  const rawCreative = plan?.creative && typeof plan.creative === 'object' ? plan.creative : {};
+  const creative = normalizeCreativeMedia({
+    ...rawCreative,
+    zoom_cues: Array.isArray(rawCreative.zoom_cues)
+      ? rawCreative.zoom_cues.map(cue => ({ ...cue, at_s: Number(cue.at_s) - creativeShift })) : [],
+    music_curve: Array.isArray(rawCreative.music_curve)
+      ? rawCreative.music_curve.map(point => ({ ...point, at_s: Number(point.at_s) - creativeShift })) : [],
+  }, speechWords, duration);
   const captionPath = path.join(work, 'captions.ass');
-  const captionWords = plan?.output?.captions === false ? [] : wordsForWindow(artifact, start, end);
+  const captionWords = plan?.output?.captions === false ? [] : speechWords;
   const captionAccent = chooseCaptionAccent(captionLaneSamples(source, duration));
-  const ass = buildTranscriptAss(captionWords, captionAccent);
+  const ass = buildTranscriptAss(captionWords, captionAccent, creative.emphasisWords);
   if (captionWords.length) fs.writeFileSync(captionPath, ass, 'utf8');
   const captionsCreated = captionWords.length > 0;
-  const layoutOutputLabel = captionsCreated ? 'caption_base' : 'v';
+  const hookPath = path.join(work, 'hook.ass');
+  const hookAss = buildHookAss(creative.hookText, duration);
+  if (hookAss) fs.writeFileSync(hookPath, hookAss, 'utf8');
+  const layoutOutputLabel = creative.zoomCues.length ? 'creative_base'
+    : captionsCreated ? 'caption_base' : 'v';
 
   const sourceProbe = probe(source);
   const sourceVideo = (sourceProbe.streams || []).find(stream => stream.codec_type === 'video') || {};
@@ -531,22 +547,26 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
   // A missing/invalid tracker may degrade to a static portrait crop, never to
   // a letterboxed landscape insert.
   const layoutFilter = activeFilter || centerCropFilter(layoutOutputLabel);
-  const filter = captionsCreated
-    ? `${layoutFilter};${captionCompositeFilter({
+  const zoomStage = zoomFilter(creative.zoomCues, layoutOutputLabel, captionsCreated ? 'caption_base' : 'v');
+  const visualBase = zoomStage ? `${layoutFilter};${zoomStage}` : layoutFilter;
+  const captioned = captionsCreated
+    ? `${visualBase};${captionCompositeFilter({
         filePath: captionPath,
         forceStyle: '',
         strength: 'readable',
       })}`
-    : layoutFilter;
+    : visualBase;
+  const filter = hookAss ? `${captioned};[v]${subtitleFilterSuffix(hookPath, '').slice(1)}[creative_hook]` : captioned;
+  const videoOutputLabel = hookAss ? 'creative_hook' : 'v';
   await progress(render.id, 'composing', `Rendering 1080x1920 podcast edit (${actualLayout})`);
   const output = path.join(work, 'video.mp4');
   const ffmpegInputs = ['-i', source];
   if (soundtrackFile) ffmpegInputs.push('-stream_loop', '-1', '-ss', soundtrackOffset.toFixed(3), '-i', soundtrackFile);
-  const audioFilter = soundtrack ? podcastSoundtrackAudioFilter({ duration, gainDb: soundtrack.gain_db, sourceHasAudio }) : null;
+  const audioFilter = soundtrack ? podcastSoundtrackAudioFilter({ duration, gainDb: soundtrack.gain_db, sourceHasAudio, musicCurve: creative.musicCurve }) : null;
   const fullFilter = audioFilter ? `${filter};${audioFilter}` : filter;
   run('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-y', ...ffmpegInputs, '-filter_complex', fullFilter,
-    '-map', '[v]', '-map', soundtrack ? '[a]' : '0:a?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
+    '-map', `[${videoOutputLabel}]`, '-map', soundtrack ? '[a]' : '0:a?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-r', String(Number(plan?.output?.fps || 30)),
     '-t', duration.toFixed(3), '-movflags', '+faststart', output,
   ]);
@@ -562,6 +582,11 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
     throw new Error(`Unexpected podcast output duration ${outputDuration.toFixed(2)}s for ${duration.toFixed(2)}s plan`);
   }
   if (soundtrack && !resultAudio) throw new Error('Soundtrack render completed without an audio stream');
+  const contentQc = checkRenderedVideo(output, {
+    sourceHasAudio: sourceHasAudio || Boolean(soundtrack),
+    expectedDuration: duration,
+  });
+  if (!contentQc.passed) throw new Error('content_qc_failed: ' + contentQc.errors.join(','));
 
   const lease = await progress(render.id, 'uploading', 'Uploading immutable podcast render');
   if (!lease || lease.ignored) throw new Error('stale_worker_run: Podcast render lease changed before upload');
@@ -585,6 +610,8 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       worker_run_id: WORKER_RUN_ID,
       source_window_s: [start, end],
       boundary_refinement: refinedWindow,
+      creative: { schema_version: plan?.creative?.schema_version || null, applied: creative, timeline_shift_s: creativeShift },
+      content_qc: contentQc,
       shared_materialization: { ephemeral: true, identity: batchIdentity, start_s: batchStart },
       audio_alignment: alignment,
       layout: actualLayout,
@@ -655,6 +682,7 @@ async function renderCandidate({ render, candidate, vod, artifact, batchSource, 
       audio_stream: Boolean(resultAudio),
       natural_speech_tail: refinedWindow.reason,
       visual_confirmation: Boolean(visualConfirmation),
+      content_qc: contentQc,
     },
   });
   console.log(`[podcast-render] completed ${render.id} -> ${resultStoragePath}`);
