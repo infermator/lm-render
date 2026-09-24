@@ -231,7 +231,9 @@ def transcribe(wav: pathlib.Path, model_name: str) -> tuple[list[dict[str, Any]]
                 print("Podcast targeted ASR retry failed; preserving original: "
                       + str(exc)[:180], flush=True)
 
-    segments = [segment for segment in segments if segment["text"] and segment["words"]]
+    # Keep legitimate speech segments even if Whisper omitted word-level timings.
+    # Only remove silence confirmed by the second ASR pass.
+    segments = [segment for segment in segments if segment["text"]]
     return segments, {
         "language": str(info.language or "unknown"),
         "language_probability": float(info.language_probability or 0),
