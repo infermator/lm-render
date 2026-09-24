@@ -409,17 +409,21 @@ function captionText(items) {
     .filter(Boolean).join(' ').replace(/\s+([,.;!?])/g, '$1');
 }
 
-function activeWordLine(items, activeIndex) {
+function activeWordLine(items, activeIndex, emphasized = new Set()) {
   return items.map((item, index) => {
     const text = escapeAssText(String(item.text || '').trim());
     // TransparentWord uses the exact same font metrics as the base line. It
     // reserves every inactive word's width, so the active chip can move without
     // causing the centered phrase to be laid out at a new horizontal position.
-    return `{\\r${index === activeIndex ? 'ActiveWord' : 'TransparentWord'}}${text}`;
+    const spokenKey = String(item.text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '').trim();
+    const activeStyle = emphasized.has(spokenKey) ? 'EmphasisWord' : 'ActiveWord';
+    return '{\\r' + (index === activeIndex ? activeStyle : 'TransparentWord') + '}' + text;
   }).filter(Boolean).join(' ').replace(/\s+([,.;!?])/g, '$1');
 }
 
-export function buildTranscriptAss(words, accentValue = chooseCaptionAccent([])) {
+export function buildTranscriptAss(words, accentValue = chooseCaptionAccent([]), emphasisWords = []) {
+  const emphasized = new Set((Array.isArray(emphasisWords) ? emphasisWords : []).map(word =>
+    String(word || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '').trim()).filter(Boolean));
   const accent = accentValue && typeof accentValue === 'object' ? accentValue : chooseCaptionAccent([]);
   const header = `[Script Info]
 ScriptType: v4.00+
@@ -432,6 +436,7 @@ WrapStyle: 0
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: PodcastCaption,Inter,15,&H00FFFFFF,&H00FFFFFF,&H00000000,&H70000000,-1,0,0,0,100,100,0,0,1,0.8,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
 Style: ActiveWord,Inter,15,&H00${accent.text_ass_bgr},&H00${accent.text_ass_bgr},&H00${accent.ass_bgr},&H00${accent.ass_bgr},-1,0,0,0,100,100,0,0,3,1.8,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
+Style: EmphasisWord,Inter,17,&H00${accent.text_ass_bgr},&H00${accent.text_ass_bgr},&H00${accent.ass_bgr},&H00${accent.ass_bgr},-1,0,0,0,100,100,0,0,3,2.4,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
 Style: TransparentWord,Inter,15,&HFF000000,&HFF000000,&HFF000000,&HFF000000,-1,0,0,0,100,100,0,0,1,0,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
 
 [Events]
@@ -455,7 +460,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
       // A bright one- or two-frame chip reads as a flash, not a highlight. Keep
       // the stable base text and omit only that unreliable active overlay.
       if (endCs - startCs < 8) continue;
-      events.push(`Dialogue: 1,${assTimestamp(startCs / 100)},${assTimestamp(endCs / 100)},TransparentWord,,0,0,0,,${activeWordLine(items, index)}`);
+      events.push(`Dialogue: 1,${assTimestamp(startCs / 100)},${assTimestamp(endCs / 100)},TransparentWord,,0,0,0,,${activeWordLine(items, index, emphasized)}`);
     }
   }
   return `${header}\n${events.join('\n')}\n`;
