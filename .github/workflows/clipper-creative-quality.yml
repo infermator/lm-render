@@ -35,7 +35,7 @@ jobs:
           python -m py_compile scripts/clipper/transcript_quality.py scripts/clipper/podcast_transcribe.py
       - name: Unit tests
         run: |
-          node --test scripts/clipper/creative_media.test.mjs
+          node --test scripts/clipper/creative_media.test.mjs scripts/clipper/content_qc.test.mjs
           python scripts/clipper/transcript_quality_test.py
       - name: FFmpeg smoke - zoom and music-expression syntax
         run: |
