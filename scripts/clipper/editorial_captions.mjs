@@ -57,7 +57,7 @@ export function normalizeEditorialCards(rawCards, words, duration) {
       && norm(c.text).length >= 3 && spokenNear(words, c.at_s).includes(norm(c.text)))
     .sort((a, b) => a.at_s - b.at_s)
     .filter((c, i, all) => i === 0 || c.at_s - all[i - 1].at_s >= 3)
-    .slice(0, 5)
+    .slice(0, 6)
     .map(c => ({ ...c, text: c.text.toLocaleUpperCase('en').replace(/(\d)\s+%/g, '$1%'),
       end_s: Math.min(duration, c.at_s + (c.text.length > 25 ? 2.8 : 2.3)) }));
 }
