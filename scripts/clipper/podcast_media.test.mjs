@@ -384,7 +384,9 @@ test('Podcast batch materialization stays ephemeral while outputs are uploaded',
 test('Podcast rendering has no landscape or fit-blur fallback path', () => {
   const worker = fs.readFileSync(new URL('./podcast_render.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(worker, /fit_blur|fitBlurFilter|force_original_aspect_ratio=decrease/);
-  assert.match(worker, /const layoutFilter = activeFilter \|\| centerCropFilter\(layoutOutputLabel\)/);
+  assert.match(worker, /const layoutFilter = activeFilter \|\| centerCropFilter\(trackedOutputLabel\)/);
+  assert.match(worker, /const trackedOutputLabel = creative\.zoomCues\.length \? 'creative_base' : layoutOutputLabel/);
+  assert.match(worker, /zoomFilter\(creative\.zoomCues, trackedOutputLabel, layoutOutputLabel\)/);
 });
 
 test('Podcast render owns the same isolated proof-of-origin fallback as transcript ingest', () => {
