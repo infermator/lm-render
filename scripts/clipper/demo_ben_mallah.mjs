@@ -91,12 +91,12 @@ run(['-i', output.before, '-filter_complex', videoFilter, '-map', '[v]', '-map',
 // camera punches and six verified topic cards, using the exact same source
 // frames and bit-identical licensed audio. This remains a non-publishing preview.
 const rawCards = [
-  { at_s: 0, text: "You don't use the 50 % rule." },
+  { at_s: 0.25, text: 'the 50 % rule?' },
   { at_s: 6.1, text: '100 plus units' },
   { at_s: 11.55, text: 'all these expenses' },
   { at_s: 30.8, text: "don't cash flow" },
-  { at_s: 37.15, text: 'You flip single family houses' },
-  { at_s: 43.3, text: "Don't ever buy a house for cash flow" },
+  { at_s: 37.15, text: 'flip single family houses' },
+  { at_s: 42.35, text: "Don't ever buy a house" },
 ];
 const editorialCards = normalizeEditorialCards(rawCards, words, duration);
 if (editorialCards.length < 4) throw new Error('Canonical Ben Mallah transcript did not verify enough editorial cards');
