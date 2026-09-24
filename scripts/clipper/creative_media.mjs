@@ -13,7 +13,7 @@ const wordsText = words => words.map(word => String(word.text || '')).join(' ');
 /** Validate the LLM data AGAIN at the renderer boundary. Never emit shell/ffmpeg commands from AI. */
 export function normalizeCreativeMedia(raw, words, duration) {
   const disabled = { enabled: false, style: 'minimal', hookText: '', emphasisWords: [],
-    zoomCues: [], musicCurve: [] };
+    zoomCues: [], musicCurve: [], sfxCues: [] };
   if (!raw || typeof raw !== 'object' || raw.schema_version !== CREATIVE_SCHEMA
     || raw.enabled !== true || !Number.isFinite(duration) || duration < 8) return disabled;
   const speech = norm(wordsText(words));
@@ -58,7 +58,21 @@ export function normalizeCreativeMedia(raw, words, duration) {
   }).filter(Boolean).sort((a, b) => a.at_s - b.at_s)
     .filter((point, index, all) => index === 0 || point.at_s - all[index - 1].at_s >= 0.25)
     .slice(0, 5);
-  return { enabled: true, style, hookText, emphasisWords, zoomCues, musicCurve };
+  const rawSfx = Array.isArray(raw.sfx_cues) ? raw.sfx_cues : [];
+  const sfxCues = style === 'minimal' ? [] : rawSfx.map(cue => {
+    if (!cue || typeof cue !== 'object' || !['ding', 'impact', 'pop'].includes(cue.type)) return null;
+    const at = number(cue.at_s), anchor = literal(cue.anchor);
+    if (at === null || at <= 0.5 || at >= duration - 0.5 || !anchor) return null;
+    const anchorTokens = norm(anchor).split(' ').filter(Boolean);
+    for (let i = 0; i <= words.length - anchorTokens.length; i++) {
+      const phrase = norm(words.slice(i, i + anchorTokens.length).map(word => word.text).join(' '));
+      if (phrase === anchorTokens.join(' ') && Math.abs(Number(words[i].start) - at) <= 1.3)
+        return { at_s: round(at), type: cue.type, anchor };
+    }
+    return null;
+  }).filter(Boolean).sort((a, b) => a.at_s - b.at_s)
+    .filter((cue, index, all) => index === 0 || cue.at_s - all[index - 1].at_s >= 3).slice(0, 2);
+  return { enabled: true, style, hookText, emphasisWords, zoomCues, musicCurve, sfxCues };
 }
 
 function assTimestamp(seconds) {
@@ -110,4 +124,28 @@ export function musicCurveFilter(curve, inputLabel = 'music_pre', outputLabel = 
     expr = 'if(lt(t\\,' + b.at_s + ')\\,max(0.35\\,min(1\\,' + ramp + '))\\,' + expr + ')';
   }
   return '[' + inputLabel + "]volume='" + expr + "':eval=frame[" + outputLabel + ']';
+}
+
+/** Synthetic, license-free, speech-anchored accents. No shell arguments from AI. */
+export function sfxAudioFilter(cues, inputLabel = 'a', outputLabel = 'audio_sfx') {
+  if (!Array.isArray(cues) || !cues.length) return null;
+  const profile = { ding: { hz: 880, duration: 0.22, gain: -22 },
+    impact: { hz: 170, duration: 0.28, gain: -20 },
+    pop: { hz: 480, duration: 0.12, gain: -23 } };
+  const segments = ['[' + inputLabel + ']aformat=sample_rates=48000:channel_layouts=stereo[sfx_programme]'];
+  for (let i = 0; i < cues.length; i++) {
+    const cue = cues[i], p = profile[cue.type];
+    if (!p || !Number.isFinite(cue.at_s) || cue.at_s < 0.5) return null;
+    const fadeOut = round(p.duration - Math.min(0.07, p.duration / 3));
+    const delayMs = Math.round(cue.at_s * 1000);
+    segments.push('sine=frequency=' + p.hz + ':sample_rate=48000:duration=' + p.duration
+      + ',afade=t=in:st=0:d=0.02,afade=t=out:st=' + fadeOut + ':d=' + round(p.duration - fadeOut)
+      + ',volume=' + p.gain + 'dB,aformat=sample_rates=48000:channel_layouts=stereo,'
+      + 'adelay=' + delayMs + '|' + delayMs + '[sfx_' + i + ']');
+  }
+  segments.push('[sfx_programme]' + cues.map((_, i) => '[sfx_' + i + ']').join('')
+    + 'amix=inputs=' + (cues.length + 1)
+    + ':duration=first:dropout_transition=0:normalize=0,'
+    + 'alimiter=limit=0.95:attack=5:release=50[' + outputLabel + ']');
+  return segments.join(';');
 }
