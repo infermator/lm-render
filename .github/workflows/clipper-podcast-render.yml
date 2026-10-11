@@ -157,6 +157,9 @@ jobs:
           SHARD_INDEX: ${{ matrix.shard }}
           CLIPPER_WORKER_INSTANCE: ${{ github.job }}-${{ matrix.shard }}
           CLIPPER_PODCAST_WPC_ENABLED: '1'
+          # Only applies with confirmed fixed two-person camera; edited multicam stays unchanged.
+          CLIPPER_PODCAST_SPLIT_SCREEN: '1'
+          CLIPPER_PODCAST_EDITORIAL_V2: '1'
           DRAIN_PASSES: ${{ github.event_name == 'schedule' && '2' || '1' }}
         run: |
           set -uo pipefail

@@ -1,3 +1,4 @@
+import { musicCurveFilter } from './creative_media.mjs';
 // ASS uses the explicit 324x576 script canvas below. MarginV=96 therefore
 // preserves the visual lane of the older SRT profile (MarginV=48 on libass's
 // implicit 288-line canvas) instead of dropping captions against the UI-safe
@@ -148,7 +149,7 @@ export function soundtrackStartOffset(trackDurationValue, clipDurationValue, see
 // quieter than the videos around it.
 const PROGRAMME_TRIM_DB = -1.5;
 
-export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: gainValue, sourceHasAudio = true }) {
+export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: gainValue, sourceHasAudio = true, musicCurve = [] }) {
   const duration = Number(durationValue);
   const gainDb = Number(gainValue);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('Soundtrack mix duration is invalid');
@@ -156,15 +157,17 @@ export function podcastSoundtrackAudioFilter({ duration: durationValue, gainDb: 
   const fadeOutDuration = Math.min(1.2, Math.max(0.25, duration / 8));
   const fadeOutStart = Math.max(0, duration - fadeOutDuration);
   const music = `[1:a]aformat=sample_rates=48000:channel_layouts=stereo,loudnorm=I=-18:LRA=7:TP=-2,volume=${gainDb.toFixed(2)}dB,atrim=0:${duration.toFixed(3)},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.45,afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOutDuration.toFixed(3)}[music_pre]`;
-  if (!sourceHasAudio) return `${music};[music_pre]volume=${PROGRAMME_TRIM_DB.toFixed(2)}dB,alimiter=limit=0.95:attack=5:release=50[a]`;
+  const dynamicMusic = musicCurveFilter(musicCurve);
+  if (!sourceHasAudio) return `${music};${dynamicMusic};[music_dynamic]volume=${PROGRAMME_TRIM_DB.toFixed(2)}dB,alimiter=limit=0.95:attack=5:release=50[a]`;
   return [
     music,
+    dynamicMusic,
     `[0:a]aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)},asplit=2[source_mix][speech_key]`,
     // Keep the bed audible beneath a podcast voice. The previous 0.03/10:1
     // contract pushed a normalized -14 dB bed to roughly -42 LUFS on the
     // reference clip, which was functionally dry. This gentler detector keeps
     // speech about 16 dB forward while preserving the track's rhythm.
-    '[music_pre][speech_key]sidechaincompress=threshold=0.06:ratio=4:attack=20:release=450:makeup=1[ducked_music]',
+    '[music_dynamic][speech_key]sidechaincompress=threshold=0.06:ratio=4:attack=20:release=450:makeup=1[ducked_music]',
     `[source_mix][ducked_music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,volume=${PROGRAMME_TRIM_DB.toFixed(2)}dB,alimiter=limit=0.95:attack=5:release=50[a]`,
   ].join(';');
 }
@@ -409,17 +412,21 @@ function captionText(items) {
     .filter(Boolean).join(' ').replace(/\s+([,.;!?])/g, '$1');
 }
 
-function activeWordLine(items, activeIndex) {
+function activeWordLine(items, activeIndex, emphasized = new Set()) {
   return items.map((item, index) => {
     const text = escapeAssText(String(item.text || '').trim());
     // TransparentWord uses the exact same font metrics as the base line. It
     // reserves every inactive word's width, so the active chip can move without
     // causing the centered phrase to be laid out at a new horizontal position.
-    return `{\\r${index === activeIndex ? 'ActiveWord' : 'TransparentWord'}}${text}`;
+    const spokenKey = String(item.text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '').trim();
+    const activeStyle = emphasized.has(spokenKey) ? 'EmphasisWord' : 'ActiveWord';
+    return '{\\r' + (index === activeIndex ? activeStyle : 'TransparentWord') + '}' + text;
   }).filter(Boolean).join(' ').replace(/\s+([,.;!?])/g, '$1');
 }
 
-export function buildTranscriptAss(words, accentValue = chooseCaptionAccent([])) {
+export function buildTranscriptAss(words, accentValue = chooseCaptionAccent([]), emphasisWords = []) {
+  const emphasized = new Set((Array.isArray(emphasisWords) ? emphasisWords : []).map(word =>
+    String(word || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '').trim()).filter(Boolean));
   const accent = accentValue && typeof accentValue === 'object' ? accentValue : chooseCaptionAccent([]);
   const header = `[Script Info]
 ScriptType: v4.00+
@@ -432,6 +439,7 @@ WrapStyle: 0
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: PodcastCaption,Inter,15,&H00FFFFFF,&H00FFFFFF,&H00000000,&H70000000,-1,0,0,0,100,100,0,0,1,0.8,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
 Style: ActiveWord,Inter,15,&H00${accent.text_ass_bgr},&H00${accent.text_ass_bgr},&H00${accent.ass_bgr},&H00${accent.ass_bgr},-1,0,0,0,100,100,0,0,3,1.8,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
+Style: EmphasisWord,Inter,17,&H00${accent.text_ass_bgr},&H00${accent.text_ass_bgr},&H00${accent.ass_bgr},&H00${accent.ass_bgr},-1,0,0,0,100,100,0,0,3,2.4,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
 Style: TransparentWord,Inter,15,&HFF000000,&HFF000000,&HFF000000,&HFF000000,-1,0,0,0,100,100,0,0,1,0,0,2,18,18,${PODCAST_CAPTION_MARGIN_V},1
 
 [Events]
@@ -455,7 +463,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
       // A bright one- or two-frame chip reads as a flash, not a highlight. Keep
       // the stable base text and omit only that unreliable active overlay.
       if (endCs - startCs < 8) continue;
-      events.push(`Dialogue: 1,${assTimestamp(startCs / 100)},${assTimestamp(endCs / 100)},TransparentWord,,0,0,0,,${activeWordLine(items, index)}`);
+      events.push(`Dialogue: 1,${assTimestamp(startCs / 100)},${assTimestamp(endCs / 100)},TransparentWord,,0,0,0,,${activeWordLine(items, index, emphasized)}`);
     }
   }
   return `${header}\n${events.join('\n')}\n`;
@@ -581,6 +589,29 @@ export function resolvePodcastFraming({ localCenters, speakerPositions, interval
     spread: Number(spread.toFixed(4)),
     raw_spread: rawSpread == null ? null : Number(rawSpread.toFixed(4)),
   };
+}
+
+/** Optional two-person split only on confirmed stable wide camera shots.
+ * Multicam material must keep the existing one-speaker crop. */
+export function splitTwoSpeakerFilter({ width, height, leftCenter, rightCenter, outputLabel = 'v' }) {
+  const w = Math.floor(Number(width)), h = Math.floor(Number(height));
+  const xLeft = Number(leftCenter), xRight = Number(rightCenter);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w < 640 || h < 360
+    || !Number.isFinite(xLeft) || !Number.isFinite(xRight)
+    || xLeft < 0.08 || xRight > 0.92 || xRight - xLeft < 0.27) return null;
+  let cropHeight = h;
+  let cropWidth = Math.round(h * 9 / 8);
+  if (cropWidth > w) { cropWidth = w; cropHeight = Math.round(w * 8 / 9); }
+  cropWidth -= cropWidth % 2; cropHeight -= cropHeight % 2;
+  if (cropWidth < 320 || cropHeight < 320) return null;
+  const at = x => Math.max(0, Math.min(w - cropWidth, Math.round(x * w - cropWidth / 2)));
+  const y = Math.max(0, Math.floor((h - cropHeight) / 2));
+  const a = at(xLeft), c = at(xRight);
+  if (Math.abs(a - c) < Math.round(cropWidth * 0.16)) return null;
+  return '[0:v]split=2[dual_a][dual_b];'
+    + '[dual_a]crop=' + cropWidth + ':' + cropHeight + ':' + a + ':' + y + ',scale=1080:960[dual_top];'
+    + '[dual_b]crop=' + cropWidth + ':' + cropHeight + ':' + c + ':' + y + ',scale=1080:960[dual_bottom];'
+    + '[dual_top][dual_bottom]vstack=inputs=2[' + outputLabel + ']';
 }
 
 export function activeSpeakerCropFilter({ width, height, centers, intervals, captionSuffix = '', outputLabel = 'v' }) {

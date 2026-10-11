@@ -14,6 +14,7 @@ import re
 import subprocess
 import tempfile
 import traceback
+import wave
 from typing import Any, Optional
 
 import librosa
@@ -25,6 +26,7 @@ from podcast_diarization import local_acoustic_diarize
 from podcast_recovery_artifact import persist_recovery_artifact
 from podcast_source_cache import download_source_cache, upload_source_cache, validate_source_cache
 from podcast_storage_contract import assert_storage_project
+from transcript_quality import quality_signals, use_retry, agreed_silence, zero_duration_words, use_timing_retry
 
 
 BUCKET = "clipper-media"
@@ -149,7 +151,7 @@ def transcribe(wav: pathlib.Path, model_name: str) -> tuple[list[dict[str, Any]]
     model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=max(2, os.cpu_count() or 2))
     stream, info = model.transcribe(
         str(wav), beam_size=5, vad_filter=True, word_timestamps=True,
-        condition_on_previous_text=True,
+        condition_on_previous_text=False,
     )
     segments: list[dict[str, Any]] = []
     for item in stream:
@@ -162,15 +164,95 @@ def transcribe(wav: pathlib.Path, model_name: str) -> tuple[list[dict[str, Any]]
             "text": (word.word or "").strip(),
         } for word in (item.words or []) if (word.word or "").strip()]
         segments.append({
-            "start_s": round(float(item.start), 3), "end_s": round(float(item.end), 3),
-            "text": text, "words": words,
+            "start_s": round(float(item.start), 3),
+            "end_s": round(float(item.end), 3),
+            "text": text, "words": words, "quality": {
+                **quality_signals(item), "zero_duration_words": zero_duration_words(words),
+            },
         })
+
+    # Refine ONLY suspicious, short spans; never re-decode the full episode.
+    # A targeted alternative is accepted only on a measured quality improvement.
+    suspicious = [i for i, segment in enumerate(segments)
+                  if (segment["quality"]["suspected_hallucination"] or segment["quality"]["zero_duration_words"] > 0)
+                  and 0.3 <= segment["end_s"] - segment["start_s"] <= 14]
+    retried = repaired = confirmed_silence = repaired_word_timings = 0
+    with wave.open(str(wav), "rb") as wave_file:
+        if wave_file.getnchannels() != 1 or wave_file.getsampwidth() != 2:
+            raise RuntimeError("Podcast transcription WAV is not mono PCM16")
+        sr = wave_file.getframerate()
+        for index in suspicious[:6]:
+            original = segments[index]
+            left = original["start_s"]
+            right = original["end_s"]
+            try:
+                wave_file.setpos(max(0, int(left * sr)))
+                audio = np.frombuffer(wave_file.readframes(max(1, int((right - left) * sr))),
+                                      dtype="<i2").astype(np.float32) / 32768.0
+                if len(audio) < sr // 3:
+                    continue
+                alt_stream, _ = model.transcribe(
+                    audio, beam_size=5, vad_filter=False, word_timestamps=True,
+                    condition_on_previous_text=False,
+                )
+                alt_items = list(alt_stream)
+                retried += 1
+                alt_words = []
+                for item in alt_items:
+                    for word in item.words or []:
+                        text = (word.word or "").strip()
+                        at = left + float(word.start if word.start is not None else item.start)
+                        stop = left + float(word.end if word.end is not None else item.end)
+                        if text and at < right and stop > left:
+                            alt_words.append({
+                                "start_s": round(max(left, at), 3),
+                                "end_s": round(min(right, max(at + 0.05, stop)), 3),
+                                "text": text,
+                            })
+                if agreed_silence(original, alt_words):
+                    original["quality"]["repair_verdict"] = "confirmed_silence"
+                    original["words"] = []
+                    original["text"] = ""
+                    confirmed_silence += 1
+                    continue
+                alt = {
+                    "words": alt_words,
+                    "quality": quality_signals(alt_items[0]) if alt_items else {},
+                }
+                if use_retry(original, alt) or use_timing_retry(original, alt):
+                    if original["quality"].get("zero_duration_words", 0) and not alt["quality"].get("suspected_hallucination"):
+                        repaired_word_timings += 1
+                    original["words"] = alt_words
+                    original["text"] = " ".join(word["text"] for word in alt_words)
+                    original["quality"] = {
+                        **alt["quality"], "repair_verdict": "targeted_retry",
+                    }
+                    repaired += 1
+                else:
+                    original["quality"]["repair_verdict"] = "preserved_uncertain"
+            except Exception as exc:
+                original["quality"]["repair_verdict"] = "retry_failed"
+                print("Podcast targeted ASR retry failed; preserving original: "
+                      + str(exc)[:180], flush=True)
+
+    # Keep legitimate speech segments even if Whisper omitted word-level timings.
+    # Only remove silence confirmed by the second ASR pass.
+    segments = [segment for segment in segments if segment["text"]]
     return segments, {
         "language": str(info.language or "unknown"),
         "language_probability": float(info.language_probability or 0),
         "duration_s": float(info.duration or (segments[-1]["end_s"] if segments else 0)),
+        "quality": {
+            "schema_version": "clipper-asr-quality-v1",
+            "suspected_segments": len(suspicious),
+            "targeted_retries": retried,
+            "repaired_segments": repaired,
+            "repaired_word_timing_segments": repaired_word_timings,
+            "confirmed_silence_segments": confirmed_silence,
+            "unresolved_segments": sum(bool(segment["quality"].get("suspected_hallucination"))
+                                       for segment in segments),
+        },
     }
-
 
 def diarize(
     wav: pathlib.Path,
@@ -374,6 +456,7 @@ def main() -> int:
                     "version": "clipper-podcast-transcript-v1",
                     "duration_s": info["duration_s"],
                     "word_count": sum(len(segment.get("words", [])) for segment in segments),
+                    "quality": info["quality"],
                 },
                 "prosody": prosody,
                 "diarization": {**diarization_meta, "turns": turns},

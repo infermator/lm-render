@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { captionCompositeFilter } from './ffmpeg_filters.mjs';
+import { captionCompositeFilter, subtitleFilterSuffix } from './ffmpeg_filters.mjs';
+import { normalizeCreativeMedia, buildHookAss } from './creative_media.mjs';
+import { checkRenderedVideo } from './content_qc.mjs';
 
 const MAM_BASE = String(process.env.MAM_BASE || 'https://reaction-lab-coral.vercel.app').replace(/\/$/, '');
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || process.env.REACTION_PIPELINE_SECRET || '').trim();
@@ -239,19 +241,29 @@ async function main() {
       : (requestedLayout === 'center_crop' ? 'center_crop' : 'fit_blur');
     const out = path.join(work, 'video.mp4');
     const captionStyle = 'FontName=DejaVu Sans,FontSize=18,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=190';
+    // V2 has no canonical podcast transcript. Ground hook overlays in the
+    // actual selected-window subtitles; never overlay an unspoken model claim.
+    const captionTranscript = captionMeta.created && fs.existsSync(captionPath)
+      ? fs.readFileSync(captionPath, 'utf8').replace(/\d\d:\d\d:\d\d,\d+\s+-->[^\n]+/g, ' ').replace(/^\d+$/gm, ' ')
+      : '';
+    const creative = normalizeCreativeMedia(plan.creative, [{ text: captionTranscript }], duration);
+    const hookAss = buildHookAss(creative.hookText, duration);
+    const hookPath = path.join(work, 'hook.ass');
+    if (hookAss) fs.writeFileSync(hookPath, hookAss, 'utf8');
     const layoutOutputLabel = captionMeta.created ? 'caption_base' : 'v';
     const autoFilter = layout === 'creator_gameplay_auto' ? creatorGameplayFilter(facecam, layoutOutputLabel) : null;
     const layoutFilter = autoFilter || (layout === 'center_crop'
       ? `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[${layoutOutputLabel}]`
       : `[0:v]split=2[bg0][fg0];[bg0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.16[bg];[fg0]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[${layoutOutputLabel}]`);
-    const filter = captionMeta.created
+    const captioned = captionMeta.created
       ? `${layoutFilter};${captionCompositeFilter({ filePath: captionPath, forceStyle: captionStyle })}`
       : layoutFilter;
+    const filter = hookAss ? `${captioned};[v]${subtitleFilterSuffix(hookPath, '').slice(1)}[creative_hook]` : captioned;
 
     run('ffmpeg', [
       '-y', '-i', source,
       '-filter_complex', filter,
-      '-map', '[v]', '-map', '0:a?',
+      '-map', hookAss ? '[creative_hook]' : '[v]', '-map', '0:a?',
       '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
       '-r', String(Number(output.fps || 30)), '-movflags', '+faststart', out,
@@ -262,6 +274,15 @@ async function main() {
     if (Number(videoStream.width) !== 1080 || Number(videoStream.height) !== 1920) {
       throw new Error(`Unexpected output geometry ${videoStream.width}x${videoStream.height}`);
     }
+
+    const sourceHasAudio = (probe(source).streams || []).some(stream => stream.codec_type === 'audio');
+    const contentQc = checkRenderedVideo(out, {
+      // V2 also clips gameplay or deliberately silent stretches. Do not reject
+      // their audio because a source container happened to include a silent track.
+      sourceHasAudio: sourceHasAudio && Number(captionMeta.words || 0) > 0,
+      expectedDuration: duration,
+    });
+    if (!contentQc.passed) throw new Error('content_qc_failed: ' + contentQc.errors.join(','));
 
     await progress(render.id, 'uploading', 'Uploading source window and rendered MP4 to clipper-media');
     sourceStoragePath = `candidates/${candidate.id}/source.mp4`;
@@ -283,6 +304,8 @@ async function main() {
         requested_layout: requestedLayout,
         creator_detection: facecam,
         captions: captionMeta,
+        creative: { schema_version: plan?.creative?.schema_version || null, applied: creative },
+        content_qc: contentQc,
         ffprobe: resultProbe,
       },
       qc_json: {
@@ -290,6 +313,7 @@ async function main() {
         width: Number(videoStream.width),
         height: Number(videoStream.height),
         duration_s: Number(resultProbe.format?.duration || 0),
+        content_qc: contentQc,
       },
     });
     console.log(`[clipper-render] completed ${render.id} -> ${resultStoragePath}`);
