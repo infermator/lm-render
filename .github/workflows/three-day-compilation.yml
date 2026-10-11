@@ -200,7 +200,11 @@ jobs:
             dest="sources/source_${i}.mp4"
 
             echo "[$((i+1))/$COUNT] Downloading: $url"
-            curl -fSL --retry 3 --retry-delay 5 -o "$dest" "$url"
+            # --retry alone skips a mid-transfer "connection reset" (curl 56),
+            # and one reset among a window's sources failed the whole stitch on
+            # 2026-09-08. A window now holds ~30 sources, so retry everything.
+            curl -fSL --connect-timeout 30 --retry 6 --retry-all-errors --retry-delay 5 \
+              -o "$dest" "$url"
 
             actual_sha=$(file_sha256 "$dest")
             if [ "$actual_sha" != "$expected_sha" ]; then
