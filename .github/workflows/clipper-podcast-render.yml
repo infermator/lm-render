@@ -147,7 +147,7 @@ jobs:
 
       - name: Render clustered Podcast V3 batches
         env:
-          MAM_BASE: 'https://reaction-lab-coral.vercel.app'
+          MAM_BASE: ${{ vars.REACTION_API_BASE || 'https://www.21media.online' }}
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           MAM_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}

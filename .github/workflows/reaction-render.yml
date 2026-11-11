@@ -82,10 +82,12 @@ jobs:
 
       - name: Render one Reaction Lab job
         env:
-          # Machine traffic must bypass the MAM/browser-session gateway. The
-          # standalone Reaction Lab middleware accepts the worker bearer and the
-          # routes still read/write the same MAM reaction_* database.
-          MAM_BASE: 'https://reaction-lab-coral.vercel.app'
+          # The Vercel deployment that used to host Reaction Lab is retired and
+          # answers HTTP 402 DEPLOYMENT_DISABLED. Workers go through the MAM
+          # gateway, which rewrites /api/reaction/* to the CX33 container and
+          # validates the worker bearer. REACTION_API_BASE lets the next host
+          # move happen in repository settings instead of a commit.
+          MAM_BASE: ${{ vars.REACTION_API_BASE || 'https://www.21media.online' }}
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           # These credentials are for reaction-media Storage in Shotlee. Job DB
           # mutations go through the Reaction API instead of direct Supabase REST.
@@ -157,7 +159,7 @@ jobs:
       - name: Persist diagnostic replay result
         if: always() && github.event_name == 'push'
         env:
-          MAM_BASE: 'https://reaction-lab-coral.vercel.app'
+          MAM_BASE: ${{ vars.REACTION_API_BASE || 'https://www.21media.online' }}
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
         run: |
           set -euo pipefail

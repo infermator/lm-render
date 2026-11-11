@@ -29,6 +29,25 @@ from podcast_storage_contract import assert_storage_project
 
 BUCKET = "clipper-media"
 MAX_ALIGNMENT_BYTES = 512 * 1024 * 1024
+LIVE_REACTION_API = "https://www.21media.online"
+RETIRED_REACTION_ORIGINS = {
+    "https://reaction-lab-coral.vercel.app",
+    "https://reaction-lab-nojus-projects-be622096.vercel.app",
+}
+
+
+def resolve_reaction_api(raw: Optional[str]) -> str:
+    """The retired Vercel deployment answers HTTP 402 DEPLOYMENT_DISABLED.
+
+    Ignore it even when a stale ``MAM_BASE`` still names it, and fall back to
+    the live CX33 gateway the other workers use.
+    """
+    value = str(raw or "").strip().rstrip("/")
+    if not value or value.lower() in RETIRED_REACTION_ORIGINS:
+        return LIVE_REACTION_API
+    return value
+
+
 WORKER_RUN_ID = "-".join(filter(None, [
     os.getenv("GITHUB_RUN_ID") or f"local-{os.getpid()}",
     os.getenv("GITHUB_RUN_ATTEMPT") or "1",
@@ -241,7 +260,7 @@ def prosody_track(wav: pathlib.Path, segments: list[dict[str, Any]], turns: list
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default=os.getenv("MAM_BASE") or "https://reaction-lab-coral.vercel.app")
+    parser.add_argument("--base-url", default=os.getenv("MAM_BASE") or LIVE_REACTION_API)
     parser.add_argument("--secret", default=os.getenv("BUFFER_PUSH_SECRET") or os.getenv("REACTION_PIPELINE_SECRET"))
     # Keep alias precedence byte-for-byte equivalent in meaning to Stream V2:
     # explicit Shotlee names override the historical generic GitHub secrets.
@@ -250,6 +269,7 @@ def main() -> int:
     parser.add_argument("--vod-id", default="")
     parser.add_argument("--model", default="small")
     args = parser.parse_args()
+    args.base_url = resolve_reaction_api(args.base_url)
     if not args.secret:
         raise SystemExit("BUFFER_PUSH_SECRET / REACTION_PIPELINE_SECRET is required")
     if not args.storage_url or not args.storage_key:

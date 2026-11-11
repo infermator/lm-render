@@ -5,8 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { captionCompositeFilter } from './ffmpeg_filters.mjs';
+import { resolveReactionApi } from '../lib/reaction-api.mjs';
 
-const MAM_BASE = String(process.env.MAM_BASE || 'https://reaction-lab-coral.vercel.app').replace(/\/$/, '');
+const MAM_BASE = resolveReactionApi(process.env.MAM_BASE);
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || process.env.REACTION_PIPELINE_SECRET || '').trim();
 const STORAGE_URL = String(process.env.SHOTLEE_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const STORAGE_KEY = String(process.env.SHOTLEE_SUPABASE_SERVICE_ROLE_KEY || process.env.MAM_SUPABASE_SERVICE_ROLE_KEY || '').trim();

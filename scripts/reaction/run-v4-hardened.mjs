@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { resolveReactionApi } from '../lib/reaction-api.mjs';
 
 const DRY_RUN = process.env.REACTION_V4_HARDEN_DRY_RUN === '1';
-const DIRECT_REACTION_API = 'https://reaction-lab-coral.vercel.app';
+const DIRECT_REACTION_API = resolveReactionApi(process.env.MAM_BASE);
 
 const GUARANTEES = [
   { label: 'speech-ready carrier selection', needle: 'asset.speech_ready !== true', why: 'a spoken line must never lip-sync an arbitrary reaction clip' },

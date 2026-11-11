@@ -9,8 +9,9 @@ import {
   fitAvatarToContentBand,
   protectSourceLayout,
 } from './layout-safety.mjs';
+import { resolveReactionApi } from '../lib/reaction-api.mjs';
 
-const MAM_BASE = (process.env.MAM_BASE || 'https://21media-mam.vercel.app').replace(/\/$/, '');
+const MAM_BASE = resolveReactionApi(process.env.MAM_BASE);
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || '');
 // Storage (reaction-media) MOVED to the Shotlee project, while the reaction_*
 // TABLES stayed in mam-prod. One pair of credentials can no longer serve both,

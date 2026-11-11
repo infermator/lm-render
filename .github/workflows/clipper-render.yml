@@ -114,7 +114,7 @@ jobs:
 
       - name: Render CLIPPER queue
         env:
-          MAM_BASE: 'https://reaction-lab-coral.vercel.app'
+          MAM_BASE: ${{ vars.REACTION_API_BASE || 'https://www.21media.online' }}
           BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
           SHOTLEE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SHOTLEE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAM_SUPABASE_SERVICE_ROLE_KEY }}

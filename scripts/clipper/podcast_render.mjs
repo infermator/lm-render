@@ -27,8 +27,9 @@ import {
   validateSoundtrackPlan,
   wordsForWindow,
 } from './podcast_media.mjs';
+import { resolveReactionApi } from '../lib/reaction-api.mjs';
 
-const MAM_BASE = String(process.env.MAM_BASE || 'https://reaction-lab-coral.vercel.app').replace(/\/$/, '');
+const MAM_BASE = resolveReactionApi(process.env.MAM_BASE);
 const SECRET = String(process.env.BUFFER_PUSH_SECRET || process.env.REACTION_PIPELINE_SECRET || '').trim();
 // Match the OG Stream V2 renderer's alias precedence exactly. GitHub currently
 // supplies SUPABASE_URL + MAM_SUPABASE_SERVICE_ROLE_KEY; explicit SHOTLEE_*
