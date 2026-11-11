@@ -95,7 +95,7 @@ jobs:
           # An unset secret expands to the empty string, so without this the
           # header goes out as "Bearer " and every call 401s.
           REACTION_PIPELINE_SECRET:          ${{ secrets.REACTION_PIPELINE_SECRET || secrets.BUFFER_PUSH_SECRET }}
-          API_BASE:                          'https://reaction-lab-coral.vercel.app'
+          API_BASE:                          ${{ vars.REACTION_API_BASE || 'https://www.21media.online' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -112,6 +112,12 @@ jobs:
           # ────────────────────────────────────────────────────────────────────
           file_bytes() {
             stat --format='%s' "$1"
+          }
+
+          # Turn bash arrays into the JSON arrays stitch-report validates.
+          json_array() {
+            if [ "$#" -eq 0 ]; then printf '[]'; return; fi
+            printf '%s\n' "$@" | jq -R . | jq -s -c .
           }
 
           # ────────────────────────────────────────────────────────────────────
@@ -194,10 +200,20 @@ jobs:
           echo "::group::02 Download and verify sources"
           mkdir -p sources
 
+          # The recorded SHA-256 is the identity of the bytes that were uploaded
+          # to YouTube for that Short. A stored render object can stop matching
+          # it (the job was re-rendered after the publication, so result_url now
+          # points at different bytes). The server-side stitch report re-checks
+          # the hash against the publication row, so such a clip cannot be
+          # certified as a source. Excluding it keeps the recap honest; failing
+          # the whole window, which is what this did, made the lane retry the
+          # same unrecoverable window forever.
+          KEPT_URLS=(); KEPT_IDS=(); KEPT_SHA=(); KEPT_PUBS=(); KEPT_JOBS=(); KEPT_ORIG=()
+          SKIPPED=0
           for i in $(seq 0 $((COUNT - 1))); do
             url="${SOURCE_URLS[$i]}"
             expected_sha="${SOURCE_SHA[$i]}"
-            dest="sources/source_${i}.mp4"
+            dest="sources/download_${i}.mp4"
 
             echo "[$((i+1))/$COUNT] Downloading: $url"
             # --retry alone skips a mid-transfer "connection reset" (curl 56),
@@ -208,11 +224,41 @@ jobs:
 
             actual_sha=$(file_sha256 "$dest")
             if [ "$actual_sha" != "$expected_sha" ]; then
-              echo "::error::SHA-256 mismatch for source $i: expected=$expected_sha actual=$actual_sha"
-              exit 1
+              echo "::warning::SHA-256 mismatch for source $i ($(basename "$url")): expected=$expected_sha actual=$actual_sha — excluding it from this compilation"
+              rm -f "$dest"
+              SKIPPED=$((SKIPPED + 1))
+              continue
             fi
             echo "  ✓ SHA-256 verified: $actual_sha"
+            KEPT_URLS+=("$url")
+            KEPT_IDS+=("${SOURCE_IDS[$i]}")
+            KEPT_SHA+=("$expected_sha")
+            KEPT_PUBS+=("${SOURCE_PUBS[$i]}")
+            KEPT_JOBS+=("${SOURCE_JOBS[$i]}")
+            KEPT_ORIG+=("$i")
           done
+
+          if [ "$SKIPPED" -gt 0 ]; then
+            echo "  ! $SKIPPED source(s) excluded; ${#KEPT_URLS[@]} of $COUNT verified"
+          fi
+          if [ "${#KEPT_URLS[@]}" -lt 2 ]; then
+            echo "::error::$SKIPPED source(s) failed verification and only ${#KEPT_URLS[@]} remain; refusing to stitch a recap from fewer than 2 clips"
+            exit 1
+          fi
+
+          # Normalisation and concatenation walk 0..COUNT-1 in posted order, so
+          # move the verified downloads into contiguous names. Everything the
+          # report sends is now the filtered list, not the dispatch input.
+          for new_index in $(seq 0 $(( ${#KEPT_URLS[@]} - 1 ))); do
+            mv "sources/download_${KEPT_ORIG[$new_index]}.mp4" "sources/source_${new_index}.mp4"
+          done
+          SOURCE_URLS=("${KEPT_URLS[@]}")
+          SOURCE_IDS=("${KEPT_IDS[@]}")
+          SOURCE_SHA=("${KEPT_SHA[@]}")
+          SOURCE_PUBS=("${KEPT_PUBS[@]}")
+          SOURCE_JOBS=("${KEPT_JOBS[@]}")
+          COUNT=${#SOURCE_URLS[@]}
+          echo "verified_sources: $COUNT (excluded: $SKIPPED)"
           echo "::endgroup::"
 
           # ════════════════════════════════════════════════════════════════════
@@ -360,8 +406,14 @@ jobs:
           # ════════════════════════════════════════════════════════════════════
           echo "::group::07 Report stitch"
 
-          # Build the stitch report payload
-          # Arrays are echoed back from dispatch inputs — same order, untouched
+          # Build the stitch report payload. The arrays are the VERIFIED subset
+          # of the dispatch inputs (a mismatched source was excluded in step 02),
+          # still in posted order.
+          SOURCE_IDS_JSON=$(json_array "${SOURCE_IDS[@]}")
+          SOURCE_PUBS_JSON=$(json_array "${SOURCE_PUBS[@]}")
+          SOURCE_JOBS_JSON=$(json_array "${SOURCE_JOBS[@]}")
+          SOURCE_SHA_JSON=$(json_array "${SOURCE_SHA[@]}")
+
           STITCH_BODY=$(jq -nc \
             --arg rid "$REQUEST_ID" \
             --arg ws "$WINDOW_START" \
@@ -369,10 +421,10 @@ jobs:
             --arg sha "$FINAL_SHA256" \
             --argjson dur "$FINAL_DURATION" \
             --argjson bytes "$FINAL_BYTES" \
-            --argjson sids "$INPUT_SOURCE_IDS_JSON" \
-            --argjson spids "$INPUT_SOURCE_PUBLICATION_IDS_JSON" \
-            --argjson sjids "$INPUT_SOURCE_JOB_IDS_JSON" \
-            --argjson ssha "$INPUT_SOURCE_RENDER_SHA256_JSON" \
+            --argjson sids "$SOURCE_IDS_JSON" \
+            --argjson spids "$SOURCE_PUBS_JSON" \
+            --argjson sjids "$SOURCE_JOBS_JSON" \
+            --argjson ssha "$SOURCE_SHA_JSON" \
             '{
               request_id: $rid,
               window_start: $ws,
