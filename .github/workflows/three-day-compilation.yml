@@ -387,14 +387,55 @@ jobs:
           # into memory before sending; a full window is comfortably over a
           # gigabyte and the runner does not need to hold it. -T streams from disk
           # and sets Content-Length from the file itself, and implies PUT.
-          UPLOAD_HTTP=$(curl -sS -o /tmp/upload-put-response.txt -w '%{http_code}' \
-            --retry 3 --retry-delay 5 \
-            -T out/compilation.mp4 \
-            -H "Content-Type: video/mp4" \
-            "$SIGNED_URL")
+          #
+          # Since the 2026-11-15 MAM separation the storage host (api.21media.online) sits behind
+          # Cloudflare, which rejects request bodies over 100 MB, and a compilation is 200-400 MB.
+          # Large files therefore go up as a TUS resumable upload in 6 MB chunks, authorised by
+          # the same signed-upload token (x-signature on /storage/v1/upload/resumable/sign).
+          FILE_BYTES=$(stat -c %s out/compilation.mp4)
+          if [ "$FILE_BYTES" -le 94371840 ]; then
+            UPLOAD_HTTP=$(curl -sS -o /tmp/upload-put-response.txt -w '%{http_code}' \
+              --retry 3 --retry-delay 5 \
+              -T out/compilation.mp4 \
+              -H "Content-Type: video/mp4" \
+              "$SIGNED_URL")
+          else
+            STORAGE_BASE="${SIGNED_URL%%/storage/v1/*}"
+            OBJECT_PATH=$(jq -r '.path' /tmp/upload-url-response.json)
+            b64() { printf %s "$1" | base64 -w0; }
+            TUS_META="bucketName $(b64 reaction-media),objectName $(b64 "$OBJECT_PATH"),contentType $(b64 video/mp4),cacheControl $(b64 3600)"
+            TUS_LOC=$(curl -sS -D - -o /tmp/upload-put-response.txt -X POST "$STORAGE_BASE/storage/v1/upload/resumable/sign" \
+              -H "Tus-Resumable: 1.0.0" -H "Upload-Length: $FILE_BYTES" -H "Upload-Metadata: $TUS_META" \
+              -H "x-upsert: true" -H "x-signature: $TOKEN" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
+            if [ -z "$TUS_LOC" ]; then
+              UPLOAD_HTTP=000
+            else
+              case "$TUS_LOC" in http*) ;; *) TUS_LOC="$STORAGE_BASE$TUS_LOC" ;; esac
+              CHUNK=6291456; OFFSET=0; UPLOAD_HTTP=204
+              while [ "$OFFSET" -lt "$FILE_BYTES" ]; do
+                LEN=$(( FILE_BYTES - OFFSET )); [ "$LEN" -gt "$CHUNK" ] && LEN=$CHUNK
+                OK=0
+                for TRY in 1 2 3 4; do
+                  dd if=out/compilation.mp4 of=/tmp/tus-chunk bs=$CHUNK skip=$(( OFFSET / CHUNK )) count=1 status=none
+                  CODE=$(curl -sS -o /tmp/upload-put-response.txt -w '%{http_code}' -X PATCH "$TUS_LOC" \
+                    -H "Tus-Resumable: 1.0.0" -H "Upload-Offset: $OFFSET" -H "x-signature: $TOKEN" \
+                    -H "Content-Type: application/offset+octet-stream" --data-binary @/tmp/tus-chunk || echo 000)
+                  if [ "$CODE" = 204 ]; then OK=1; break; fi
+                  # A lost response may still have been applied: ask the server for its offset.
+                  SRV=$(curl -sS -I -X HEAD "$TUS_LOC" -H "Tus-Resumable: 1.0.0" -H "x-signature: $TOKEN" \
+                    | tr -d '\r' | awk -F': ' 'tolower($1)=="upload-offset"{print $2}')
+                  if [ "$SRV" = "$(( OFFSET + LEN ))" ]; then OK=1; break; fi
+                  sleep $(( TRY * 5 ))
+                done
+                if [ "$OK" != 1 ]; then UPLOAD_HTTP=$CODE; break; fi
+                OFFSET=$(( OFFSET + LEN ))
+              done
+              rm -f /tmp/tus-chunk
+            fi
+          fi
 
           if [ "$UPLOAD_HTTP" -lt 200 ] || [ "$UPLOAD_HTTP" -ge 300 ]; then
-            echo "::error::PUT to signed URL failed with HTTP $UPLOAD_HTTP"
+            echo "::error::Upload to signed URL failed with HTTP $UPLOAD_HTTP"
             cat /tmp/upload-put-response.txt
             exit 1
           fi

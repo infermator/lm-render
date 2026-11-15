@@ -7,9 +7,19 @@ import re
 from urllib.parse import urlparse
 
 
+# MAM's self-hosted Supabase (2026-11-15 MAM/Shotlee separation) has no project ref; its exact
+# hostname is the identity. Allow-listed, mirrored in Reaction Lab's supabase-project-ref.mjs.
+SELF_HOSTED_STORAGE_HOSTS = frozenset({"api.21media.online"})
+
+
 def supabase_project_ref(raw: str) -> str:
     parsed = urlparse(str(raw or "").strip())
     host = (parsed.hostname or "").lower()
+    if host in SELF_HOSTED_STORAGE_HOSTS:
+        if (parsed.scheme != "https" or parsed.username or parsed.password or parsed.port
+                or parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment):
+            raise RuntimeError("Podcast storage URL must be a Supabase project origin")
+        return host
     match = re.fullmatch(r"([a-z0-9]{15,40})\.supabase\.co", host)
     if (parsed.scheme != "https" or parsed.username or parsed.password or parsed.port
             or parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment
@@ -21,7 +31,7 @@ def supabase_project_ref(raw: str) -> str:
 def assert_storage_project(storage_url: str, expected_ref: str) -> None:
     actual = supabase_project_ref(storage_url)
     expected = str(expected_ref or "").strip().lower()
-    if not re.fullmatch(r"[a-z0-9]{15,40}", expected):
+    if not re.fullmatch(r"[a-z0-9]{15,40}", expected) and expected not in SELF_HOSTED_STORAGE_HOSTS:
         raise RuntimeError("Reaction Lab returned an invalid Podcast storage project")
     if actual != expected:
         raise RuntimeError(
