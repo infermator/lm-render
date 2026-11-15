@@ -9,6 +9,8 @@ from typing import Any, Mapping, Optional
 
 import requests
 
+from storage_tus import TUS_THRESHOLD_BYTES, tus_upload
+
 
 BUCKET = "clipper-media"
 MAX_SOURCE_BYTES = 2_000_000_000
@@ -88,6 +90,14 @@ def upload_source_cache(
             digest.update(chunk)
     sha256 = digest.hexdigest()
     path = f"podcasts/{vod_id}/source/{sha256}.audio"
+    if size > TUS_THRESHOLD_BYTES:
+        # Large sources: chunked TUS (the storage host is behind a 100 MB request cap).
+        try:
+            tus_upload(storage_url, {"Authorization": f"Bearer {storage_key}", "apikey": storage_key},
+                       BUCKET, path, source, "application/octet-stream", cache_control="86400")
+        except RuntimeError as exc:
+            raise RuntimeError(f"podcast_source_cache_upload_failed: {exc}") from None
+        return {"bucket": BUCKET, "path": path, "sha256": sha256, "bytes": size}
     try:
         with source.open("rb") as handle:
             response = requests.post(
